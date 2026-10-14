@@ -2,6 +2,14 @@
 
 This document distinguishes implemented checks from observed results. Update it only after running checks against the exact published source revision.
 
+## v0.1.1 repair candidate
+
+Native results for this candidate are pending. It adds desktop-helper discovery, a continuous top-attached island, prominent Quit actions, and a stronger regression gate. The source contains 51 synthetic XCTest methods, one separately opt-in official-artifact test, and three native smoke scenarios (normal, missing-helper/error, multiple quota groups). The smoke targets the actual island controller, checks ordered panel/content bounds and in-memory native drawing, exercises collapse/reentry and Reduced Motion, verifies Quit's measured bounds and mouse-routing flags, and checks dispatch/menu/local-command Quit paths. These checks do not establish cross-application mouse delivery or physical-notch correctness.
+
+A separate, release-blocking macOS job downloads the official DMG with a 1 GiB / 120-second limit, mounts it read-only, and tests the production signature/helper resolver with its normal six-second deadline (the elapsed-time assertion allows 0.5 seconds of CI scheduling tolerance). It requires both a successful test exit and its discovery marker, never opens Codex or executes its helper, and detaches the volume afterward. The native build and geometry job runs independently, so download problems do not hide UI regression results. This positive artifact check is still pending for this candidate.
+
+The v0.1.0 observations below are historical and do not validate this new candidate. v0.1.0 has reported desktop-discovery, placement and hover/quit-usability defects.
+
 ## Source-preparation checks
 
 - Public-source safety preflight: passed in a Linux development environment
