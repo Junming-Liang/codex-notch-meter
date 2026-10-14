@@ -60,8 +60,8 @@ public enum MeterError: Error, Equatable, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .codexMissing: return "Codex CLI was not found. Install the official CLI or choose its executable in Settings."
-        case .invalidExecutable: return "The selected Codex executable is unavailable. Choose an installed official Codex CLI."
+        case .codexMissing: return "No supported Codex desktop helper or CLI was found. Choose the installed official application or CLI in Settings."
+        case .invalidExecutable: return "The selected application/helper could not be verified or is unavailable. Choose an installed official Codex application or CLI."
         case .signedOut: return "Sign in to Codex with your ChatGPT account, then refresh."
         case .unsupportedAccount: return "This account type does not provide ChatGPT quota windows. API-key billing is not supported."
         case .noQuota: return "Codex did not return quota windows. No allowance has been assumed."
