@@ -11,7 +11,10 @@ final class PassivePanel: NSPanel {
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test"))
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test")
+    private var smokeReady = false
+    private var smokeCard: NSPanel?
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var rails: [NSPanel] = []
@@ -65,6 +68,25 @@ final class AppController: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.rebuildRails() }
         })
         model.start(); rebuildRails(); updateStatus()
+        if smokeMode { runSmokeTest() }
+    }
+    private func runSmokeTest() {
+        // The CI smoke mode always uses synthetic data and never starts Codex.
+        showSettings()
+        let screen = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
+        let card = panel(frame: CGRect(x: screen.midX + 100, y: screen.midY - 260, width: 340, height: 560))
+        card.contentView = NSHostingView(rootView: makeDetailView())
+        smokeCard = card
+        card.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            self.settingsWindow?.contentView?.layoutSubtreeIfNeeded()
+            self.settingsWindow?.contentView?.displayIfNeeded()
+            self.smokeCard?.contentView?.layoutSubtreeIfNeeded()
+            self.smokeCard?.contentView?.displayIfNeeded()
+            self.smokeReady = self.model.demo && self.settingsWindow?.isVisible == true && self.smokeCard?.isVisible == true && self.statusItem.button != nil
+            NSApp.terminate(nil)
+        }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
@@ -79,7 +101,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         model.stop(); hideWork?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        rails.forEach { $0.close() }; detailPanel?.close()
+        rails.forEach { $0.close() }; detailPanel?.close(); smokeCard?.close()
+        if smokeMode {
+            print(smokeReady ? "SMOKE_OK: native settings and quota card opened; demo-only; orderly shutdown completed" : "SMOKE_FAILED: native windows were not visible")
+        }
     }
     private func updateStatus() {
         statusItem?.button?.title = " " + model.compactLabel
@@ -89,6 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
     private func makeDetailView() -> DetailView {
         DetailView(model: model, hovered: { [weak self] entered in
+            guard self?.smokeMode != true else { return }
             self?.setHover("detail", entered: entered)
         }, refresh: { [weak self] in self?.model.refresh() }, settings: { [weak self] in self?.showSettings() })
     }
