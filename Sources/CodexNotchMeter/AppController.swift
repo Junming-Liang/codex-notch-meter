@@ -15,6 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let smokeMode = CommandLine.arguments.contains("--smoke-test")
     private var smokeReady = false
     private var smokeCard: NSPanel?
+    private var smokeTimer: Timer?
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var rails: [NSPanel] = []
@@ -30,8 +31,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SmokeDiagnostics.mark("didFinishLaunching entered")
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        SmokeDiagnostics.mark("status item created")
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "chart.bar.fill", accessibilityDescription: "Codex quota")
             button.imagePosition = .imageLeading
@@ -41,6 +44,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: makeDetailView())
+        SmokeDiagnostics.mark("popover content created")
         model.$snapshot.combineLatest(model.$error, model.$preferredBucket).sink { [weak self] _, _, _ in
             DispatchQueue.main.async {
                 self?.updateStatus()
@@ -67,37 +71,56 @@ final class AppController: NSObject, NSApplicationDelegate {
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rebuildRails() }
         })
+        SmokeDiagnostics.mark("observers installed")
         model.start(); rebuildRails(); updateStatus()
+        SmokeDiagnostics.mark("model and rails started")
         if smokeMode { runSmokeTest() }
+        SmokeDiagnostics.mark("didFinishLaunching returned")
     }
     private func runSmokeTest() {
         // The CI smoke mode always uses synthetic data and never starts Codex.
+        SmokeDiagnostics.mark("opening settings")
         showSettings()
+        SmokeDiagnostics.mark("settings opened")
         let screen = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
         let card = panel(frame: CGRect(x: screen.midX + 100, y: screen.midY - 260, width: 340, height: 560))
         card.contentView = NSHostingView(rootView: makeDetailView())
+        SmokeDiagnostics.mark("quota card content created")
         smokeCard = card
         card.orderFrontRegardless()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self else { return }
-            self.settingsWindow?.contentView?.layoutSubtreeIfNeeded()
-            self.settingsWindow?.contentView?.displayIfNeeded()
-            self.smokeCard?.contentView?.layoutSubtreeIfNeeded()
-            self.smokeCard?.contentView?.displayIfNeeded()
-            self.smokeReady = self.model.demo && self.settingsWindow?.isVisible == true && self.smokeCard?.isVisible == true && self.statusItem.button != nil
-            NSApp.terminate(nil)
-        }
+        SmokeDiagnostics.mark("quota card opened")
+        // terminateLater enters a nested run loop. Calling terminate from a main-queue
+        // block would prevent the queued MainActor shutdown task from being drained.
+        smokeTimer = Timer.scheduledTimer(timeInterval: 2, target: self,
+            selector: #selector(completeSmokeTest(_:)), userInfo: nil, repeats: false)
+    }
+    @objc private func completeSmokeTest(_ timer: Timer) {
+        smokeTimer = nil
+        SmokeDiagnostics.mark("readiness timer fired")
+        settingsWindow?.contentView?.layoutSubtreeIfNeeded()
+        settingsWindow?.contentView?.displayIfNeeded()
+        smokeCard?.contentView?.layoutSubtreeIfNeeded()
+        smokeCard?.contentView?.displayIfNeeded()
+        smokeReady = model.demo && settingsWindow?.isVisible == true && smokeCard?.isVisible == true && statusItem.button != nil
+        SmokeDiagnostics.mark(smokeReady ? "native windows ready" : "native windows not ready")
+        NSApp.terminate(nil)
+        SmokeDiagnostics.mark("terminate request returned")
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        SmokeDiagnostics.mark("applicationShouldTerminate entered")
         guard !terminating else { return .terminateLater }
         terminating = true
         Task {
+            SmokeDiagnostics.mark("model shutdown started")
             await model.shutdown()
+            SmokeDiagnostics.mark("model shutdown completed")
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
     func applicationWillTerminate(_ notification: Notification) {
+        SmokeDiagnostics.mark("applicationWillTerminate entered")
+        smokeTimer?.invalidate(); smokeTimer = nil
         model.stop(); hideWork?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
