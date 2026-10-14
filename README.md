@@ -4,7 +4,8 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases">下载预览版</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip">下载 v0.1.0 · Universal ZIP</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -22,7 +23,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> 当前为开发预览。下载产物以 [Releases](https://github.com/Junming-Liang/codex-notch-meter/releases) 中实际发布的附件为准；原生构建、测试与实机验证的状态分别记录在[验证说明](docs/VALIDATION.md)中。
+> **v0.1.0 开发预览已发布。** [下载 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip)，解压即可获得 `.app`。已通过 32 项合成测试与真实原生窗口启动 / 正常退出检查；签名和实机验证限制见下文与[验证说明](docs/VALIDATION.md)。
 
 ## 目录
 
@@ -38,11 +39,13 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 打开 [GitHub Releases](https://github.com/Junming-Liang/codex-notch-meter/releases)，下载该版本的 Universal ZIP
+1. 下载 [v0.1.0 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip)（576,520 字节），或查看[发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0)
 2. 解压，将 **Codex Notch Meter.app** 放入“应用程序”
 3. 启动应用，查看菜单栏中的额度入口
 
-Universal 产物同时包含 Apple Silicon 与 Intel 版本。发布流程必须先通过 macOS 编译、合成数据测试、双架构打包和临时签名校验，才会创建公开附件。
+Universal 产物同时包含 Apple Silicon 与 Intel 版本。v0.1.0 已在 [macOS CI](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) 中通过 32 项合成测试、双架构编译与打包、Info.plist 和临时签名校验，以及原生演示窗口启动 / 正常退出检查。
+
+提供 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip.sha256)；测试源码版本、归档摘要与尚未完成的实机检查记录在[验证说明](docs/VALIDATION.md)中。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 

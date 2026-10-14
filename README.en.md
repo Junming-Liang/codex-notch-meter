@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases">Download previews</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip">Download v0.1.0 · Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,15 +12,17 @@ A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook n
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-This is a developer preview. Download only artifacts actually listed under [Releases](https://github.com/Junming-Liang/codex-notch-meter/releases). [Validation status](docs/VALIDATION.md) separately records native builds, synthetic tests, and physical-device checks.
+**v0.1.0 developer preview is available.** [Download the Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip) and extract the `.app`. It passed 32 synthetic tests and actual native demo-window startup/orderly-exit checks. Signing and physical-device limitations are documented below and in [validation status](docs/VALIDATION.md).
 
 ## Download
 
-1. Open [GitHub Releases](https://github.com/Junming-Liang/codex-notch-meter/releases) and choose the Universal ZIP
+1. Download the [v0.1.0 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip) (576,520 bytes), or read the [release notes](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0)
 2. Extract **Codex Notch Meter.app** and move it to Applications
 3. Launch it and open the menu-bar item
 
-Universal packages contain Apple Silicon and Intel binaries. Publication is gated on macOS compilation, synthetic tests, universal packaging, and ad-hoc signature verification.
+The Universal package contains Apple Silicon and Intel binaries. v0.1.0 passed 32 synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, and native demo startup/orderly-exit checks in [macOS CI](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482).
+
+A [SHA-256 checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip.sha256) is provided. The tested source revision, archive digest and remaining physical-device checks are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
