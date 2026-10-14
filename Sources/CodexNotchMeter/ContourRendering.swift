@@ -104,13 +104,8 @@ private struct ContourMetrics {
     let valid: Bool
     let colors: [Double]
     let track: [Double]
-    let brightness: Double
+    let brightness: [Double]
     let failures: [String]
-}
-
-private struct LegacyExtentPreference: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
 private struct LegacyRailShape: Shape {
@@ -145,7 +140,9 @@ private struct LegacyLayoutFixture: View {
     var body: some View {
         ZStack(alignment: .top) {
             LegacySilhouette().fill(.black)
-                .background(GeometryReader { proxy in Color.clear.preference(key: LegacyExtentPreference.self, value: proxy.size) })
+                .background(GeometryReader { proxy in
+                    Color.clear.onAppear { extent(proxy.size) }.onChange(of: proxy.size) { extent($0) }
+                })
             HStack(spacing: 0) {
                 ForEach([true, false], id: \.self) { left in
                     ZStack {
@@ -160,7 +157,6 @@ private struct LegacyLayoutFixture: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipShape(LegacySilhouette()).clipped().ignoresSafeArea(.all)
-        .onPreferenceChange(LegacyExtentPreference.self, perform: extent)
     }
 }
 
@@ -200,14 +196,17 @@ private enum ContourPixelGate {
             return p.a < 0.05
         }
         let interior = transform(bitmap.pixel(x: bitmap.representation.pixelsWide / 2, y: 8 * bitmap.scale)).a < 0.05
-        var colors = [0.0, 0.0], track = [0.0, 0.0], light = 0.0, lightCount = 0.0
+        var colors = [0.0, 0.0], track = [0.0, 0.0], light = [0.0, 0.0], lightCount = [0.0, 0.0]
         for y in 0..<bitmap.representation.pixelsHigh {
             for x in 0..<bitmap.representation.pixelsWide {
                 let px = CGFloat(x) / CGFloat(bitmap.scale), py = CGFloat(y) / CGFloat(bitmap.scale)
                 // Only observable area outside the simulated rectangular camera exclusion counts.
                 guard !hardware.contains(CGPoint(x: px, y: py)) else { continue }
                 let pixel = transform(bitmap.pixel(x: x, y: y)); let side = px < size.width / 2 ? 0 : 1
-                if pixel.chromatic { colors[side] += 1; light += pixel.light; lightCount += 1 }
+                if pixel.chromatic { colors[side] += 1 }
+                // Fixed spatial population: chroma-threshold selection biases stale
+                // means upward when darker antialiased pixels fall below the threshold.
+                light[side] += pixel.light * pixel.a; lightCount[side] += 1
                 if pixel.a > 0.2 && pixel.light > 0.12 { track[side] += 1 }
             }
         }
@@ -241,7 +240,7 @@ private enum ContourPixelGate {
         }
         return ContourMetrics(valid: transparent && interior && samplesValid,
             colors: colors.map { $0 / Double(bitmap.scale * bitmap.scale) },
-            track: track.map { $0 / Double(bitmap.scale * bitmap.scale) }, brightness: lightCount > 0 ? light / lightCount : 0, failures: failures)
+            track: track.map { $0 / Double(bitmap.scale * bitmap.scale) }, brightness: (0...1).map { lightCount[$0] > 0 ? light[$0] / lightCount[$0] : 0 }, failures: failures)
     }
 }
 
@@ -306,12 +305,13 @@ final class ContourRenderHarness: NSObject {
         let scene = scenes[sceneIndex]
         guard let view = island.panel.contentView else { finish(false); return }
         if sceneIndex == 0, let legacy = legacyPanel?.contentView {
+            legacy.layoutSubtreeIfNeeded(); legacy.displayIfNeeded()
             SmokeDiagnostics.mark("legacy layout fixture host=\(legacy.bounds.size) silhouette=\(legacyExtent) opaque=\(legacy.isOpaque)")
             for scale in [1, 2] {
                 if let bitmap = NativeContourBitmap.capture(legacy, scale: scale, topRowFirst: orientations[scale] ?? true) {
                     do { try bitmap.export(name: "legacy-layout-control", hardware: CGSize(width: 220, height: 32)) } catch { passed = false }
                     let metrics = ContourPixelGate.inspect(bitmap, hardware: CGRect(x: 6, y: 0, width: 220, height: 32), fractions: [100, 100])
-                    SmokeDiagnostics.mark("legacy layout fixture scale=\(scale) colorArea=\(metrics.colors) contourContract=\(metrics.valid)")
+                    SmokeDiagnostics.mark("legacy layout fixture scale=\(scale) measuredSilhouette=\(legacyExtent) extentAvailable=\(legacyExtent.width > 0 && legacyExtent.height > 0) colorArea=\(metrics.colors) contourContract=\(metrics.valid)")
                 }
             }
             legacyPanel?.close(); legacyPanel = nil
@@ -361,7 +361,13 @@ final class ContourRenderHarness: NSObject {
                         && abs(full.colors[side] - updated.colors[side]) < 3
                         && abs(full.colors[side] - recollapsed.colors[side]) < 3
                 }
-                passed = passed && stale.brightness < fresh.brightness * 0.9 && pending.brightness < fresh.brightness * 0.9
+                for side in 0...1 {
+                    let dimming = stale.brightness[side] < fresh.brightness[side] * 0.9
+                        && pending.brightness[side] < fresh.brightness[side] * 0.9
+                    let unchangedWouldFail = !(fresh.brightness[side] < fresh.brightness[side] * 0.9)
+                    passed = passed && dimming && unchangedWouldFail
+                    SmokeDiagnostics.mark("contour fixed-mask dimming scale=\(scale) rail=\(side) fresh=\(fresh.brightness[side]) stale=\(stale.brightness[side]) pending=\(pending.brightness[side]) valid=\(dimming) unchangedControlRejected=\(unchangedWouldFail)")
+                }
             }
             finish(passed)
         }
