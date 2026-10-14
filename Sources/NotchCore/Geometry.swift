@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// All input and output rectangles use AppKit global screen coordinates in points.
 public struct NotchGeometry: Equatable, Sendable {

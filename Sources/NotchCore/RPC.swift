@@ -16,7 +16,7 @@ public enum ReadOnlyRequest: String, CaseIterable, Sendable {
         case .account: object["params"] = ["refreshToken": false]
         case .rateLimits: break
         }
-        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         data.append(0x0A)
         return data
     }
