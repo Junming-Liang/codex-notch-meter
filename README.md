@@ -4,8 +4,8 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip">下载 macOS Universal ZIP</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.1">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip">下载 macOS Universal ZIP</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.2">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -23,7 +23,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v0.1.2 外观修复正在验证。** 用户已确认 v0.1.1 能读取额度，但反馈收起时显示黑色方块、进度线不可见。新候选改为透明底色和刘海外侧的细圆角轮廓；通过新增原生像素检查前不会发布。
+> **v0.1.2 外观修复预览已发布。** 收起时只保留刘海外侧约 3 pt 的透明底细轮廓；悬停后仍可展开完整详情卡片，移开后恢复。已通过原生 1× / 2× 离屏像素检查；真实 MacBook 外观仍待使用反馈。
 
 ## 目录
 
@@ -39,13 +39,13 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v0.1.1 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip)（701,775 字节）；可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip.sha256)
+1. 下载 [v0.1.2 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip)（816,024 字节）；可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip.sha256)
 2. 解压，将 **Codex Notch Meter.app** 放入“应用程序”
 3. 启动应用，查看菜单栏中的额度入口
 
 升级时请先退出旧版本，再替换 `.app`。
 
-Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测试、双架构编译与打包、Info.plist 和临时签名校验、三种原生窗口回归场景，以及官方签名桌面分发包的只读 helper 发现检查。每个发布归档附带 SHA-256 校验文件；具体测试源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
+Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测试、双架构编译与打包、Info.plist 和临时签名校验、三种原生窗口回归场景、1× / 2× 轮廓像素与实时更新检查，以及官方签名桌面分发包的只读 helper 发现检查。每个发布归档附带 SHA-256 校验文件；具体测试源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
@@ -53,7 +53,7 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测
 
 | 一眼可见 | 按需展开 | 安静运行 |
 | --- | --- | --- |
-| 3 pt 细进度线沿刘海边缘显示 | 剩余额度、重置日期与倒计时 | 不抢焦点，没有 Dock 图标 |
+| 2.5 pt 进度线沿刘海外侧细轮廓显示 | 剩余额度、重置日期与倒计时 | 不抢焦点，没有 Dock 图标 |
 | 自动适配系统报告的刘海位置 | 支持 Codex 返回的多个额度组 | 启动、唤醒及每 60 秒刷新 |
 | 无刘海时使用菜单栏 | 设置中选择额度组与 CLI 路径 | 错误退避、悬停防抖、手动刷新 |
 

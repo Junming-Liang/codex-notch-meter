@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip">Download macOS Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.1">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip">Download macOS Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.2">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,17 +12,17 @@ A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook n
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.2 visual repair is under validation.** The user confirmed quota reads work in v0.1.1, but reported a black collapsed rectangle with invisible progress. The new candidate uses transparent backing and a thin rounded contour outside the notch; it will not release before the new native pixel gates pass.
+**v0.1.2 visual repair preview is available.** Idle mode is a thin transparent contour about 3pt outside the notch. Hover still opens the full details card; leaving restores the contour. Native 1x/2x offscreen pixel checks passed; physical MacBook appearance still awaits user feedback.
 
 ## Download
 
-1. Download the [v0.1.1 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip) (701,775 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip.sha256)
+1. Download the [v0.1.2 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip) (816,024 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip.sha256)
 2. Extract **Codex Notch Meter.app** and move it to Applications
 3. Launch it and open the menu-bar item
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
-Universal packages contain Apple Silicon and Intel binaries. This release passed synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, three native island regression scenarios, and read-only discovery against the official signed desktop distribution. Each archive includes a SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. This release passed synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, three native island regression scenarios, 1x/2x contour pixel and live-update checks, and read-only discovery against the official signed desktop distribution. Each release provides a separate SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
