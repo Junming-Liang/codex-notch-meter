@@ -10,7 +10,7 @@ The meter does not open or parse credential files, access tokens, conversation h
 
 Automatic desktop discovery reads LaunchServices application registration and bounded `Info.plist` / `codex-package.json` metadata inside installed application bundles. It checks the OpenAI bundle identifier and Apple-anchored signing team for both the application and executable. Known helper paths must remain inside the application after symlink resolution. It does not launch the desktop GUI, scan private Codex data, or modify any app bundle.
 
-A single background resolver handles metadata/signature checks. Its caller has a six-second timeout and cancellation-aware wait; an abandoned read-only check can never launch Codex or update quota state. Explicit CLI paths and PATH/Homebrew remain supported. User-selected executables run with the user's permissions and must be trusted.
+A single background resolver handles metadata/signature checks. Its caller has a 30-second timeout and cancellation-aware wait; an abandoned read-only check can never launch Codex or update quota state. Explicit CLI paths and PATH/Homebrew remain supported. User-selected executables run with the user's permissions and must be trusted.
 
 ## What the CLI may do
 
