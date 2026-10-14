@@ -1,4 +1,9 @@
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import NotchCore
 
 final class RPCTests: XCTestCase {
@@ -85,4 +90,42 @@ final class RPCTests: XCTestCase {
         catch { XCTAssertTrue(error is CancellationError || error as? MeterError == .cancelled) }
         connection.close()
     }
+    func testShutdownBeforeStartAndRepeatedShutdown() async {
+        let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"))
+        await connection.shutdown()
+        await connection.shutdown()
+    }
+    func testConcurrentShutdownWaitsForSameOwnedChild() async throws {
+        let script = #"IFS= read -r line; printf '{"id":1,"result":{"pid":%s}}\n' "$$"; while IFS= read -r line; do :; done"#
+        let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], timeout: 2)
+        try await connection.start()
+        let data = try await connection.request(.initialize)
+        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let pid = try XCTUnwrap(response["pid"] as? Int32)
+        async let first: Void = connection.shutdown()
+        async let second: Void = connection.shutdown()
+        _ = await (first, second)
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+    }
+    func testShutdownEscalatesOnlyOwnedSIGTERMIgnoringChild() async throws {
+        let script = #"trap '' TERM; IFS= read -r line; printf '{"id":1,"result":{"pid":%s}}\n' "$$"; while :; do :; done"#
+        let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], timeout: 2)
+        try await connection.start()
+        let data = try await connection.request(.initialize)
+        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let pid = try XCTUnwrap(response["pid"] as? Int32)
+        await connection.shutdown()
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+    }
+    func testCancelledCallerStillAwaitsChildShutdown() async throws {
+        let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "while IFS= read -r line; do :; done"], timeout: 10)
+        try await connection.start()
+        let task = Task { await connection.shutdown() }
+        task.cancel()
+        await task.value
+        await connection.shutdown()
+    }
+
 }
