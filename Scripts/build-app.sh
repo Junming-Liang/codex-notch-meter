@@ -52,6 +52,10 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - --timestamp=none "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 archs="$(lipo -archs "$app/Contents/MacOS/CodexNotchMeter" | tr ' ' '-')"
+if [[ "${1:-}" == "--universal" ]]; then
+  lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/CodexNotchMeter"
+  archs="universal"
+fi
 archive="dist/CodexNotchMeter-${version}-${archs}.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 shasum -a 256 "$archive" > "${archive}.sha256"

@@ -17,7 +17,7 @@ for left in [true, false] {
     path.curve(to: NSPoint(x: left ? 385 : 639, y: 339), controlPoint1: NSPoint(x: x, y: 373), controlPoint2: NSPoint(x: left ? 315 : 709, y: 339))
     path.line(to: NSPoint(x: left ? 486 : 538, y: 339))
     path.lineWidth = 24; path.lineCapStyle = .round
-    (left ? NSColor(calibratedRed: 0.31, green: 0.91, blue: 0.72, alpha: 1) : NSColor(calibratedRed: 0.35, green: 0.67, blue: 1, alpha: 1)).setStroke()
+    NSColor(calibratedRed: 0.44, green: 0.84, blue: 0.69, alpha: 1).setStroke()
     path.stroke()
 }
 image.unlockFocus()
