@@ -13,10 +13,11 @@ This document distinguishes implemented checks from observed results. Update it 
 
 - Swift compilation and the full XCTest suite
 - Universal Apple Silicon + Intel `.app` packaging and ad-hoc signature verification
+- Native demo settings/card startup and orderly shutdown on a hosted macOS runner
 - Native UI behavior on a real notched MacBook
 - Live quota reads against a signed-in official Codex CLI
 
-No native build, UI run, screenshot, or live account check is implied by source-preparation checks. The manually dispatched macOS workflow can verify compilation, synthetic tests, universal packaging, and signatures without accessing a user's computer or account. A hosted runner cannot verify physical notch placement or real account behavior.
+No native build, UI run, screenshot, or live account check is implied by source-preparation checks. The manually dispatched macOS workflow can verify compilation, synthetic tests, universal packaging, signatures, and a bounded demo-only native window startup/exit check without accessing a user's computer or account. The demo smoke test starts no Codex process and uses a 25-second external watchdog. A hosted runner cannot verify physical notch placement, real hover/focus interactions, or real account behavior.
 
 ## Manual acceptance checklist
 
