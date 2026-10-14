@@ -53,10 +53,10 @@ codesign --force --sign - --timestamp=none "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 archs="$(lipo -archs "$app/Contents/MacOS/CodexNotchMeter" | tr ' ' '-')"
 if [[ "${1:-}" == "--universal" ]]; then
-  lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/CodexNotchMeter"
+  lipo "$app/Contents/MacOS/CodexNotchMeter" -verify_arch arm64 x86_64
   archs="universal"
 fi
 archive="dist/CodexNotchMeter-${version}-${archs}.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
-shasum -a 256 "$archive" > "${archive}.sha256"
+(cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
 echo "Built $archive (ad-hoc signed; not Developer ID signed or notarized)."
