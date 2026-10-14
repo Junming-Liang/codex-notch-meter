@@ -70,6 +70,9 @@ public final class RPCConnection: @unchecked Sendable {
     private var closed = false
     private var started = false
     private var receivedBytes = 0
+    private var shutdownFinished = false
+    private var shutdownMonitoring = false
+    private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
     private let executable: URL
     private let arguments: [String]
     private let timeout: TimeInterval
@@ -168,6 +171,29 @@ public final class RPCConnection: @unchecked Sendable {
         }
     }
     public func close(error: MeterError = .cancelled) { queue.async { self.closeLocked(error: error) } }
+    /// Returns only after Foundation confirms the owned child has exited.
+    /// Cancellation does not skip cleanup; callers may safely await this while cancelled.
+    public func shutdown() async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                closeLocked(error: .cancelled)
+                if shutdownFinished || !process.isRunning { continuation.resume(); return }
+                shutdownWaiters.append(continuation)
+                if !shutdownMonitoring { shutdownMonitoring = true; observeShutdownLocked() }
+            }
+        }
+    }
+    private func observeShutdownLocked() {
+        guard !shutdownFinished else { return }
+        if !process.isRunning { finishShutdownLocked(); return }
+        queue.asyncAfter(deadline: .now() + 0.05) { self.observeShutdownLocked() }
+    }
+    private func finishShutdownLocked() {
+        shutdownFinished = true
+        let waiters = shutdownWaiters
+        shutdownWaiters.removeAll()
+        for continuation in waiters { continuation.resume() }
+    }
     private func receive(_ bytes: Data) {
         guard !closed else { return }
         guard !bytes.isEmpty else { closeLocked(error: .disconnected); return }
@@ -201,16 +227,16 @@ public final class RPCConnection: @unchecked Sendable {
         for continuation in waiting { continuation.resume(throwing: error) }
         if process.isRunning {
             process.terminate()
-            let ownedProcess = process
-            queue.asyncAfter(deadline: .now() + 2) {
+            queue.asyncAfter(deadline: .now() + 2) { [self] in
                 // Foundation tracks this exact child. Never kill by name or enumerate peers.
-                if ownedProcess.isRunning {
+                if process.isRunning {
                     #if canImport(Darwin) || canImport(Glibc)
-                    _ = kill(ownedProcess.processIdentifier, SIGKILL)
+                    _ = kill(process.processIdentifier, SIGKILL)
                     #endif
                 }
+                if !process.isRunning { finishShutdownLocked() }
             }
-        }
+        } else { finishShutdownLocked() }
     }
     deinit {
         output.fileHandleForReading.readabilityHandler = nil

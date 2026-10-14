@@ -30,18 +30,24 @@ public enum CodexExecutable {
 public enum QuotaReader {
     public static func fetch(executable: URL) async throws -> QuotaSnapshot {
         let connection = RPCConnection(executable: executable)
-        defer { connection.close() }
-        try await connection.start()
-        _ = try await connection.request(.initialize)
-        try await connection.initialized()
-        let accountResponse = try await connection.request(.account)
-        let account = try QuotaParser.account(accountResponse)
-        switch account {
-        case .signedOut: throw MeterError.signedOut
-        case .unsupported: throw MeterError.unsupportedAccount
-        case .chatGPT: break
+        do {
+            try await connection.start()
+            _ = try await connection.request(.initialize)
+            try await connection.initialized()
+            let accountResponse = try await connection.request(.account)
+            let account = try QuotaParser.account(accountResponse)
+            switch account {
+            case .signedOut: throw MeterError.signedOut
+            case .unsupported: throw MeterError.unsupportedAccount
+            case .chatGPT: break
+            }
+            let response = try await connection.request(.rateLimits)
+            let snapshot = try QuotaParser.parse(response)
+            await connection.shutdown()
+            return snapshot
+        } catch {
+            await connection.shutdown()
+            throw error
         }
-        let response = try await connection.request(.rateLimits)
-        return try QuotaParser.parse(response)
     }
 }
