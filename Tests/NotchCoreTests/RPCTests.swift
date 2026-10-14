@@ -12,6 +12,9 @@ final class RPCTests: XCTestCase {
         let account = try XCTUnwrap(JSONSerialization.jsonObject(with: ReadOnlyRequest.account.encoded(id: 2)) as? [String: Any])
         let params = try XCTUnwrap(account["params"] as? [String: Any])
         XCTAssertEqual(params["refreshToken"] as? Bool, false)
+        // Deterministic wire text also keeps the synthetic shell transport fixture portable.
+        let wire = String(decoding: try ReadOnlyRequest.account.encoded(id: 2), as: UTF8.self)
+        XCTAssertTrue(wire.contains("\"method\":\"account/read\""))
     }
     func testFramerHandlesFragmentsAndSeveralLines() throws {
         var framer = LineFramer()
