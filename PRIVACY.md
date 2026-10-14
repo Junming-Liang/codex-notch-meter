@@ -2,9 +2,15 @@
 
 ## What the meter reads
 
-The meter requests the account type and quota windows from an installed official Codex CLI using the documented app-server interface. An account response may contain identity fields; the meter's parser discards those fields and never logs or persists the raw response. Quota snapshots are held in memory only.
+The meter requests the account type and quota windows from the installed official Codex desktop helper or CLI using the documented app-server interface. An account response may contain identity fields; the meter's parser discards those fields and never logs or persists the raw response. Quota snapshots are held in memory only.
 
 The meter does not open or parse credential files, access tokens, conversation history, session recordings, or private Codex databases. It does not use private HTTP endpoints or request any model generation, login, logout, token refresh, or configuration change.
+
+## Installed-app discovery
+
+Automatic desktop discovery reads LaunchServices application registration and bounded `Info.plist` / `codex-package.json` metadata inside installed application bundles. It checks the OpenAI bundle identifier and Apple-anchored signing team for both the application and executable. Known helper paths must remain inside the application after symlink resolution. It does not launch the desktop GUI, scan private Codex data, or modify any app bundle.
+
+A single background resolver handles metadata/signature checks. Its caller has a six-second timeout and cancellation-aware wait; an abandoned read-only check can never launch Codex or update quota state. Explicit CLI paths and PATH/Homebrew remain supported. User-selected executables run with the user's permissions and must be trusted.
 
 ## What the CLI may do
 
@@ -19,6 +25,8 @@ The app stores only the overlay preference, selected quota-group identifier, and
 ## Permissions and network
 
 No telemetry, analytics, remote reporting, embedded web login, automatic updates, launch-at-login registration, Accessibility access, Screen Recording access, or global keyboard hooks are implemented. The meter has no HTTP client. Its Codex subprocess may contact OpenAI to retrieve current quotas.
+
+The island reads only the current pointer position while its overlay is enabled, to apply hover delays and ignore mouse events outside the revealed content. It does not record pointer history, monitor keys, install an event tap, or request input-control permissions. Polling and animation timers stop on sleep, display removal, overlay disable, and Quit. Routing flags are tested on hosted macOS; real cross-application click-through still needs physical interaction validation.
 
 ## Subprocess boundary
 

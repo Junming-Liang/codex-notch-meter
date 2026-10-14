@@ -4,7 +4,7 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip">下载 v0.1.0 · Universal ZIP</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases">查看下载版本</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
@@ -23,7 +23,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v0.1.0 开发预览已发布。** [下载 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip)，解压即可获得 `.app`。已通过 32 项合成测试与真实原生窗口启动 / 正常退出检查；签名和实机验证限制见下文与[验证说明](docs/VALIDATION.md)。
+> **v0.1.1 修复候选正在验证。** 本次修复桌面应用发现、刘海顶边位置、连续展开动效和退出入口。v0.1.0 存在上述已报告问题；新版本通过完整 macOS 检查后才会在 [Releases](https://github.com/Junming-Liang/codex-notch-meter/releases) 提供下载。
 
 ## 目录
 
@@ -39,13 +39,11 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v0.1.0 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip)（576,520 字节），或查看[发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0)
+1. 在 [GitHub Releases](https://github.com/Junming-Liang/codex-notch-meter/releases) 选择已发布版本的 Universal ZIP；v0.1.1 候选尚未发布
 2. 解压，将 **Codex Notch Meter.app** 放入“应用程序”
 3. 启动应用，查看菜单栏中的额度入口
 
-Universal 产物同时包含 Apple Silicon 与 Intel 版本。v0.1.0 已在 [macOS CI](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) 中通过 32 项合成测试、双架构编译与打包、Info.plist 和临时签名校验，以及原生演示窗口启动 / 正常退出检查。
-
-提供 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip.sha256)；测试源码版本、归档摘要与尚未完成的实机检查记录在[验证说明](docs/VALIDATION.md)中。
+Universal 产物包含 Apple Silicon 与 Intel 版本。发布必须通过合成测试、双架构编译与打包、Info.plist 和临时签名校验，当前版本的原生窗口回归检查，以及官方签名桌面分发包的只读 helper 发现检查。每个发布归档附带 SHA-256 校验文件；具体测试源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
@@ -66,22 +64,22 @@ Universal 产物同时包含 Apple Silicon 与 Intel 版本。v0.1.0 已在 [mac
 
 ### 1. 准备官方 Codex CLI
 
-需要 macOS 13 或更新版本，以及已安装并使用 ChatGPT 账户登录的[官方 Codex CLI](https://learn.chatgpt.com/docs/cli)。账户必须能提供订阅额度窗口；API Key 计费不属于此类额度。
+需要 macOS 13 或更新版本，以及已安装并使用 ChatGPT 账户登录的官方 Codex 桌面应用，或[官方 Codex CLI](https://learn.chatgpt.com/docs/cli)。账户必须能提供订阅额度窗口；API Key 计费不属于此类额度。
 
-应用会检查运行环境中的 `PATH` 及常用 Homebrew 目录。仅安装 Codex 桌面应用，不一定会提供可自动发现的 CLI。
+应用优先通过 LaunchServices 和标准应用目录寻找官方桌面应用，不依赖应用文件名。发现过程校验应用标识、OpenAI 签名、包版本元数据和内置 helper；随后才检查 `PATH` 与 Homebrew。未知布局或无效签名会明确失败，不会猜测任意可执行文件。
 
 ### 2. 连接并查看额度
 
 - 启动后，点击菜单栏图标或悬停刘海进度线
 - 找不到 Codex 时，进入“设置 → Codex 连接 → 选择 Codex…”
-- 只选择已安装且信任的官方 `codex` 可执行文件；文件选择器支持浏览应用程序包，但不会猜测包内路径
+- 可直接选择已安装的官方 `.app`，也可选择信任的 `codex` CLI；应用包必须通过签名与已知布局校验
 - 请在 Codex 自己的界面或 CLI 中完成登录，然后回到本应用刷新
 
 子进程继承原有运行环境，包括 `CODEX_HOME`；本应用不会修改 Codex 配置。若你的环境变量只在终端中生效，请从相同终端启动应用的可执行文件。
 
 ### 3. 保持轻量
 
-右键菜单栏入口可以刷新、打开设置或退出。设置中可以隐藏刘海进度线，保留菜单栏。正常退出会等待本应用启动的账户读取子进程完成清理。
+展开岛和菜单栏详情底部均有明确的“退出”；右键菜单栏也可退出。设置获得焦点时支持 ⌘Q，不会截获其他应用的快捷键。设置中可以隐藏刘海进度线，保留菜单栏。正常退出会等待本应用启动的账户读取子进程完成清理。
 
 ## 读懂额度状态
 

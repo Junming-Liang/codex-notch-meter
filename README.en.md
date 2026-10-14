@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip">Download v0.1.0 · Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases">Available downloads</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,17 +12,15 @@ A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook n
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.0 developer preview is available.** [Download the Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip) and extract the `.app`. It passed 32 synthetic tests and actual native demo-window startup/orderly-exit checks. Signing and physical-device limitations are documented below and in [validation status](docs/VALIDATION.md).
+**v0.1.1 repair candidate is awaiting native validation.** It addresses installed-desktop discovery, top-edge placement, continuous expansion and discoverable Quit. v0.1.0 has reported defects in those areas; the next download will appear under Releases only after the full macOS gates pass.
 
 ## Download
 
-1. Download the [v0.1.0 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip) (576,520 bytes), or read the [release notes](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0)
+1. Choose a published Universal ZIP from [GitHub Releases](https://github.com/Junming-Liang/codex-notch-meter/releases); the v0.1.1 candidate is not released yet
 2. Extract **Codex Notch Meter.app** and move it to Applications
 3. Launch it and open the menu-bar item
 
-The Universal package contains Apple Silicon and Intel binaries. v0.1.0 passed 32 synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, and native demo startup/orderly-exit checks in [macOS CI](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482).
-
-A [SHA-256 checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.0/CodexNotchMeter-0.1.0-universal.zip.sha256) is provided. The tested source revision, archive digest and remaining physical-device checks are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. Release requires synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, and the current native-window regression gates. Each archive includes a SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
@@ -38,9 +36,9 @@ A [SHA-256 checksum file](https://github.com/Junming-Liang/codex-notch-meter/rel
 
 ## Connect Codex
 
-Requires macOS 13+ and the [official Codex CLI](https://learn.chatgpt.com/docs/cli), already signed in with a ChatGPT account that provides subscription quota windows. API-key billing is not represented as subscription allowance.
+Requires macOS 13+ and the official Codex desktop application or [official CLI](https://learn.chatgpt.com/docs/cli), already signed in with a ChatGPT account that provides subscription quota windows. API-key billing is not represented as subscription allowance.
 
-Discovery checks `PATH` and common Homebrew locations. If needed, open Settings and choose the installed official `codex` executable you trust. The chooser can browse application packages, but the meter does not guess bundled paths. A Codex desktop installation alone does not guarantee a discoverable CLI.
+Discovery first checks LaunchServices and standard application directories for the official desktop bundle, independent of its filename. It validates the bundle identifier, OpenAI signature, version metadata and known helper layout, then falls back to PATH/Homebrew. Settings can select the official `.app` directly or a trusted CLI. Unknown layouts and invalid signatures fail closed.
 
 The child inherits the runtime environment, including existing `CODEX_HOME`. The meter does not mutate Codex configuration. For terminal-only environment variables, launch the app executable from that terminal. Sign in through Codex itself, then refresh.
 
