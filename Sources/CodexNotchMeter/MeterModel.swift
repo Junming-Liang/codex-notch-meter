@@ -8,6 +8,7 @@ final class MeterModel: ObservableObject {
     @Published private(set) var snapshot: QuotaSnapshot?
     @Published private(set) var error: MeterError?
     @Published private(set) var refreshing = false
+    @Published var displayNotice: String?
     @Published private(set) var now = Date()
     @Published var overlayEnabled: Bool { didSet { defaults.set(overlayEnabled, forKey: "overlayEnabled") } }
     @Published var preferredBucket: String { didSet { defaults.set(preferredBucket, forKey: "preferredBucket") } }
@@ -34,16 +35,24 @@ final class MeterModel: ObservableObject {
                 QuotaWindow(id: "codex:primary", usedPercent: 28, durationMinutes: 300, resetsAt: Date().addingTimeInterval(8160)),
                 QuotaWindow(id: "codex:secondary", usedPercent: 46, durationMinutes: 10080, resetsAt: Date().addingTimeInterval(304200))
             ])], fetchedAt: Date())
+            if CommandLine.arguments.contains("--smoke-empty") { snapshot = nil; error = .codexMissing }
+            if CommandLine.arguments.contains("--smoke-many") {
+                snapshot = QuotaSnapshot(buckets: (0..<4).map { index in
+                    QuotaBucket(id: "synthetic-\(index)", name: "演示额度组 \(index + 1)", windows: [
+                        QuotaWindow(id: "\(index)-short", usedPercent: 28, durationMinutes: 300, resetsAt: Date().addingTimeInterval(8160)),
+                        QuotaWindow(id: "\(index)-long", usedPercent: 46, durationMinutes: 10080, resetsAt: Date().addingTimeInterval(304200))
+                    ])
+                }, fetchedAt: Date())
+            }
         }
     }
     var bucket: QuotaBucket? { snapshot?.bucket(preferredID: preferredBucket) }
     var stale: Bool { !demo && (snapshot?.isStale(at: now) ?? false) }
     var degraded: Bool { stale || error != nil }
     var status: String {
-        if demo { return "演示数据 · 未启动 Codex 进程" }
         if let error {
             switch error {
-            case .codexMissing, .invalidExecutable: return "未找到可用的 Codex CLI，请在设置中选择官方可执行文件。"
+            case .codexMissing, .invalidExecutable: return "未找到受支持的 Codex 应用或 CLI，请在设置中选择已安装的官方应用。"
             case .signedOut: return "请先在 Codex 中使用 ChatGPT 账户登录，再刷新额度。"
             case .unsupportedAccount: return "当前账户不提供订阅额度窗口，API Key 计费暂不支持。"
             case .noQuota: return "Codex 暂未提供额度窗口，缺失数据不会被当作满额。"
@@ -55,6 +64,7 @@ final class MeterModel: ObservableObject {
             case .serverError(let code): return "Codex 额度读取失败（\(code)），请检查网络或登录状态。"
             }
         }
+        if demo { return "演示数据 · 未启动 Codex 进程" }
         if refreshing && snapshot == nil { return "正在读取 Codex 账户…" }
         if stale { return "数据已过期，正在等待新的额度读取。" }
         if snapshot == nil { return "尚未读取额度" }
@@ -96,7 +106,8 @@ final class MeterModel: ObservableObject {
                 if self?.currentTaskID == id { self?.task = nil; self?.currentTaskID = nil }
             }
             do {
-                let executable = try CodexExecutable.resolve(override: path)
+                let executable = try await CodexExecutable.resolveInstalled(override: path)
+                try Task.checkCancellation()
                 let result = try await QuotaReader.fetch(executable: executable)
                 guard !Task.isCancelled, let self else { return }
                 snapshot = result; error = nil; policy.succeeded()

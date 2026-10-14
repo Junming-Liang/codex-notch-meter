@@ -97,20 +97,30 @@ private struct StatePill: View {
     }
 }
 
+private struct QuitFramePreference: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
 @MainActor
 struct DetailView: View {
     @ObservedObject var model: MeterModel
+    var embedded = false
+    var embeddedHeight: CGFloat? = nil
+    var quitFrameChanged: (CGRect) -> Void = { _ in }
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     let hovered: (Bool) -> Void
     let refresh: () -> Void
     let settings: () -> Void
+    let quit: () -> Void
     private var borderOpacity: Double { contrast == .increased ? 0.28 : 0.10 }
     private var quotaListHeight: CGFloat {
         guard let buckets = model.snapshot?.buckets else { return 0 }
         let rows = buckets.reduce(0) { $0 + max(1, $1.windows.count) }
         let labels = buckets.count > 1 ? buckets.count * 24 : 0
-        return min(365, CGFloat(rows * 145 + labels))
+        let available = embedded ? max(80, (embeddedHeight ?? 472) - 220) : 365
+        return min(available, CGFloat(rows * 145 + labels))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -141,6 +151,7 @@ struct DetailView: View {
                     }
                 }.frame(height: quotaListHeight)
             } else { emptyQuota(model.refreshing ? "正在读取 Codex 账户…" : "暂时没有额度数据") }
+            if embedded { Spacer(minLength: 0) }
             Rectangle().fill(Color.white.opacity(borderOpacity)).frame(height: 1)
             HStack {
                 HStack(spacing: 4) {
@@ -152,17 +163,24 @@ struct DetailView: View {
                 Button(action: settings) { Label("设置", systemImage: "slider.horizontal.3").font(.system(size: 11)).frame(minHeight: 28) }
                     .buttonStyle(.plain).foregroundStyle(MeterStyle.secondary)
                     .help("打开设置")
+                Button(action: quit) { Label("退出", systemImage: "power").font(.system(size: 11, weight: .semibold)).frame(minHeight: 28) }
+                    .buttonStyle(.plain).foregroundStyle(MeterStyle.text)
+                    .help("退出 Codex Notch Meter").accessibilityLabel("退出 Codex Notch Meter")
+                    .background(GeometryReader { proxy in Color.clear.preference(key: QuitFramePreference.self, value: proxy.frame(in: .named("quotaDetails"))) })
             }
         }
         .padding(16)
-        .frame(width: MeterStyle.cardWidth)
+        .frame(width: MeterStyle.cardWidth, height: embeddedHeight, alignment: .top)
+        .coordinateSpace(name: "quotaDetails")
+        .onPreferenceChange(QuitFramePreference.self, perform: quitFrameChanged)
         .foregroundStyle(MeterStyle.text)
         .background {
-            if reduceTransparency { MeterStyle.background }
+            if embedded { Color.black }
+            else if reduceTransparency { MeterStyle.background }
             else { MeterStyle.background.opacity(0.96).background(.ultraThinMaterial) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(borderOpacity), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(embedded ? 0 : borderOpacity), lineWidth: 1))
         .environment(\.colorScheme, .dark)
         .onHover(perform: hovered)
     }
@@ -251,6 +269,7 @@ struct QuotaRow: View {
 struct SettingsView: View {
     @ObservedObject var model: MeterModel
     let chooseExecutable: () -> Void
+    let quit: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
@@ -277,7 +296,7 @@ struct SettingsView: View {
             } label: { Label("显示", systemImage: "display").font(.system(size: 12, weight: .semibold)) }
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(model.executablePath.isEmpty ? "自动查找 · PATH / Homebrew" : model.executablePath)
+                    Text(model.executablePath.isEmpty ? "自动查找 · Codex 桌面应用 / CLI" : model.executablePath)
                         .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(10)
                         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
@@ -301,13 +320,16 @@ struct SettingsView: View {
                             .font(.system(size: 7)).foregroundStyle(model.error == nil ? MeterStyle.mint : MeterStyle.amber).padding(.top, 4)
                         Text(model.status).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
+                    if let notice = model.displayNotice {
+                        Text(notice).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             } label: { Label("隐私与状态", systemImage: "lock.shield").font(.system(size: 12, weight: .semibold)) }
             HStack {
-                Text("v0.1.0 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v0.1.1 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
-                Button("退出") { NSApplication.shared.terminate(nil) }
+                Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")
             }.controlSize(.small)
         }.padding(24).frame(width: 480)
     }
