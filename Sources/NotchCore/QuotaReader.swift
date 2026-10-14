@@ -24,13 +24,16 @@ private final class ResolutionGate: @unchecked Sendable {
 }
 
 public enum CodexExecutable {
+    // Cold deep verification of the official desktop artifact measured 13.03s.
+    // Leave bounded headroom for slower storage; caller cancellation stays immediate.
+    static let discoveryTimeout: TimeInterval = 30
     private static let resolutionQueue = DispatchQueue(label: "org.codexnotchmeter.executable-discovery", qos: .utility)
     /// A canceled/slow read-only resolver cannot keep Quit waiting or later start Codex.
     public static func resolveInstalled(override: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> URL {
         try await boundedResolution { try resolve(override: override, environment: environment) }
     }
-    static func boundedResolution(timeout: TimeInterval = 6,
+    static func boundedResolution(timeout: TimeInterval = CodexExecutable.discoveryTimeout,
         operation: @escaping @Sendable () throws -> URL) async throws -> URL {
         let gate = ResolutionGate()
         return try await withTaskCancellationHandler {

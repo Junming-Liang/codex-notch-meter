@@ -52,17 +52,25 @@ public struct IslandGeometry: Equatable, Sendable {
     public let notch: CGRect
     public let collapsedSize: CGSize
     public let expandedSize: CGSize
-    public init(notch: NotchGeometry, screen: CGRect) {
+    public let backingScale: CGFloat
+    public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1) {
         self.screen = screen
         self.notch = notch.notch
+        self.backingScale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
         collapsedSize = CGSize(width: notch.notch.width + 12, height: notch.notch.height + 7)
         expandedSize = CGSize(width: min(380, screen.width - 24), height: min(notch.notch.height + 480, screen.height - 32))
     }
     public func frame(progress: Double) -> CGRect {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
-        let width = collapsedSize.width + (expandedSize.width - collapsedSize.width) * p
-        let height = collapsedSize.height + (expandedSize.height - collapsedSize.height) * p
-        return CGRect(x: notch.midX - width / 2, y: screen.maxY - height, width: width, height: height)
+        let rawWidth = collapsedSize.width + (expandedSize.width - collapsedSize.width) * p
+        let rawHeight = collapsedSize.height + (expandedSize.height - collapsedSize.height) * p
+        // AppKit integralizes fractional NSWindow frames. Normalize BEFORE sizing
+        // and hit-testing, so legitimate rounding cannot trip the placement guard.
+        // Even pixel widths preserve centering while both horizontal edges align.
+        let width = ceil(rawWidth * backingScale / 2) * 2 / backingScale
+        let height = ceil(rawHeight * backingScale) / backingScale
+        let x = ((notch.midX - width / 2) * backingScale).rounded() / backingScale
+        return CGRect(x: x, y: screen.maxY - height, width: width, height: height)
     }
     public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
         // Never use visibleFrame: the island is attached to the physical top edge.
