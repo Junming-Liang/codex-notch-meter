@@ -1,62 +1,72 @@
 # Validation status
 
-This document distinguishes implemented checks from observed results. Update it only after running checks against the exact published source revision.
+Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.1 repair candidate
+## v0.1.1 observed macOS results
 
-Native results for this candidate are pending. It adds desktop-helper discovery, a continuous top-attached island, prominent Quit actions, and a stronger regression gate. The source contains 52 synthetic XCTest methods, one separately opt-in official-artifact test, and three native smoke scenarios (normal, missing-helper/error, multiple quota groups). The smoke targets the actual island controller, checks ordered panel/content bounds and in-memory native drawing, exercises collapse/reentry and Reduced Motion, verifies Quit's measured bounds and mouse-routing flags, and checks dispatch/menu/local-command Quit paths. These checks do not establish cross-application mouse delivery or physical-notch correctness.
+[Workflow run #7](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38552814815) passed on 2026-10-14 using standard hosted `macos-15` runners.
 
-A separate, release-blocking macOS job downloads the official DMG with a 1 GiB / 120-second limit, mounts it read-only, and tests the production signature/helper resolver with its normal 30-second deadline (the elapsed-time assertion allows 0.5 seconds of CI scheduling tolerance). It requires both a successful test exit and its discovery marker, never opens Codex or executes its helper, and detaches the volume afterward. The native build and geometry job runs independently, so download problems do not hide UI regression results. Run #6 measured successful cold deep application verification at 13.03 seconds and native-helper verification at 0.58 seconds, exceeding the original six-second budget. The candidate now allows 30 seconds while retaining immediate cancellation. Its complete positive artifact gate still needs a new exact-head pass.
+- Tested source: [`ac6d6cbf771fb82c6e1d918ccaa00be0d895b505`](https://github.com/Junming-Liang/codex-notch-meter/commit/ac6d6cbf771fb82c6e1d918ccaa00be0d895b505)
+- Source tree: `b38eda11e56c9c84c9cda530df17780b0b33b80e`
+- Swift XCTest: 53 methods discovered, 52 synthetic tests passed, one opt-in official-artifact test skipped in the synthetic job, zero failures
+- The official-artifact test passed separately in its dedicated job
+- Apple Silicon (`arm64`) and Intel (`x86_64`) native builds, universal architecture check, Info.plist validation and ad-hoc signature verification: passed
+- Universal ZIP packaging and the release checksum gate: passed
 
-The v0.1.0 observations below are historical and do not validate this new candidate. v0.1.0 has reported desktop-discovery, placement and hover/quit-usability defects.
+### Actual native island checks
 
-## Source-preparation checks
+All three demo-only scenarios passed: normal quota data, missing-helper/error state, and multiple quota groups. Each starts the real AppKit/SwiftUI application and requires its readiness marker plus orderly process exit within 25 seconds.
 
-- Public-source safety preflight: passed in a Linux development environment
-- Packaging script shell syntax: passed
-- No third-party Swift package dependencies
-- Test fixtures contain only synthetic data
+The checks observe the ordered panel's actual frame, content origin/bounds and hosting safe area at multiple animation sizes. They also verify native bitmap coverage in memory, non-key behavior, hover-state collapse/reentry, motion settling, controller teardown, Reduce Motion, measured visible/interactable Quit bounds, mouse-routing flags, and dispatch/menu/local-command Quit routes. No Codex process or account session is started.
 
-## Observed macOS CI results
+The hosted display reported matching normalized requested/actual frames and the correct top edge. This establishes the tested hosted-window behavior; it does not establish a physical MacBook notch, actual cross-application mouse delivery, or a native screenshot.
 
-[Workflow run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed on 2026-10-14 using the standard hosted `macos-15` runner. These observations apply to the tested source below, not automatically to later changes on `main`.
+### Real official desktop artifact
 
-- Source: [`4d251aa8828b4f1ade876281acb5e21af98cdcdf`](https://github.com/Junming-Liang/codex-notch-meter/commit/4d251aa8828b4f1ade876281acb5e21af98cdcdf)
-- Source tree: `501481cd1e5145c3931dd45192c27a56d04cb678`
-- Swift compilation and 32 synthetic XCTest tests: passed, zero failures (Geometry: 5, Quota: 11, RPC: 16)
-- Universal Apple Silicon (`arm64`) + Intel (`x86_64`) build and architecture check: passed
-- `.app` Info.plist validation and ad-hoc signature verification: passed
-- Universal ZIP packaging and release checksum gate: passed
-- Real native demo Settings and quota-card startup/readiness plus orderly exit: passed in 3 seconds, within the 25-second watchdog
+The dedicated job downloaded the official desktop DMG with a 1 GiB / 120-second cap, mounted it read-only, called the production resolver, and detached the volume cleanly.
 
-The smoke test uses only synthetic quota data and starts no Codex process. It exercises the actual native windows, not an HTML mockup, but does not capture screenshots or verify physical interactions.
+- Official desktop version: `26.1007.71326`, bundle `com.openai.codex`
+- Application deep/strict signature and native-helper signature: passed
+- Resolved helper: `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
+- Complete production resolution: approximately 10.01 seconds, inside the 30-second production deadline
+- The test allows only 0.5 seconds of scheduling tolerance beyond that same production deadline
+- No downloaded executable, desktop GUI, app-server or account session was launched
+
+The earlier [diagnostic run #6](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38550905744) measured 13.03 seconds for cold application verification and 0.58 seconds for the native helper. That evidence motivated the bounded 30-second budget. Caller cancellation remains immediate; signature and containment checks were not relaxed. See [desktop discovery](DISCOVERY.md).
 
 ## Published developer preview
 
-[`v0.1.0`](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) is a prerelease bound to the tested source commit above.
+[`v0.1.1`](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.1) is a prerelease bound to the tested source above.
 
-- Archive: `CodexNotchMeter-0.1.0-universal.zip`
-- Archive size: 576,520 bytes
-- GitHub-advertised archive SHA-256: `a0dd27ea32f2b82cf615eb1c29a1451348b64554c96af758ce3af2c2bb785d4a`
-- A matching `.zip.sha256` file accompanies the archive
-- Signing: ad-hoc only; no Apple Developer ID signature or notarization
+- Archive: `CodexNotchMeter-0.1.1-universal.zip`
+- Archive size: 701,775 bytes
+- GitHub-advertised SHA-256: `fbe18bacb000f9377920740436079a6a6590242d90f641fdd5c407c73d19c4f8`
+- A matching `.zip.sha256` file accompanies the archive; the release workflow verified the archive against it
+- The published download was not independently downloaded and rehashed during this audit
+- Signing: ad-hoc only; no Apple Developer ID or notarization
 
-macOS may block downloaded builds. Successful hosted smoke execution does not guarantee that an unnotarized download opens on every Mac. The project provides no security-bypass commands.
+macOS may block downloaded builds. Hosted execution does not guarantee that an unnotarized download opens on every Mac. The project provides no security-bypass commands.
 
 ## Still awaiting separate verification
 
-- Actual notch placement, hover/focus behavior, full-screen Spaces and multi-display interactions on a real MacBook
-- Live quota reads against a signed-in official Codex CLI
-- Actual native UI screenshots and visual acceptance
+- Physical MacBook notch placement, Retina behavior, real hover/focus/click delivery, full-screen Spaces and multi-display interactions
+- Live quota reads against the user's signed-in official Codex installation
+- Actual native screenshots and visual acceptance
 
-A hosted runner cannot establish these results. Source review and synthetic tests are not substitutes for physical-device or live-account verification.
+The 1x/2x unit geometry cases are mathematical checks, not physical Retina evidence. Official artifact discovery proves that the inspected helper can be found and verified, not that a real account provides quota data.
+
+## Historical v0.1.0
+
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.1.
+
+The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 
 ## Manual acceptance checklist
 
 Use `--demo` first, then an account only with its owner's permission.
 
 - Notched MacBook: left/right rails track the actual notch, including scaled resolutions
-- Hover each rail, move into the detail panel, move away, repeat quickly
+- Hover the collapsed rails, follow the continuous expansion, leave/reenter during collapse, and repeat quickly
 - Hover does not activate the app or steal keyboard focus
 - Rails occupy narrow side/bottom regions and do not interfere with ordinary menu-bar clicks
 - Details show remaining percentages, returned window durations, local reset date, and countdown
@@ -74,6 +84,8 @@ Use `--demo` first, then an account only with its owner's permission.
 
 Quota parser: multi-bucket precedence, legacy fallback, missing values, invalid values, arbitrary durations, signed-out/unsupported account types, stale threshold, and reset-pending behavior.
 
-Geometry: global coordinates, negative and vertical origins, invalid regions, missing notch, and pixel alignment.
+Geometry and motion: global coordinates, negative and vertical origins, invalid regions, missing notch, 1x/2x frame alignment, hover dwell/exit grace, interrupted spring motion and Reduce Motion.
+
+Discovery: signed bundle identity and helper containment, renamed/registered applications, package metadata, CLI symlinks, unsigned rejection, bounded cancellation, and a separate read-only real official artifact test.
 
 Transport: request allowlist, fragmented/multiple lines, oversized lines, error redaction, server-request classification, executable validation, synthetic subprocess handshake, timeout, early exit, cancellation, repeated/concurrent shutdown, and a SIGTERM-ignoring owned child.
