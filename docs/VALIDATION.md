@@ -33,6 +33,8 @@ Use `--demo` first, then an account only with its owner's permission.
 - Spaces, fullscreen apps, sleep/wake, screen disconnect/reconnect
 - Missing CLI, signed-out account, API-key account, missing quota, unsupported method
 - Offline timeout, stale values, recovery, rapid refresh clicks, executable changes
+- Quit during startup/read, after sleep/path changes, and repeated Quit; all outstanding owned reads must drain
+- Reduce Transparency, Increase Contrast, VoiceOver labels, and dark hover surface on light wallpaper
 - No unexpected permissions, login prompts, model tasks, or unowned-process termination
 
 ## Automated test coverage
@@ -41,4 +43,4 @@ Quota parser: multi-bucket precedence, legacy fallback, missing values, invalid 
 
 Geometry: global coordinates, negative and vertical origins, invalid regions, missing notch, and pixel alignment.
 
-Transport: request allowlist, fragmented/multiple lines, oversized lines, error redaction, server-request classification, executable validation, synthetic subprocess handshake, timeout, early exit, and cancellation.
+Transport: request allowlist, fragmented/multiple lines, oversized lines, error redaction, server-request classification, executable validation, synthetic subprocess handshake, timeout, early exit, cancellation, repeated/concurrent shutdown, and a SIGTERM-ignoring owned child.
