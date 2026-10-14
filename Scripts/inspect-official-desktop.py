@@ -53,6 +53,7 @@ try:
     print(f"Official bundle: {info['CFBundleIdentifier']}; version {info.get('CFBundleShortVersionString', 'missing')}", flush=True)
     environment = os.environ.copy()
     environment["CODEX_TEST_OFFICIAL_APP"] = str(app)
+    environment["CODEX_PUBLIC_ARTIFACT_TRACE"] = "1"
     # The test calls the production bounded signature/helper resolver, not app-server.
     result = subprocess.run([
         "swift", "test", "--filter", "OfficialDesktopArtifactTests.testOfficialMountedDesktopResolvesWithinProductionDeadline",
