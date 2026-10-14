@@ -7,6 +7,11 @@ import Security
 /// Reads only installed application metadata and known bundled executable locations.
 /// It never opens Codex account, configuration, credential, or conversation files.
 public enum DesktopCodexDiscovery {
+    private static func artifactTrace(_ stage: String) {
+        guard ProcessInfo.processInfo.environment["CODEX_PUBLIC_ARTIFACT_TRACE"] == "1" else { return }
+        // Opt-in CI inspection only: fixed stage/status/duration, never installed paths or account data.
+        FileHandle.standardError.write(Data("OFFICIAL_DISCOVERY_STAGE: \(stage)\n".utf8))
+    }
     static let bundleIdentifier = "com.openai.codex"
     static let teamIdentifier = "2DC432GLL2"
     static let helperPaths = [
@@ -47,6 +52,8 @@ public enum DesktopCodexDiscovery {
     }
     /// Signature verdict injection is only used by structural synthetic unit fixtures.
     static func helper(in application: URL, verify: (URL, Bool) -> Bool) -> URL? {
+        artifactTrace("bundle_resolution_started")
+        defer { artifactTrace("bundle_resolution_finished") }
         let root = application.resolvingSymlinksInPath()
         guard root.pathExtension == "app",
               let data = boundedData(root.appendingPathComponent("Contents/Info.plist"), in: root, maximum: 65_536),
@@ -55,6 +62,7 @@ public enum DesktopCodexDiscovery {
               let version = info["CFBundleShortVersionString"] as? String, !version.isEmpty,
               verify(root, true) else { return nil }
         let packageValid = validPackage(in: root)
+        artifactTrace("package_metadata_valid=\(packageValid)")
         for path in helperPaths {
             if path.contains("/codex-cli/") && !packageValid { continue }
             let candidate = root.appendingPathComponent(path)
@@ -76,6 +84,9 @@ public enum DesktopCodexDiscovery {
     }
     #if os(macOS)
     static func verifySignature(_ url: URL, application: Bool) -> Bool {
+        let started = ProcessInfo.processInfo.systemUptime
+        artifactTrace(application ? "app_signature_started" : "helper_signature_started")
+        defer { artifactTrace("signature_finished application=\(application) elapsed=\(ProcessInfo.processInfo.systemUptime - started)") }
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(url as CFURL, SecCSFlags(), &code) == errSecSuccess, let code else { return false }
         var requirement: SecRequirement?
@@ -84,7 +95,9 @@ public enum DesktopCodexDiscovery {
         guard SecRequirementCreateWithString(text as CFString, SecCSFlags(), &requirement) == errSecSuccess,
               let requirement else { return false }
         let flags = kSecCSStrictValidate | kSecCSCheckAllArchitectures | (application ? kSecCSCheckNestedCode : 0)
-        return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: flags), requirement) == errSecSuccess
+        let status = SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: flags), requirement)
+        artifactTrace("signature_result application=\(application) status=\(status)")
+        return status == errSecSuccess
     }
     static func installed() -> URL? {
         let registered = LSCopyApplicationURLsForBundleIdentifier(bundleIdentifier as CFString, nil)?.takeRetainedValue() as? [URL] ?? []
