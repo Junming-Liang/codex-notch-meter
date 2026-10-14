@@ -85,10 +85,33 @@ final class IslandTests: XCTestCase {
                 }
                 if scale == 1 && origin == .zero {
                     // Run #6 exposed AppKit rounding these formerly fractional frames.
-                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 347, y: 421, width: 330, height: 347))
-                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 336, y: 350, width: 352, height: 418))
+                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 348, y: 422, width: 328, height: 346))
+                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 337, y: 351, width: 350, height: 417))
                 }
             }
         }
     }
+    func testCollapsedContourEnvelopeWithOddWidthsAndFractionalOrigins() {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            for width in [CGFloat(219), CGFloat(220.5), CGFloat(221)] {
+                for x in [CGFloat(401.25), CGFloat(-913.5)] {
+                    let screen = CGRect(x: x - 400, y: -200, width: 1024, height: 968)
+                    let camera = CGRect(x: x, y: screen.maxY - 32.25, width: width, height: 32.25)
+                    let notch = NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero)
+                    let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale)
+                    let frame = geometry.frame(progress: 0)
+                    XCTAssertEqual(frame.size, geometry.collapsedSize)
+                    XCTAssertEqual(frame.maxY, screen.maxY, accuracy: 0.0001)
+                    for extensionSize in [camera.minX - frame.minX, frame.maxX - camera.maxX, camera.minY - frame.minY] {
+                        XCTAssertGreaterThanOrEqual(extensionSize, 3)
+                        XCTAssertLessThanOrEqual(extensionSize, 4)
+                    }
+                    for edge in [frame.minX, frame.maxX, frame.minY] {
+                        XCTAssertEqual(edge * scale, (edge * scale).rounded(), accuracy: 0.0001)
+                    }
+                }
+            }
+        }
+    }
+
 }
