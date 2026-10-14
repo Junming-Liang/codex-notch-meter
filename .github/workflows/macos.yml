@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.1 developer-preview ZIP after all checks pass
+        description: Publish v0.1.2 developer-preview ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -27,6 +27,7 @@ jobs:
       - name: Synthetic unit and subprocess tests
         run: swift test
       - name: Build and verify universal app
+        id: package
         run: bash Scripts/build-app.sh --universal
       - name: Native demo startup and orderly-exit smoke test
         run: |
@@ -64,13 +65,24 @@ jobs:
               if "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only" not in stdout:
                   raise SystemExit("Native app smoke test did not confirm startup and orderly exit")
           PYSMOKE
+      - name: Native transparent contour and live-update pixel gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-contour.py
+      - name: Retain synthetic native rendering evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexNotchMeter-native-contour-evidence
+          path: dist/contour-rendering/*.png
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload verified developer preview
         uses: actions/upload-artifact@v4
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.1-universal.zip
-            dist/CodexNotchMeter-0.1.1-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.2-universal.zip
+            dist/CodexNotchMeter-0.1.2-universal.zip.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -97,21 +109,21 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sed 's#dist/##' CodexNotchMeter-0.1.1-universal.zip.sha256 | sha256sum --check -
+          sed 's#dist/##' CodexNotchMeter-0.1.2-universal.zip.sha256 | sha256sum --check -
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.1" --jq '.[] | select(.ref == "refs/tags/v0.1.1") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.1") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.2" --jq '.[] | select(.ref == "refs/tags/v0.1.2") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.2") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.1 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.2 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.1
-          修复预览：自动发现签名校验后的官方桌面 helper；刘海顶边连续展开；明确的退出入口与正常清理。
+          ## Codex Notch Meter v0.1.2
+          外观修复预览：默认仅显示刘海轮廓外的细额度线，透明底色与圆角；保留悬停展开和明显退出入口。
 
           下载 Universal ZIP，解压后可获得同时包含 Apple Silicon / Intel 二进制的 .app。
           需要 macOS 13+ 和已登录 ChatGPT 账户的官方 Codex 桌面应用或 CLI。未知桌面打包布局会安全报错。
@@ -120,16 +132,17 @@ jobs:
           macOS 可能阻止下载产物启动。项目不提供关闭 Gatekeeper 或绕过安全检查的指令。
           Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only native geometry, drawing, motion, Quit-layout and shutdown checks passed in this workflow.
           Read-only inspection of the current official signed desktop DMG resolved its bundled helper within the production deadline; no downloaded Codex executable or account session was started.
-          Physical notch/hover behavior and live-account integration still require separate verification.
+          Native 1x/2x offscreen contour alpha/color/arc/live-update gates passed. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
+          The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.1" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.1 \
+            -f ref="refs/tags/v0.1.2" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.2 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.1 · macOS Developer Preview" \
+            --title "v0.1.2 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.1-universal.zip \
-            dist/CodexNotchMeter-0.1.1-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.2-universal.zip \
+            dist/CodexNotchMeter-0.1.2-universal.zip.sha256
