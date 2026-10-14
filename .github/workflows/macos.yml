@@ -32,17 +32,35 @@ jobs:
         run: |
           python3 - <<'PYSMOKE'
           import subprocess
+          process = subprocess.Popen(
+              ["dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter", "--smoke-test"],
+              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+          )
           try:
-              result = subprocess.run(
-                  ["dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter", "--smoke-test"],
-                  check=True, capture_output=True, text=True, timeout=25,
-              )
-          except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-              print(error.stdout or "")
-              print(error.stderr or "")
-              raise
-          print(result.stdout)
-          if "SMOKE_OK: native settings and quota card opened; demo-only; orderly shutdown completed" not in result.stdout:
+              stdout, stderr = process.communicate(timeout=25)
+          except subprocess.TimeoutExpired:
+              # Sample only our still-owned synthetic app; do not alter the success deadline.
+              print("Native smoke exceeded the 25-second deadline", flush=True)
+              try:
+                  sample = subprocess.run(
+                      ["/usr/bin/sample", str(process.pid), "1", "1"],
+                      capture_output=True, text=True, timeout=5,
+                  )
+                  print(sample.stdout[:30000])
+                  print(sample.stderr[:2000])
+              except (OSError, subprocess.TimeoutExpired) as error:
+                  print("Owned-process stack sample unavailable:", type(error).__name__)
+              finally:
+                  process.kill()
+                  stdout, stderr = process.communicate(timeout=5)
+              print(stdout)
+              print(stderr)
+              raise SystemExit("Native app smoke test timed out")
+          print(stdout)
+          print(stderr)
+          if process.returncode != 0:
+              raise SystemExit("Native app smoke test exited unsuccessfully")
+          if "SMOKE_OK: native settings and quota card opened; demo-only; orderly shutdown completed" not in stdout:
               raise SystemExit("Native app smoke test did not confirm startup and orderly exit")
           PYSMOKE
       - name: Upload verified developer preview
