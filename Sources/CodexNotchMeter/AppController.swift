@@ -218,13 +218,19 @@ final class AppController: NSObject, NSApplicationDelegate {
             island.smokePointer(inside: true, now: elapsed)
             smokeGeometryValid = smokeGeometryValid && island.smokeTargetExpanded; smokePhase = 4
         case 4 where elapsed >= 2.1:
-            smokeGeometryValid = smokeGeometryValid && island.smokeExpanded && island.verifySmokeClickRouting()
+            let expanded = island.smokeExpanded
+            let routing = island.verifySmokeClickRouting()
+            SmokeDiagnostics.mark("motion checkpoint elapsed=\(elapsed) expanded=\(expanded) routing=\(routing) prior=\(smokeGeometryValid)")
+            smokeGeometryValid = [smokeGeometryValid, expanded, routing].allSatisfy { $0 }
             retiredSmokeFrame = island.panel.frame; island.stop(); retiredSmokeIsland = island
             let replacement = makeIsland(geometry: island.geometry, polling: false, reducedMotion: true)
             smokeIsland = replacement; replacement.beginSmokeExpansion(); smokePhase = 5
         case 5 where elapsed >= 2.4:
             timer.invalidate(); smokeTimer = nil
-            smokeReady = model.demo && smokeGeometryValid && island.smokeExpanded && island.verifySmokeClickRouting()
+            let expanded = island.smokeExpanded
+            let routing = island.verifySmokeClickRouting()
+            SmokeDiagnostics.mark("reduced-motion checkpoint elapsed=\(elapsed) expanded=\(expanded) routing=\(routing) retiredStopped=\(retiredSmokeIsland?.smokeStopped == true)")
+            smokeReady = model.demo && smokeGeometryValid && expanded && routing
                 && retiredSmokeIsland?.smokeStopped == true && retiredSmokeIsland?.panel.frame == retiredSmokeFrame
                 && settingsWindow?.isVisible == true && statusItem.button != nil
             SmokeDiagnostics.mark(smokeReady ? "native hover reversal, teardown, reduced motion and Quit checks passed" : "native island checks failed")

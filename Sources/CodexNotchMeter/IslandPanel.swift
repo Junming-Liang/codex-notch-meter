@@ -177,13 +177,16 @@ final class IslandPanelController: NSObject {
             apply(progress: progress)
             panel.contentView?.displayIfNeeded()
             let expected = geometry.frame(progress: progress)
-            valid = valid && abs(panel.frame.maxY - geometry.screen.maxY) < 0.5
-                && abs(panel.frame.minX - expected.minX) < 0.5
-                && abs(panel.frame.height - expected.height) < 0.5
-                && panel.contentView?.frame.origin == CGPoint.zero
-                && panel.contentView?.bounds.origin == CGPoint.zero
-                && NSApp.keyWindow === keyWindow && !panel.canBecomeKey
-                && panel.ignoresMouseEvents
+            let top = abs(panel.frame.maxY - geometry.screen.maxY) < 0.5
+            let left = abs(panel.frame.minX - expected.minX) < 0.5
+            let height = abs(panel.frame.height - expected.height) < 0.5
+            let contentOrigin = panel.contentView?.frame.origin == CGPoint.zero
+            let boundsOrigin = panel.contentView?.bounds.origin == CGPoint.zero
+            let sameKey = NSApp.keyWindow === keyWindow
+            let nonKey = !panel.canBecomeKey
+            let ignoresMouse = panel.ignoresMouseEvents
+            SmokeDiagnostics.mark("geometry p=\(progress) expected=\(expected) actual=\(panel.frame) content=\(String(describing: panel.contentView?.frame)) bounds=\(String(describing: panel.contentView?.bounds)) safeInsets=\(String(describing: panel.contentView?.safeAreaInsets)) top=\(top) left=\(left) height=\(height) contentOrigin=\(contentOrigin) boundsOrigin=\(boundsOrigin) sameKey=\(sameKey) nonKey=\(nonKey) ignoresMouse=\(ignoresMouse) placement=\(placementIsValid)")
+            valid = [top, left, height, contentOrigin, boundsOrigin, sameKey, nonKey, ignoresMouse, valid].allSatisfy { $0 }
         }
         SmokeDiagnostics.mark(valid ? "native island top-frame and nonactivation checks passed" : "native island geometry failed")
         return valid && placementIsValid
@@ -218,6 +221,7 @@ final class IslandPanelController: NSObject {
         let first = bitmap.colorAt(x: x, y: 0)?.alphaComponent ?? 0
         let last = bitmap.colorAt(x: x, y: bitmap.pixelsHigh - 1)?.alphaComponent ?? 0
         let valid = first > 0.5 && last > 0.5
+        SmokeDiagnostics.mark("bitmap edge alpha first=\(first) last=\(last) width=\(bitmap.pixelsWide) height=\(bitmap.pixelsHigh)")
         SmokeDiagnostics.mark(valid ? "native island bitmap edge coverage passed" : "native island bitmap edge coverage failed")
         return valid
     }
@@ -234,8 +238,10 @@ final class IslandPanelController: NSObject {
             CGPoint(x: originX + quitFrame.midX, y: contentTop - quitFrame.midY)
         ]
         let clickable = clickPoints.allSatisfy(geometry.interactiveContains)
+        let rendered = verifyRenderedTopEdge()
+        SmokeDiagnostics.mark("expanded progress=\(motion.progress) settled=\(motion.isSettled) visible=\(panel.isVisible) quit=\(quitFrame) contentHeight=\(contentHeight) quitVisible=\(quitVisible) clickable=\(clickable)")
         SmokeDiagnostics.mark(quitVisible && clickable ? "visible Quit layout and routing bounds passed" : "visible Quit layout or routing bounds failed")
-        return motion.progress == 1 && motion.isSettled && panel.isVisible && quitVisible && clickable && verifyRenderedTopEdge()
+        return motion.progress == 1 && motion.isSettled && panel.isVisible && quitVisible && clickable && rendered
     }
 }
 #endif
