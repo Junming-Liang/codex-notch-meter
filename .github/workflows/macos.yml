@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.0 developer-preview ZIP after all checks pass
+        description: Publish v0.1.1 developer-preview ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -32,49 +32,59 @@ jobs:
         run: |
           python3 - <<'PYSMOKE'
           import subprocess
-          process = subprocess.Popen(
-              ["dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter", "--smoke-test"],
-              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-          )
-          try:
-              stdout, stderr = process.communicate(timeout=25)
-          except subprocess.TimeoutExpired:
-              # Sample only our still-owned synthetic app; do not alter the success deadline.
-              print("Native smoke exceeded the 25-second deadline", flush=True)
+          for scenario in ([], ["--smoke-empty"], ["--smoke-many"]):
+              process = subprocess.Popen(
+                  ["dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter", "--smoke-test", *scenario],
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+              )
               try:
-                  sample = subprocess.run(
-                      ["/usr/bin/sample", str(process.pid), "1", "1"],
-                      capture_output=True, text=True, timeout=5,
-                  )
-                  print(sample.stdout[:30000])
-                  print(sample.stderr[:2000])
-              except (OSError, subprocess.TimeoutExpired) as error:
-                  print("Owned-process stack sample unavailable:", type(error).__name__)
-              finally:
-                  process.kill()
-                  stdout, stderr = process.communicate(timeout=5)
+                  stdout, stderr = process.communicate(timeout=25)
+              except subprocess.TimeoutExpired:
+                  # Sample only our still-owned synthetic app; do not alter the success deadline.
+                  print("Native smoke exceeded the 25-second deadline", flush=True)
+                  try:
+                      sample = subprocess.run(
+                          ["/usr/bin/sample", str(process.pid), "1", "1"],
+                          capture_output=True, text=True, timeout=5,
+                      )
+                      print(sample.stdout[:30000])
+                      print(sample.stderr[:2000])
+                  except (OSError, subprocess.TimeoutExpired) as error:
+                      print("Owned-process stack sample unavailable:", type(error).__name__)
+                  finally:
+                      process.kill()
+                      stdout, stderr = process.communicate(timeout=5)
+                  print(stdout)
+                  print(stderr)
+                  raise SystemExit("Native app smoke test timed out")
               print(stdout)
               print(stderr)
-              raise SystemExit("Native app smoke test timed out")
-          print(stdout)
-          print(stderr)
-          if process.returncode != 0:
-              raise SystemExit("Native app smoke test exited unsuccessfully")
-          if "SMOKE_OK: native settings and quota card opened; demo-only; orderly shutdown completed" not in stdout:
-              raise SystemExit("Native app smoke test did not confirm startup and orderly exit")
+              if process.returncode != 0:
+                  raise SystemExit("Native app smoke test exited unsuccessfully")
+              if "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only" not in stdout:
+                  raise SystemExit("Native app smoke test did not confirm startup and orderly exit")
           PYSMOKE
       - name: Upload verified developer preview
         uses: actions/upload-artifact@v4
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.0-universal.zip
-            dist/CodexNotchMeter-0.1.0-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.1-universal.zip
+            dist/CodexNotchMeter-0.1.1-universal.zip.sha256
           if-no-files-found: error
           retention-days: 7
+  official-desktop:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read-only signed official desktop helper discovery
+        run: python3 Scripts/inspect-official-desktop.py
   release:
     if: ${{ inputs.publish_release }}
-    needs: build
+    needs: [build, official-desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -87,38 +97,39 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sed 's#dist/##' CodexNotchMeter-0.1.0-universal.zip.sha256 | sha256sum --check -
+          sed 's#dist/##' CodexNotchMeter-0.1.1-universal.zip.sha256 | sha256sum --check -
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.0" --jq '.[] | select(.ref == "refs/tags/v0.1.0") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.0") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.1" --jq '.[] | select(.ref == "refs/tags/v0.1.1") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.1") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.0 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.1 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.0
-          原生 macOS 额度工具：刘海进度线、悬浮额度卡片、菜单栏入口和只读 Codex 账户连接。
+          ## Codex Notch Meter v0.1.1
+          修复预览：自动发现签名校验后的官方桌面 helper；刘海顶边连续展开；明确的退出入口与正常清理。
 
           下载 Universal ZIP，解压后可获得同时包含 Apple Silicon / Intel 二进制的 .app。
-          需要 macOS 13+ 和已登录 ChatGPT 账户的官方 Codex CLI。
+          需要 macOS 13+ 和已登录 ChatGPT 账户的官方 Codex 桌面应用或 CLI。未知桌面打包布局会安全报错。
 
           **开发预览 / Developer preview:** 仅使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。
           macOS 可能阻止下载产物启动。项目不提供关闭 Gatekeeper 或绕过安全检查的指令。
-          Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only GUI startup/exit passed in this workflow.
+          Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only native geometry, drawing, motion, Quit-layout and shutdown checks passed in this workflow.
+          Read-only inspection of the current official signed desktop DMG resolved its bundled helper within the production deadline; no downloaded Codex executable or account session was started.
           Physical notch/hover behavior and live-account integration still require separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.0" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.0 \
+            -f ref="refs/tags/v0.1.1" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.1 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.0 · macOS Developer Preview" \
+            --title "v0.1.1 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.0-universal.zip \
-            dist/CodexNotchMeter-0.1.0-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.1-universal.zip \
+            dist/CodexNotchMeter-0.1.1-universal.zip.sha256
