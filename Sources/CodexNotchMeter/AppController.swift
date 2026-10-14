@@ -7,12 +7,13 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test"))
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test")
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test"))
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
     private var smokeIsland: IslandPanelController?
+    private var contourHarness: ContourRenderHarness?
     private var retiredSmokeIsland: IslandPanelController?
     private var retiredSmokeFrame: CGRect = .zero
     private var smokePhase = 0
@@ -69,7 +70,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.rebuildIslands() }
         })
         model.start(); rebuildIslands(); updateStatus()
-        if smokeMode { runSmokeTest() }
+        if smokeMode {
+            if CommandLine.arguments.contains("--contour-test") { runContourTest() }
+            else { runSmokeTest() }
+        }
         SmokeDiagnostics.mark("didFinishLaunching returned")
     }
     private func configureMainMenu() {
@@ -93,6 +97,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
+        contourHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -202,6 +207,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
             selector: #selector(advanceSmokeTest(_:)), userInfo: nil, repeats: true)
+    }
+    private func runContourTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        let frame = screen.frame, inset: CGFloat = 32, width: CGFloat = 220
+        guard let notch = NotchGeometry.calculate(screen: frame, topInset: inset,
+            auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - inset, width: (frame.width - width) / 2, height: inset),
+            auxiliaryRight: CGRect(x: frame.midX + width / 2, y: frame.maxY - inset, width: (frame.width - width) / 2, height: inset)) else { requestQuit(); return }
+        let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor), polling: false, reducedMotion: true)
+        smokeIsland = island
+        contourHarness = ContourRenderHarness(model: model, island: island) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        contourHarness?.start()
     }
     @objc private func advanceSmokeTest(_ timer: Timer) {
         guard let island = smokeIsland else { requestQuit(); return }

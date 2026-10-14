@@ -3,7 +3,7 @@ import AppKit
 
 enum SmokeDiagnostics {
     static func mark(_ stage: String) {
-        guard CommandLine.arguments.contains("--smoke-test") else { return }
+        guard CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") else { return }
         // Smoke-only stage labels and synthetic window measurements; never account data or paths.
         FileHandle.standardError.write(Data("SMOKE_STAGE: \(stage)\n".utf8))
     }

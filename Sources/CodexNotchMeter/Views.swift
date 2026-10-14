@@ -9,6 +9,7 @@ private enum MeterStyle {
     static let background = Color(red: 0.067, green: 0.075, blue: 0.094)
     static let raised = Color(red: 0.106, green: 0.118, blue: 0.145)
     static let mint = Color(red: 0.44, green: 0.84, blue: 0.69)
+    static let sky = Color(red: 0.48, green: 0.72, blue: 0.96)
     static let amber = Color(red: 0.95, green: 0.75, blue: 0.41)
     static let coral = Color(red: 0.94, green: 0.50, blue: 0.53)
     static let unknown = Color(red: 0.55, green: 0.58, blue: 0.64)
@@ -41,14 +42,15 @@ private func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
 struct NotchRail: Shape {
     let left: Bool
     func path(in rect: CGRect) -> Path {
-        let edge: CGFloat = left ? 3 : rect.width - 3
-        let end: CGFloat = left ? rect.width : 0
+        let edge: CGFloat = left ? 2 : rect.width - 2
+        let end: CGFloat = left ? rect.width - 2 : 2
         let direction: CGFloat = left ? 1 : -1
         var path = Path()
         path.move(to: CGPoint(x: edge, y: 0))
-        path.addLine(to: CGPoint(x: edge, y: rect.height - 10))
-        path.addQuadCurve(to: CGPoint(x: edge + direction * 7, y: rect.height - 3), control: CGPoint(x: edge, y: rect.height - 3))
-        path.addLine(to: CGPoint(x: end, y: rect.height - 3))
+        path.addLine(to: CGPoint(x: edge, y: rect.height - 12))
+        // Approximate the hardware's rounded lower corners; NSScreen exposes bounds, not a curve.
+        path.addQuadCurve(to: CGPoint(x: edge + direction * 10, y: rect.height - 2), control: CGPoint(x: edge, y: rect.height - 2))
+        path.addLine(to: CGPoint(x: end, y: rect.height - 2))
         return path
     }
 }
@@ -67,14 +69,22 @@ struct RailView: View {
         let remaining = window?.remainingPercent
         let pending = window?.resetPending(at: model.now) ?? false
         let dim = model.degraded || pending
+        let color = (remaining ?? 0) > 25 ? (left ? MeterStyle.mint : MeterStyle.sky) : quotaColor(remaining)
         ZStack {
-            NotchRail(left: left).stroke(Color.black.opacity(0.9), style: StrokeStyle(lineWidth: 6, lineCap: .round))
-            NotchRail(left: left).stroke(Color.white.opacity(0.18), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            NotchRail(left: left).stroke(Color.black.opacity(0.8), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+            NotchRail(left: left).stroke(Color.white.opacity(remaining == nil ? 0.12 : 0.42), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
             if let remaining {
                 NotchRail(left: left).trim(from: 0, to: remaining / 100)
-                    .stroke(quotaColor(remaining).opacity(dim ? 0.42 : 1), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(color.opacity(dim ? 0.55 : 1), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                if remaining == 0 {
+                    // A zero endpoint marker is not a positive progress segment.
+                    GeometryReader { proxy in
+                        Circle().fill(MeterStyle.coral).frame(width: 1.5, height: 1.5)
+                            .position(x: left ? 2 : proxy.size.width - 2, y: 1.5)
+                    }
+                }
             } else {
-                NotchRail(left: left).stroke(MeterStyle.unknown.opacity(0.75), style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [3, 5]))
+                NotchRail(left: left).stroke(MeterStyle.unknown.opacity(0.9), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [3, 5]))
             }
         }
         .contentShape(Rectangle())
@@ -326,7 +336,7 @@ struct SettingsView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             } label: { Label("隐私与状态", systemImage: "lock.shield").font(.system(size: 12, weight: .semibold)) }
             HStack {
-                Text("v0.1.1 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v0.1.2 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")

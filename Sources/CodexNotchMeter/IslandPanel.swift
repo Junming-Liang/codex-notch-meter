@@ -10,6 +10,7 @@ final class TopEdgePanel: NSPanel {
 }
 
 final class IslandHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
@@ -18,11 +19,11 @@ private final class IslandPresentation: ObservableObject {
     @Published var progress: Double = 0
 }
 
-private struct IslandSilhouette: Shape {
+struct IslandSilhouette: Shape {
     let progress: Double
     func path(in rect: CGRect) -> Path {
         let shoulder = CGFloat(progress) * 12
-        let radius = min(8 + CGFloat(progress) * 16, rect.height / 2)
+        let radius = min(12 + CGFloat(progress) * 12, rect.height / 2)
         var path = Path()
         path.move(to: CGPoint(x: 0, y: 0))
         path.addQuadCurve(to: CGPoint(x: shoulder, y: shoulder), control: CGPoint(x: shoulder, y: 0))
@@ -46,26 +47,36 @@ private struct IslandRootView: View {
     let settings: () -> Void
     let quit: () -> Void
     let quitFrameChanged: (CGRect) -> Void
+    let viewportChanged: (CGSize) -> Void
     var body: some View {
         let p = presentation.progress
-        ZStack(alignment: .top) {
-            IslandSilhouette(progress: p).fill(.black)
-            HStack(spacing: 0) {
-                RailView(model: model, left: true, hovered: { _ in })
-                RailView(model: model, left: false, hovered: { _ in })
+        GeometryReader { viewport in
+            Color.clear
+                .overlay { IslandSilhouette(progress: p).fill(.black.opacity(min(1, p * 3))) }
+                .overlay(alignment: .top) {
+                    HStack(spacing: 0) {
+                        RailView(model: model, left: true, hovered: { _ in })
+                        RailView(model: model, left: false, hovered: { _ in })
+                    }
+                    .frame(width: geometry.collapsedSize.width, height: geometry.collapsedSize.height)
+                    .opacity(max(0, 1 - p * 4))
+                    .accessibilityHidden(p > 0.1)
+                }
+                .overlay(alignment: .top) {
+                    // Opacity-zero fixed-height content MUST NOT size the collapsed root.
+                    if p > 0 {
+                        DetailView(model: model, embedded: true, embeddedHeight: geometry.expandedSize.height - geometry.notch.height - 8, quitFrameChanged: quitFrameChanged, hovered: { _ in }, refresh: refresh, settings: settings, quit: quit)
+                            .padding(.top, geometry.notch.height + 8)
+                            .opacity(min(1, max(0, (p - 0.35) / 0.5)))
+                            .allowsHitTesting(p == 1)
+                            .accessibilityHidden(p < 1)
+                    }
+                }
+                .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
+                .clipShape(IslandSilhouette(progress: p))
+                .onAppear { viewportChanged(viewport.size) }
+                .onChange(of: viewport.size) { viewportChanged($0) }
             }
-            .frame(width: geometry.collapsedSize.width, height: geometry.collapsedSize.height)
-            .opacity(max(0, 1 - p * 4))
-            .accessibilityHidden(p > 0.1)
-            DetailView(model: model, embedded: true, embeddedHeight: geometry.expandedSize.height - geometry.notch.height - 8, quitFrameChanged: quitFrameChanged, hovered: { _ in }, refresh: refresh, settings: settings, quit: quit)
-                .padding(.top, geometry.notch.height + 8)
-                .opacity(min(1, max(0, (p - 0.35) / 0.5)))
-                .allowsHitTesting(p == 1)
-                .accessibilityHidden(p < 1)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .clipShape(IslandSilhouette(progress: p))
-        .clipped()
         .ignoresSafeArea(.all)
         // Native panel frame and this shape share one spring; no implicit size animation.
         .transaction { $0.animation = nil }
@@ -87,6 +98,7 @@ final class IslandPanelController: NSObject {
     private(set) var placementIsValid = true
     private var stopped = false
     private var quitFrame: CGRect = .zero
+    private(set) var renderedViewport: CGSize = .zero
     private let hovered: () -> Void
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
@@ -102,7 +114,11 @@ final class IslandPanelController: NSObject {
         panel.hidesOnDeactivate = false; panel.isFloatingPanel = true
         panel.animationBehavior = .none; panel.ignoresMouseEvents = true
         let hosting = IslandHostingView(rootView: IslandRootView(model: model, presentation: presentation,
-            geometry: geometry, refresh: refresh, settings: settings, quit: quit, quitFrameChanged: { [weak self] in self?.quitFrame = $0 }))
+            geometry: geometry, refresh: refresh, settings: settings, quit: quit,
+            quitFrameChanged: { [weak self] in self?.quitFrame = $0 },
+            viewportChanged: { [weak self] in self?.renderedViewport = $0 }))
+        hosting.wantsLayer = true
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.sizingOptions = []
         if #available(macOS 14.0, *) { hosting.safeAreaRegions = [] }
         hosting.autoresizingMask = [.width, .height]
@@ -125,6 +141,10 @@ final class IslandPanelController: NSObject {
             placementIsValid = false
             panel.orderOut(nil)
         }
+    }
+    func setContourTestProgress(_ progress: Double) {
+        guard CommandLine.arguments.contains("--contour-test") else { return }
+        apply(progress: progress)
     }
     @objc private func pollPointer(_ timer: Timer) {
         guard !stopped, placementIsValid else { return }

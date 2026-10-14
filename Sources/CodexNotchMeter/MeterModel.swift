@@ -47,7 +47,7 @@ final class MeterModel: ObservableObject {
         }
     }
     var bucket: QuotaBucket? { snapshot?.bucket(preferredID: preferredBucket) }
-    var stale: Bool { !demo && (snapshot?.isStale(at: now) ?? false) }
+    var stale: Bool { (!demo || CommandLine.arguments.contains("--contour-test")) && (snapshot?.isStale(at: now) ?? false) }
     var degraded: Bool { stale || error != nil }
     var status: String {
         if let error {
@@ -145,6 +145,16 @@ final class MeterModel: ObservableObject {
         task?.cancel(); task = nil; refreshing = false
         executablePath = path; snapshot = nil; error = nil; nextAttempt = .distantPast
         refresh()
+    }
+    /// Synthetic rendering fixtures update the SAME live published model; never enable account I/O.
+    func setContourFixture(left: Double?, right: Double?, stale: Bool = false, pending: Bool = false) {
+        guard demo, CommandLine.arguments.contains("--contour-test") else { return }
+        now = Date(); error = nil
+        snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [left, right].enumerated().map { index, remaining in
+            QuotaWindow(id: "render-\(index)", usedPercent: remaining.map { 100 - $0 },
+                durationMinutes: index == 0 ? 300 : 10080,
+                resetsAt: now.addingTimeInterval(pending ? -10 : 3600))
+        })], fetchedAt: now.addingTimeInterval(stale ? -3600 : 0))
     }
 }
 #endif
