@@ -37,3 +37,7 @@ Responses are bounded to 1 MiB per line and 4 MiB per connection. Unexpected ser
 ## Reporting problems
 
 Do not attach credentials, raw account responses, chat history, or private configuration to public issues. Report your macOS version, CPU architecture, Codex CLI version, sanitized error code, and steps to reproduce. Quota values and screenshots may reveal usage patterns; review them before sharing.
+
+## Synthetic rendering evidence
+
+The optional CI contour harness renders only this app's own demo views into 1x/2x offscreen bitmaps. Its workflow artifacts contain synthetic quota data and explicitly labeled synthetic cutout composites, never screenshots of the desktop, other applications, or the user's account. Normal app use does not export these images or request Screen Recording access.

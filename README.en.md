@@ -12,7 +12,7 @@ A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook n
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.1 repair preview is available.** It adds signed desktop-app discovery, a continuous top-attached island and discoverable Quit. Native window regression checks and discovery against the real official desktop distribution passed. Physical MacBook interactions and live-account quota reads still require separate verification.
+**v0.1.2 visual repair is under validation.** The user confirmed quota reads work in v0.1.1, but reported a black collapsed rectangle with invisible progress. The new candidate uses transparent backing and a thin rounded contour outside the notch; it will not release before the new native pixel gates pass.
 
 ## Download
 
