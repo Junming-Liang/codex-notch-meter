@@ -22,7 +22,7 @@ No telemetry, analytics, remote reporting, embedded web login, automatic updates
 
 ## Subprocess boundary
 
-The production code sends only `initialize`, `initialized`, `account/read` with `refreshToken: false`, and `account/rateLimits/read`. It terminates its own child on completion, timeout, cancellation, sleep, and app shutdown. A bounded fallback force-terminates only that same owned Process if it ignores normal termination. It never enumerates or kills other Codex processes.
+The production code sends only `initialize`, `initialized`, `account/read` with `refreshToken: false`, and `account/rateLimits/read`. It cleans up its own child after completion, timeout, cancellation, and sleep. During orderly app shutdown, it waits for all outstanding reads, including canceled reads, to confirm their owned children have exited. Force quit, crashes and power loss are outside this guarantee. A bounded fallback force-terminates only that same owned Process if it ignores normal termination. It never enumerates or kills other Codex processes.
 
 Responses are bounded to 1 MiB per line and 4 MiB per connection. Unexpected server requests close the read-only connection. A selected custom executable runs with your user permissions; choose only the official CLI you installed and trust.
 
