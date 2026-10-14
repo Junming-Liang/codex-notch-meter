@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases">Available downloads</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip">Download macOS Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.1">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,15 +12,17 @@ A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook n
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.1 repair candidate is awaiting native validation.** It addresses installed-desktop discovery, top-edge placement, continuous expansion and discoverable Quit. v0.1.0 has reported defects in those areas; the next download will appear under Releases only after the full macOS gates pass.
+**v0.1.1 repair preview is available.** It adds signed desktop-app discovery, a continuous top-attached island and discoverable Quit. Native window regression checks and discovery against the real official desktop distribution passed. Physical MacBook interactions and live-account quota reads still require separate verification.
 
 ## Download
 
-1. Choose a published Universal ZIP from [GitHub Releases](https://github.com/Junming-Liang/codex-notch-meter/releases); the v0.1.1 candidate is not released yet
+1. Download the [v0.1.1 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip) (701,775 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.1/CodexNotchMeter-0.1.1-universal.zip.sha256)
 2. Extract **Codex Notch Meter.app** and move it to Applications
 3. Launch it and open the menu-bar item
 
-Universal packages contain Apple Silicon and Intel binaries. Release requires synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, and the current native-window regression gates. Each archive includes a SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
+For an upgrade, quit the previous version before replacing the `.app`.
+
+Universal packages contain Apple Silicon and Intel binaries. This release passed synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, three native island regression scenarios, and read-only discovery against the official signed desktop distribution. Each archive includes a SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
@@ -29,6 +31,8 @@ Universal packages contain Apple Silicon and Intel binaries. Release requires sy
 - Remaining quota shown as `100 − usedPercent`
 - Window labels derived from actual returned duration, with multiple quota groups
 - Real `NSScreen` notch geometry, global coordinates, display changes and a menu-bar fallback
+- Continuous top-attached expansion with hover dwell, exit grace, reversible motion and Reduce Motion support
+- Visible Quit in the expanded island, menu bar and Settings; local `⌘Q` when the app is active
 - Restrained graphite cards, system typography, mint signals, accessible state text and reduced-transparency support
 - Launch/wake/manual refresh, 60-second polling, hover debounce and error backoff
 - Explicit unknown, last-known, stale and reset-pending states; reset time alone never refills the bar
@@ -38,7 +42,7 @@ Universal packages contain Apple Silicon and Intel binaries. Release requires sy
 
 Requires macOS 13+ and the official Codex desktop application or [official CLI](https://learn.chatgpt.com/docs/cli), already signed in with a ChatGPT account that provides subscription quota windows. API-key billing is not represented as subscription allowance.
 
-Discovery first checks LaunchServices and standard application directories for the official desktop bundle, independent of its filename. It validates the bundle identifier, OpenAI signature, version metadata and known helper layout, then falls back to PATH/Homebrew. Settings can select the official `.app` directly or a trusted CLI. Unknown layouts and invalid signatures fail closed.
+Discovery first checks LaunchServices and standard application directories for the official desktop bundle, independent of its filename. It validates the bundle identifier, OpenAI signature, version metadata and known helper layout, then falls back to PATH/Homebrew. Settings can select the official `.app` directly or a trusted CLI. Unknown layouts and invalid signatures fail closed. Cold full-signature verification can take time and has a 30-second overall limit; UI and Quit remain responsive. See [desktop discovery](docs/DISCOVERY.md) for the inspected official version and helper path.
 
 The child inherits the runtime environment, including existing `CODEX_HOME`. The meter does not mutate Codex configuration. For terminal-only environment variables, launch the app executable from that terminal. Sign in through Codex itself, then refresh.
 
