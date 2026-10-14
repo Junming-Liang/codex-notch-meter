@@ -11,7 +11,17 @@ final class OfficialDesktopArtifactTests: XCTestCase {
         }
         let application = URL(fileURLWithPath: path, isDirectory: true)
         let started = ProcessInfo.processInfo.systemUptime
-        let helper = try await CodexExecutable.resolveInstalled(override: path, environment: ["PATH": ""])
+        let helper: URL
+        do {
+            helper = try await CodexExecutable.resolveInstalled(override: path, environment: ["PATH": ""])
+        } catch {
+            // Keep the original production failure. Let this SAME read-only worker
+            // emit its stage timings under a finite diagnostic window; never retry
+            // validation against a warmed cache and never start a Codex process.
+            print("OFFICIAL_DIAGNOSTIC: production resolver failed; observing its existing worker for at most 20 seconds")
+            try await Task.sleep(nanoseconds: 20_000_000_000)
+            throw error
+        }
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         // The production deadline is 6s; allow 0.5s for CI continuation scheduling.
         XCTAssertLessThanOrEqual(elapsed, 6.5)
