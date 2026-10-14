@@ -17,6 +17,9 @@ final class MeterModel: ObservableObject {
     private var nextAttempt = Date.distantPast
     private var lastAttempt: Date?
     private var task: Task<Void, Never>?
+    private var currentTaskID: UUID?
+    private var outstandingTasks: [UUID: Task<Void, Never>] = [:]
+    private var shuttingDown = false
     private var timer: Timer?
     private var sleeping = false
     let demo: Bool
@@ -37,19 +40,32 @@ final class MeterModel: ObservableObject {
     var stale: Bool { !demo && (snapshot?.isStale(at: now) ?? false) }
     var degraded: Bool { stale || error != nil }
     var status: String {
-        if demo { return "Demo data · no Codex process is running" }
-        if let error { return error.localizedDescription }
-        if refreshing && snapshot == nil { return "Reading Codex account…" }
-        if stale { return "Last reading is stale. Waiting for a fresh quota check." }
-        if snapshot == nil { return "No quota reading yet" }
-        return "Read-only Codex account check"
+        if demo { return "演示数据 · 未启动 Codex 进程" }
+        if let error {
+            switch error {
+            case .codexMissing, .invalidExecutable: return "未找到可用的 Codex CLI，请在设置中选择官方可执行文件。"
+            case .signedOut: return "请先在 Codex 中使用 ChatGPT 账户登录，再刷新额度。"
+            case .unsupportedAccount: return "当前账户不提供订阅额度窗口，API Key 计费暂不支持。"
+            case .noQuota: return "Codex 暂未提供额度窗口，缺失数据不会被当作满额。"
+            case .malformedResponse, .incompatibleVersion: return "Codex 接口暂不兼容，请检查官方 CLI 版本。"
+            case .timedOut, .disconnected: return "读取未完成，请检查连接后重试。已有数字是上次读取结果。"
+            case .protocolLimit: return "响应超过安全限制，已关闭本次连接。"
+            case .launchFailed: return "无法启动 Codex CLI，请检查设置中的可执行文件。"
+            case .cancelled: return "本次刷新已取消。"
+            case .serverError(let code): return "Codex 额度读取失败（\(code)），请检查网络或登录状态。"
+            }
+        }
+        if refreshing && snapshot == nil { return "正在读取 Codex 账户…" }
+        if stale { return "数据已过期，正在等待新的额度读取。" }
+        if snapshot == nil { return "尚未读取额度" }
+        return "只读同步 · 每 60 秒刷新"
     }
     var compactLabel: String {
         let values = (bucket?.windows ?? []).prefix(2).map { window in
             window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "—"
         }
         let content = values.isEmpty ? "—" : values.joined(separator: " · ")
-        return (demo ? "DEMO " : degraded ? "◷ " : "") + content
+        return (demo ? "演示 " : degraded ? "◷ " : "") + content
     }
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -68,11 +84,17 @@ final class MeterModel: ObservableObject {
         if error == nil || Date() >= nextAttempt { refresh() }
     }
     func refresh() {
-        guard !demo, !refreshing, !sleeping else { return }
+        guard !demo, !refreshing, !sleeping, !shuttingDown else { return }
         refreshing = true
         lastAttempt = Date()
         let path = executablePath
-        task = Task { [weak self] in
+        let id = UUID()
+        currentTaskID = id
+        let newTask = Task { [weak self] in
+            defer {
+                self?.outstandingTasks[id] = nil
+                if self?.currentTaskID == id { self?.task = nil; self?.currentTaskID = nil }
+            }
             do {
                 let executable = try CodexExecutable.resolve(override: path)
                 let result = try await QuotaReader.fetch(executable: executable)
@@ -87,14 +109,27 @@ final class MeterModel: ObservableObject {
                 policy.failed()
             }
             guard let self else { return }
-            refreshing = false; now = Date(); nextAttempt = now.addingTimeInterval(policy.delay); task = nil
+            refreshing = false; now = Date(); nextAttempt = now.addingTimeInterval(policy.delay)
         }
+        task = newTask
+        outstandingTasks[id] = newTask
     }
     func sleep() {
         sleeping = true; task?.cancel(); task = nil; refreshing = false
     }
     func wake() { sleeping = false; refresh() }
-    func stop() { timer?.invalidate(); timer = nil; task?.cancel(); task = nil }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        for pending in outstandingTasks.values { pending.cancel() }
+    }
+    func shutdown() async {
+        shuttingDown = true
+        stop()
+        // Includes reads retired by sleep or executable changes, not only the newest task.
+        let pending = Array(outstandingTasks.values)
+        for task in pending { await task.value }
+        task = nil; currentTaskID = nil
+    }
     func setExecutable(_ path: String) {
         task?.cancel(); task = nil; refreshing = false
         executablePath = path; snapshot = nil; error = nil; nextAttempt = .distantPast

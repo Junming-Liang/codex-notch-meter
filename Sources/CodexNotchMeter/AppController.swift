@@ -24,6 +24,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var hideWork: DispatchWorkItem?
     private var activeGeometry: NotchGeometry?
     private var activeScreenFrame: CGRect?
+    private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -33,12 +34,18 @@ final class AppController: NSObject, NSApplicationDelegate {
             button.imagePosition = .imageLeading
             button.target = self; button.action = #selector(statusClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "Codex remaining allowance · click for details, right-click for menu"
+            button.toolTip = "Codex 剩余额度 · 点击查看，右键打开菜单"
         }
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: makeDetailView())
         model.$snapshot.combineLatest(model.$error, model.$preferredBucket).sink { [weak self] _, _, _ in
-            DispatchQueue.main.async { self?.updateStatus() }
+            DispatchQueue.main.async {
+                self?.updateStatus()
+                if self?.detailPanel?.isVisible == true { self?.showDetail() }
+                if let self, self.popover.isShown, let view = self.popover.contentViewController?.view {
+                    self.popover.contentSize = NSSize(width: 340, height: min(590, max(280, view.fittingSize.height)))
+                }
+            }
         }.store(in: &cancellables)
         model.$now.sink { [weak self] _ in self?.updateStatus() }.store(in: &cancellables)
         model.$overlayEnabled.removeDuplicates().sink { [weak self] _ in
@@ -59,13 +66,27 @@ final class AppController: NSObject, NSApplicationDelegate {
         })
         model.start(); rebuildRails(); updateStatus()
     }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminating else { return .terminateLater }
+        terminating = true
+        Task {
+            await model.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) {
         model.stop(); hideWork?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         rails.forEach { $0.close() }; detailPanel?.close()
     }
-    private func updateStatus() { statusItem?.button?.title = " " + model.compactLabel }
+    private func updateStatus() {
+        statusItem?.button?.title = " " + model.compactLabel
+        let pending = model.bucket?.windows.contains(where: { $0.resetPending(at: model.now) }) ?? false
+        statusItem?.button?.setAccessibilityLabel("Codex 剩余额度")
+        statusItem?.button?.setAccessibilityValue(model.compactLabel + "。" + model.status + (pending ? "。等待重置确认" : ""))
+    }
     private func makeDetailView() -> DetailView {
         DetailView(model: model, hovered: { [weak self] entered in
             self?.setHover("detail", entered: entered)
@@ -127,7 +148,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             panel.contentView = NSHostingView(rootView: makeDetailView())
             detailPanel = panel
         }
-        let size = CGSize(width: 340, height: min(540, max(260, detailPanel?.contentView?.fittingSize.height ?? 440)))
+        let size = CGSize(width: 340, height: min(590, max(280, detailPanel?.contentView?.fittingSize.height ?? 440)))
         detailPanel?.setFrame(geometry.detailFrame(size: size, screen: screen), display: true)
         detailPanel?.orderFrontRegardless()
     }
@@ -135,12 +156,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func statusClicked() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let button = statusItem.button {
             let menu = NSMenu()
-            let refresh = menu.addItem(withTitle: "Refresh quotas", action: #selector(refreshNow), keyEquivalent: "r")
+            let refresh = menu.addItem(withTitle: "刷新额度", action: #selector(refreshNow), keyEquivalent: "r")
             refresh.target = self
-            let settings = menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+            let settings = menu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
             settings.target = self
             menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit Codex Notch Meter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            menu.addItem(withTitle: "退出 Codex Notch Meter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             NSMenu.popUpContextMenu(menu, with: event, for: button)
             return
         }
@@ -154,7 +175,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             let view = SettingsView(model: model, chooseExecutable: { [weak self] in self?.chooseExecutable() })
             let window = NSWindow(contentViewController: NSHostingController(rootView: view))
-            window.title = "Codex Notch Meter Settings"
+            window.title = "Codex Notch Meter 设置"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
             window.center(); settingsWindow = window
@@ -164,9 +185,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
     private func chooseExecutable() {
         let open = NSOpenPanel()
-        open.title = "Choose the official Codex CLI executable"
-        open.message = "Only choose an installed Codex CLI that you trust. It will be run with the app-server argument to read quota data."
+        open.title = "选择官方 Codex CLI 可执行文件"
+        open.message = "请选择已安装且信任的官方 Codex CLI。应用只通过 app-server 读取账户额度。"
         open.canChooseDirectories = false; open.canChooseFiles = true; open.allowsMultipleSelection = false
+        open.treatsFilePackagesAsDirectories = true
         if open.runModal() == .OK, let url = open.url { model.setExecutable(url.path) }
     }
 }
