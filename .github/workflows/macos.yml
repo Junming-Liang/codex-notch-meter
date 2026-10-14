@@ -1,0 +1,32 @@
+name: macOS build and tests
+# Dispatch is intentional: publishing source alone does not start a hosted build.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Public source checks
+        run: python3 Scripts/check-source.py
+      - name: Synthetic unit and subprocess tests
+        run: swift test
+      - name: Build universal app
+        run: bash Scripts/build-app.sh --universal
+      - name: Upload ad-hoc signed app
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexNotchMeter-unsigned-developer-preview
+          path: |
+            dist/CodexNotchMeter-*.zip
+            dist/CodexNotchMeter-*.sha256
+          if-no-files-found: error
+          retention-days: 7
