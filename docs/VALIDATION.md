@@ -2,6 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.2 visual repair candidate
+
+Native results for this candidate are pending. The user reported that v0.1.1 reads quotas successfully on their Mac, but its collapsed appearance is a black rectangle with no visible progress. We have not accessed their Mac or independently inspected their account.
+
+The candidate isolates fixed-size details from collapsed layout, explicitly clears the native hosting background, and uses a thin rounded contour with a transparent interior. A new own-view pixel harness tests full/83%/25%/0/unknown/stale/reset-pending/mixed values, repeated updates on the same published model, expansion and recollapse. It checks exterior arc samples, transparent corners/interior, colored and neutral tracks, dimming, and rejection of solid-black/missing-progress negative controls. Separate native calibration verifies explicit 1x/2x offscreen bitmap scale and orientation.
+
+Only synthetic own-view PNGs, plus light/dark composites with a labeled synthetic cutout, may be retained as workflow test artifacts. They are not desktop captures or physical Retina evidence. Numeric pixel checks do not imply that a human has inspected the PNGs. The private user screenshots are never repository files or artifacts.
+
 ## v0.1.1 observed macOS results
 
 [Workflow run #7](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38552814815) passed on 2026-10-14 using standard hosted `macos-15` runners.
@@ -50,7 +58,7 @@ macOS may block downloaded builds. Hosted execution does not guarantee that an u
 ## Still awaiting separate verification
 
 - Physical MacBook notch placement, Retina behavior, real hover/focus/click delivery, full-screen Spaces and multi-display interactions
-- Live quota reads against the user's signed-in official Codex installation
+- Independent live-account validation: the user reports successful v0.1.1 quota reads, but CI uses no account
 - Actual native screenshots and visual acceptance
 
 The 1x/2x unit geometry cases are mathematical checks, not physical Retina evidence. Official artifact discovery proves that the inspected helper can be found and verified, not that a real account provides quota data.

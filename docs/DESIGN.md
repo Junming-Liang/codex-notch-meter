@@ -35,3 +35,9 @@
 参考 [NotchKit](https://github.com/duongductrong/NotchKit)（MIT）的顶边连续轮廓、进入/离开宽限和降低动态效果原则，以及 [dynamic-landing](https://github.com/bring-shrubbery/dynamic-landing)（MIT）的顶边锚定验证思路。没有引入依赖或复制实现。本项目采用真实窗口尺寸跟随单一弹簧的独立实现，避免固定大透明窗口留下不可见点击区域。
 
 原生测试使用托管 Mac 的真实 AppKit 窗口和明确标识的合成刘海/额度数据；检查实际窗口与内容边界、绘制边缘、退出按钮范围、反向动画和计时器清理。不把这些结果称为真实 MacBook 刘海测试或用户账户验证。
+
+## v0.1.2 collapsed contour
+
+The resting surface is transparent, including its interior. Only two 2.5pt quota arcs and their subtle 3.5pt dark keyline are drawn inside a four-point external envelope. Left/right healthy signals use mint/sky-blue; amber/coral thresholds remain semantic. A neutral track remains at zero, with a tiny endpoint marker rather than invented positive progress. Unknown is dashed; stale/reset-pending keeps truthful text and visible dimmed color.
+
+The lower-corner curve is an approximation: NSScreen supplies safe exclusion bounds, not the hardware's exact radius. A fixed expanded detail view must never size the collapsed canvas. Its subtree is an overlay and exists only after expansion starts; the viewport and mask use actual hosting bounds. Black fill appears only during intentional expansion. Native pixel evidence must be distinguished from a physical display or human screenshot review.
