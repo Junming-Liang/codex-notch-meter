@@ -17,6 +17,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var retiredSmokeFrame: CGRect = .zero
     private var smokePhase = 0
     private var smokeStarted: TimeInterval = 0
+    private var smokePhaseStarted: TimeInterval = 0
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var islands: [IslandPanelController] = []
@@ -120,7 +121,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                   let notch = NotchGeometry.calculate(screen: screen.frame, topInset: screen.safeAreaInsets.top,
                     auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
                     scale: screen.backingScaleFactor) else { continue }
-            let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: screen.frame))
+            let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor))
             if island.placementIsValid { islands.append(island) }
             else { island.stop(); model.displayNotice = "系统未提供可靠的刘海位置，已保留菜单栏入口。" }
         }
@@ -193,39 +194,42 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard let notch = NotchGeometry.calculate(screen: frame, topInset: inset,
             auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - inset, width: (frame.width - width) / 2, height: inset),
             auxiliaryRight: CGRect(x: frame.midX + width / 2, y: frame.maxY - inset, width: (frame.width - width) / 2, height: inset)) else { requestQuit(); return }
-        let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: frame), polling: false, reducedMotion: false)
+        let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor), polling: false, reducedMotion: false)
         smokeIsland = island
         smokeGeometryValid = island.verifyNativeGeometry()
         island.beginSmokeExpansion()
         smokeStarted = ProcessInfo.processInfo.systemUptime
+        smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
             selector: #selector(advanceSmokeTest(_:)), userInfo: nil, repeats: true)
     }
     @objc private func advanceSmokeTest(_ timer: Timer) {
         guard let island = smokeIsland else { requestQuit(); return }
-        let elapsed = ProcessInfo.processInfo.systemUptime - smokeStarted
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - smokeStarted
+        let phaseElapsed = now - smokePhaseStarted
         switch smokePhase {
-        case 0 where elapsed >= 0.45:
+        case 0 where phaseElapsed >= 0.45:
             smokeGeometryValid = smokeGeometryValid && island.smokeProgress > 0
-            island.smokePointer(inside: false, now: elapsed); smokePhase = 1
-        case 1 where elapsed >= 0.72:
+            island.smokePointer(inside: false, now: elapsed); smokePhase = 1; smokePhaseStarted = now
+        case 1 where phaseElapsed >= 0.27:
             island.smokePointer(inside: false, now: elapsed)
-            smokeGeometryValid = smokeGeometryValid && !island.smokeTargetExpanded; smokePhase = 2
-        case 2 where elapsed >= 0.82:
+            smokeGeometryValid = smokeGeometryValid && !island.smokeTargetExpanded; smokePhase = 2; smokePhaseStarted = now
+        case 2 where phaseElapsed >= 0.10:
             smokeGeometryValid = smokeGeometryValid && island.smokeProgress > 0 && island.smokeProgress < 1
-            island.smokePointer(inside: true, now: elapsed); smokePhase = 3
-        case 3 where elapsed >= 0.98:
+            island.smokePointer(inside: true, now: elapsed); smokePhase = 3; smokePhaseStarted = now
+        case 3 where phaseElapsed >= 0.16:
             island.smokePointer(inside: true, now: elapsed)
-            smokeGeometryValid = smokeGeometryValid && island.smokeTargetExpanded; smokePhase = 4
-        case 4 where elapsed >= 2.1:
+            smokeGeometryValid = smokeGeometryValid && island.smokeTargetExpanded; smokePhase = 4; smokePhaseStarted = now
+        case 4 where phaseElapsed >= 1.12:
             let expanded = island.smokeExpanded
             let routing = island.verifySmokeClickRouting()
             SmokeDiagnostics.mark("motion checkpoint elapsed=\(elapsed) expanded=\(expanded) routing=\(routing) prior=\(smokeGeometryValid)")
             smokeGeometryValid = [smokeGeometryValid, expanded, routing].allSatisfy { $0 }
             retiredSmokeFrame = island.panel.frame; island.stop(); retiredSmokeIsland = island
             let replacement = makeIsland(geometry: island.geometry, polling: false, reducedMotion: true)
-            smokeIsland = replacement; replacement.beginSmokeExpansion(); smokePhase = 5
-        case 5 where elapsed >= 2.4:
+            smokeIsland = replacement; replacement.beginSmokeExpansion(); smokePhase = 5; smokePhaseStarted = now
+        case 5 where phaseElapsed >= 0.30:
             timer.invalidate(); smokeTimer = nil
             let expanded = island.smokeExpanded
             let routing = island.verifySmokeClickRouting()
