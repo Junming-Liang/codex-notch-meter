@@ -23,8 +23,8 @@ final class OfficialDesktopArtifactTests: XCTestCase {
             throw error
         }
         let elapsed = ProcessInfo.processInfo.systemUptime - started
-        // The production deadline is 6s; allow 0.5s for CI continuation scheduling.
-        XCTAssertLessThanOrEqual(elapsed, 6.5)
+        // Keep the actual production deadline, plus 0.5s for CI continuation scheduling.
+        XCTAssertLessThanOrEqual(elapsed, CodexExecutable.discoveryTimeout + 0.5)
         XCTAssertTrue(DesktopCodexDiscovery.contained(helper, in: application))
         XCTAssertTrue(DesktopCodexDiscovery.isRegularExecutable(helper))
         let relative = String(helper.path.dropFirst(application.resolvingSymlinksInPath().path.count + 1))

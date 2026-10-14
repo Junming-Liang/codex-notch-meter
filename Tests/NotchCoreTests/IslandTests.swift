@@ -66,4 +66,29 @@ final class IslandTests: XCTestCase {
         XCTAssertFalse(island.interactiveContains(CGPoint(x: notch.notch.midX, y: screen.maxY - 4)))
         XCTAssertTrue(island.interactiveContains(CGPoint(x: notch.notch.midX, y: screen.maxY - 150)))
     }
+    func testIntermediateFramesAlignBeforeNativeRoundingAtOneAndTwoTimesScale() throws {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            for origin in [CGPoint.zero, CGPoint(x: -1024, y: 768)] {
+                let screen = CGRect(origin: origin, size: CGSize(width: 1024, height: 768))
+                let notch = try XCTUnwrap(NotchGeometry.calculate(screen: screen, topInset: 32,
+                    auxiliaryLeft: CGRect(x: screen.minX, y: screen.maxY - 32, width: 402, height: 32),
+                    auxiliaryRight: CGRect(x: screen.minX + 622, y: screen.maxY - 32, width: 402, height: 32), scale: scale))
+                let island = IslandGeometry(notch: notch, screen: screen, backingScale: scale)
+                for step in 0...100 {
+                    let frame = island.frame(progress: Double(step) / 100)
+                    for value in [frame.minX, frame.minY, frame.width, frame.height] {
+                        XCTAssertEqual(value * scale, (value * scale).rounded(), accuracy: 0.0001)
+                    }
+                    XCTAssertEqual(frame.maxY, screen.maxY, accuracy: 0.0001)
+                    XCTAssertEqual(frame.midX, notch.notch.midX, accuracy: 0.5 / scale)
+                    XCTAssertTrue(screen.contains(frame))
+                }
+                if scale == 1 && origin == .zero {
+                    // Run #6 exposed AppKit rounding these formerly fractional frames.
+                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 347, y: 421, width: 330, height: 347))
+                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 336, y: 350, width: 352, height: 418))
+                }
+            }
+        }
+    }
 }
