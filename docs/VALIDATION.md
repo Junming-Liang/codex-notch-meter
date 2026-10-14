@@ -9,15 +9,39 @@ This document distinguishes implemented checks from observed results. Update it 
 - No third-party Swift package dependencies
 - Test fixtures contain only synthetic data
 
-## Awaiting macOS verification
+## Observed macOS CI results
 
-- Swift compilation and the full XCTest suite
-- Universal Apple Silicon + Intel `.app` packaging and ad-hoc signature verification
-- Native demo settings/card startup and orderly shutdown on a hosted macOS runner
-- Native UI behavior on a real notched MacBook
+[Workflow run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed on 2026-10-14 using the standard hosted `macos-15` runner. These observations apply to the tested source below, not automatically to later changes on `main`.
+
+- Source: [`4d251aa8828b4f1ade876281acb5e21af98cdcdf`](https://github.com/Junming-Liang/codex-notch-meter/commit/4d251aa8828b4f1ade876281acb5e21af98cdcdf)
+- Source tree: `501481cd1e5145c3931dd45192c27a56d04cb678`
+- Swift compilation and 32 synthetic XCTest tests: passed, zero failures (Geometry: 5, Quota: 11, RPC: 16)
+- Universal Apple Silicon (`arm64`) + Intel (`x86_64`) build and architecture check: passed
+- `.app` Info.plist validation and ad-hoc signature verification: passed
+- Universal ZIP packaging and release checksum gate: passed
+- Real native demo Settings and quota-card startup/readiness plus orderly exit: passed in 3 seconds, within the 25-second watchdog
+
+The smoke test uses only synthetic quota data and starts no Codex process. It exercises the actual native windows, not an HTML mockup, but does not capture screenshots or verify physical interactions.
+
+## Published developer preview
+
+[`v0.1.0`](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) is a prerelease bound to the tested source commit above.
+
+- Archive: `CodexNotchMeter-0.1.0-universal.zip`
+- Archive size: 576,520 bytes
+- GitHub-advertised archive SHA-256: `a0dd27ea32f2b82cf615eb1c29a1451348b64554c96af758ce3af2c2bb785d4a`
+- A matching `.zip.sha256` file accompanies the archive
+- Signing: ad-hoc only; no Apple Developer ID signature or notarization
+
+macOS may block downloaded builds. Successful hosted smoke execution does not guarantee that an unnotarized download opens on every Mac. The project provides no security-bypass commands.
+
+## Still awaiting separate verification
+
+- Actual notch placement, hover/focus behavior, full-screen Spaces and multi-display interactions on a real MacBook
 - Live quota reads against a signed-in official Codex CLI
+- Actual native UI screenshots and visual acceptance
 
-No native build, UI run, screenshot, or live account check is implied by source-preparation checks. The manually dispatched macOS workflow can verify compilation, synthetic tests, universal packaging, signatures, and a bounded demo-only native window startup/exit check without accessing a user's computer or account. The demo smoke test starts no Codex process and uses a 25-second external watchdog. A hosted runner cannot verify physical notch placement, real hover/focus interactions, or real account behavior.
+A hosted runner cannot establish these results. Source review and synthetic tests are not substitutes for physical-device or live-account verification.
 
 ## Manual acceptance checklist
 
