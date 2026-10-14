@@ -53,24 +53,36 @@ public struct IslandGeometry: Equatable, Sendable {
     public let collapsedSize: CGSize
     public let expandedSize: CGSize
     public let backingScale: CGFloat
+    private let collapsedFrame: CGRect
+    private let expandedFrame: CGRect
     public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1) {
         self.screen = screen
         self.notch = notch.notch
         self.backingScale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
-        collapsedSize = CGSize(width: notch.notch.width + 12, height: notch.notch.height + 7)
-        expandedSize = CGSize(width: min(380, screen.width - 24), height: min(notch.notch.height + 480, screen.height - 32))
+        // Nominal 3pt extension; outward alignment adds <1 backing pixel per edge.
+        // Align once relative to the actual camera bounds, including odd widths/origins.
+        let scale = self.backingScale
+        let left = floor((notch.notch.minX - 3) * scale) / scale
+        let right = ceil((notch.notch.maxX + 3) * scale) / scale
+        let bottom = floor((notch.notch.minY - 3) * scale) / scale
+        collapsedFrame = CGRect(x: left, y: bottom, width: right - left, height: screen.maxY - bottom)
+        collapsedSize = collapsedFrame.size
+        let width = ceil(min(380, screen.width - 24) * scale / 2) * 2 / scale
+        let height = ceil(min(notch.notch.height + 480, screen.height - 32) * scale) / scale
+        let x = ((notch.notch.midX - width / 2) * scale).rounded() / scale
+        expandedFrame = CGRect(x: x, y: screen.maxY - height, width: width, height: height)
+        expandedSize = expandedFrame.size
     }
     public func frame(progress: Double) -> CGRect {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
-        let rawWidth = collapsedSize.width + (expandedSize.width - collapsedSize.width) * p
-        let rawHeight = collapsedSize.height + (expandedSize.height - collapsedSize.height) * p
-        // AppKit integralizes fractional NSWindow frames. Normalize BEFORE sizing
-        // and hit-testing, so legitimate rounding cannot trip the placement guard.
-        // Even pixel widths preserve centering while both horizontal edges align.
-        let width = ceil(rawWidth * backingScale / 2) * 2 / backingScale
-        let height = ceil(rawHeight * backingScale) / backingScale
-        let x = ((notch.midX - width / 2) * backingScale).rounded() / backingScale
-        return CGRect(x: x, y: screen.maxY - height, width: width, height: height)
+        if p == 0 { return collapsedFrame }
+        if p == 1 { return expandedFrame }
+        // AppKit integralizes fractional NSWindow frames. Interpolate aligned
+        // edges and normalize before native placement, sizing and hit-testing.
+        let left = floor((collapsedFrame.minX + (expandedFrame.minX - collapsedFrame.minX) * p) * backingScale) / backingScale
+        let right = ceil((collapsedFrame.maxX + (expandedFrame.maxX - collapsedFrame.maxX) * p) * backingScale) / backingScale
+        let height = ceil((collapsedSize.height + (expandedSize.height - collapsedSize.height) * p) * backingScale) / backingScale
+        return CGRect(x: left, y: screen.maxY - height, width: right - left, height: height)
     }
     public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
         // Never use visibleFrame: the island is attached to the physical top edge.
