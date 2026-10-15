@@ -55,6 +55,9 @@ final class SkinAnimationHarness: NSObject {
     private var valid = true
     private var publishCount = 0
     private var frozenPublicationCount = 0
+    private var resumeTickCount = 0
+    private var resumePublicationCount = 0
+    private var firstResumePublication: TimeInterval?
     private var lastPublication: TimeInterval?
     private var minimumPublicationInterval = TimeInterval.infinity
     private let completion: (Bool) -> Void
@@ -65,6 +68,9 @@ final class SkinAnimationHarness: NSObject {
             let now = ProcessInfo.processInfo.systemUptime
             if let previous = self.lastPublication { self.minimumPublicationInterval = min(self.minimumPublicationInterval, now - previous) }
             self.lastPublication = now; self.publishCount += 1
+            if (self.resumingBetweenReasons || self.index == 8), self.firstResumePublication == nil {
+                self.firstResumePublication = now
+            }
         }
         animator.set(policy: policy, speed: .normal)
         started = ProcessInfo.processInfo.systemUptime
@@ -76,16 +82,22 @@ final class SkinAnimationHarness: NSObject {
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         if resumingBetweenReasons {
             guard elapsed >= 0.2 else { return }
-            let resumed = animator.isRunning && animator.phase > frozen
+            let observed = animator.tickCount > resumeTickCount && publishCount > resumePublicationCount && animator.phase > frozen
+            if !observed && elapsed < 1 { return }
+            let firstLatency = firstResumePublication.map { $0 - started } ?? .infinity
+            let resumed = animator.isRunning && observed && firstLatency >= 0 && firstLatency <= 1
             valid = valid && resumed
-            SmokeDiagnostics.mark("skin native between-pauses resume=\(index) phaseAdvanced=\(resumed)")
+            SmokeDiagnostics.mark("skin native between-pauses resume=\(index) elapsed=\(elapsed) firstPublicationLatency=\(firstLatency) ticks=\(animator.tickCount - resumeTickCount) publications=\(publishCount - resumePublicationCount) phaseAdvanced=\(resumed)")
             resumingBetweenReasons = false; pauseNext(); return
         }
         if index == 8 {
             guard elapsed >= 0.25 else { return }
-            let resumed = animator.isRunning && animator.phase > frozen
+            let observed = animator.tickCount > resumeTickCount && publishCount > resumePublicationCount && animator.phase > frozen
+            if !observed && elapsed < 1 { return }
+            let firstLatency = firstResumePublication.map { $0 - started } ?? .infinity
+            let resumed = animator.isRunning && observed && firstLatency >= 0 && firstLatency <= 1
             valid = valid && resumed
-            SmokeDiagnostics.mark("skin native resume phaseAdvanced=\(resumed)")
+            SmokeDiagnostics.mark("skin native resume elapsed=\(elapsed) firstPublicationLatency=\(firstLatency) ticks=\(animator.tickCount - resumeTickCount) publications=\(publishCount - resumePublicationCount) phaseAdvanced=\(resumed)")
             animator.stop(); frozen = animator.phase; frozenPublicationCount = publishCount; index = 9; started = ProcessInfo.processInfo.systemUptime
             return
         }
@@ -109,21 +121,25 @@ final class SkinAnimationHarness: NSObject {
             SmokeDiagnostics.mark("skin native clock ticks=\(animator.tickCount) publications=\(publishCount) minInterval=\(animator.minimumTickInterval) minPublishInterval=\(minimumPublicationInterval) phase=\(animator.phase) valid=\(valid)")
         } else {
             guard elapsed >= 0.15 else { return }
-            let stopped = !animator.isRunning && abs(animator.phase - frozen) < 0.000001
+            let stopped = !animator.isRunning && abs(animator.phase - frozen) < 0.000001 && publishCount == frozenPublicationCount
             valid = valid && stopped
             let reason = ["reduce-motion", "hidden", "sleep", "overlay-disabled", "motion-disabled", "low-power", "session-inactive"][index - 1]
             SmokeDiagnostics.mark("skin native pause reason=\(reason) frozen=\(stopped)")
         }
         if index == 7 {
             policy = SkinMotionPolicy(theme: .rainbow, hasVisibleOwnedSurface: true)
+            resumeTickCount = animator.tickCount; resumePublicationCount = publishCount
+            firstResumePublication = nil; index = 8; started = ProcessInfo.processInfo.systemUptime
             animator.set(policy: policy, speed: .slow)
-            frozen = animator.phase; index = 8; started = ProcessInfo.processInfo.systemUptime
+            frozen = animator.phase
             return
         }
         if index > 0 {
             policy = SkinMotionPolicy(theme: .rainbow, hasVisibleOwnedSurface: true)
+            resumeTickCount = animator.tickCount; resumePublicationCount = publishCount
+            firstResumePublication = nil; resumingBetweenReasons = true; started = ProcessInfo.processInfo.systemUptime
             animator.set(policy: policy, speed: .normal)
-            frozen = animator.phase; resumingBetweenReasons = true; started = ProcessInfo.processInfo.systemUptime
+            frozen = animator.phase
             return
         }
         pauseNext()
@@ -143,6 +159,7 @@ final class SkinAnimationHarness: NSObject {
         for _ in 0..<20 { animator.set(policy: policy, speed: .normal) }
         valid = valid && publishCount == before
         SmokeDiagnostics.mark("skin native policy burst publishedNoFrames=\(publishCount == before)")
+        frozenPublicationCount = publishCount
         frozen = animator.phase; index += 1; started = ProcessInfo.processInfo.systemUptime
     }
     func stop() { timer?.invalidate(); timer = nil; animator?.stop() }
