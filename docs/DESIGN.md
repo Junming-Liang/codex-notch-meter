@@ -7,7 +7,7 @@
 ## 设计语言
 
 - 低干扰的石墨色表面与系统 San Francisco 字体
-- 3 pt 进度线、6 pt 黑色底边，不扩大现有刘海交互区域
+- 2.5 pt 彩色进度线；名义外扩 3 pt，含抗锯齿不超过 4 pt，不扩大现有刘海交互区域
 - 薄荷色 `#70D7B0` 表示正常信号，琥珀色 `#F1BF69` 和珊瑚色 `#F08086` 辅助表示较低余额
 - 未知、旧数据和重置待确认均有文字说明，不仅依赖颜色
 - 悬浮卡片宽 340 pt，设置窗口宽 480 pt；使用清晰的小字号层级和单一主数字
@@ -41,3 +41,9 @@
 The resting surface is transparent, including its interior. Only two 2.5pt quota arcs and their subtle 3.5pt dark keyline are drawn inside a four-point external envelope. Left/right healthy signals use mint/sky-blue; amber/coral thresholds remain semantic. A neutral track remains at zero, with a tiny endpoint marker rather than invented positive progress. Unknown is dashed; stale/reset-pending keeps truthful text and visible dimmed color.
 
 The lower-corner curve is an approximation: NSScreen supplies safe exclusion bounds, not the hardware's exact radius. A fixed expanded detail view must never size the collapsed canvas. Its subtree is an overlay and exists only after expansion starts; the viewport and mask use actual hosting bounds. Black fill appears only during intentional expansion. Native pixel evidence must be distinguished from a physical display or human screenshot review.
+
+## v0.1.3 single-contour skin system (supersedes the two-rail/gray-track treatment above)
+
+The collapsed surface draws one uninterrupted U, starting upper-left and ending upper-right. A single selected quota fraction fills a left-anchored prefix; consumption retracts its right endpoint. The unfilled suffix is pure black, never gray. Zero and unknown draw no colored marker or fill; their meaning remains explicit in details/accessibility. The interior/corners stay transparent and the original nominal 3pt / maximum 4pt envelope is unchanged. The default window is the shortest returned known duration; an explicit selection changes only the contour, never removes other detail rows.
+
+Five original palettes: mint (default static), flowing rainbow, aurora, sunset gold, ice blue. Only Rainbow animates in this version. An 8s/12s color phase changes paint inside the fixed trimmed path, never geometry or quota. One shared clock is throttled to 15fps and stopped when hidden, asleep, disabled, low-power, session-inactive or Reduce Motion. No glow, flashing, added network activity or per-row clocks.

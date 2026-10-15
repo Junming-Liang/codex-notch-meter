@@ -2,6 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.3 candidate — native results pending
+
+The candidate adds a drag-to-Applications DMG, opt-in native login-item settings, and five skins with optional animated Rainbow. One full-U contour now represents the selected/shortest-known quota window: remaining is a left prefix, consumed is a pure-black right suffix. Existing quota discovery/protocol and the external contour envelope remain unchanged apart from version metadata.
+
+New tests cover login status/readback, external revocation, approval cancellation, rejected registrations/removals, install-location boundaries, demo mutation blocking and theme fallback. Native smoke uses injected login states, plus a separate read-only call to the actual ServiceManagement status API; no real registration, removal, System Settings launch or reboot occurs in CI. All five skins run the calibrated 1x/2x pixel suite at 0/25/50/75/83/100 and unknown, including same-window theme/window switching, restoration and fixed animation phases. Reversed direction, old opposed halves, gray consumed tail and center-gap controls must be rejected. A real production color scheduler is exercised with synthetic visibility/accessibility/power flags to check advance,≤15fps cadence, pause, resume and retired-timer inactivity. DMG gates must verify the mounted app bytes/signatures/version/architectures, read-only mount, exact Applications link, cleanup and portable checksums before release.
+
+Actual login/reboot, system approval and ad-hoc registration acceptance remain unverified. New native and packaging checks are not yet claimed successful.
+
 ## v0.1.2 observed macOS results
 
 [Diagnostic run #9](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38567762579) and [release run #10](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38569117126) passed on 2026-10-14 using standard hosted `macos-15` runners.
@@ -96,7 +104,7 @@ The v0.1.1 diagnostic rounding failure was measured and repaired. It should not 
 
 Use `--demo` first, then an account only with its owner's permission.
 
-- Notched MacBook: left/right rails track the actual notch, including scaled resolutions
+- Notched MacBook: the full-U contour tracks the actual notch, including scaled resolutions
 - Hover the collapsed rails, follow the continuous expansion, leave/reenter during collapse, and repeat quickly
 - Hover does not activate the app or steal keyboard focus
 - Rails occupy narrow side/bottom regions and do not interfere with ordinary menu-bar clicks
