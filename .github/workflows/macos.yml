@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.3 developer-preview DMG and ZIP after all checks pass
+        description: Publish v0.1.4 developer-preview DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -70,6 +70,9 @@ jobs:
       - name: Native transparent contour and live-update pixel gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-contour.py
+      - name: Raw-edge native alignment and calibration gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-alignment.py
       - name: Build and inspect drag-to-Applications installer
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/build-dmg.py
@@ -86,10 +89,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.3-universal.zip
-            dist/CodexNotchMeter-0.1.3-universal.zip.sha256
-            dist/CodexNotchMeter-0.1.3-universal.dmg
-            dist/CodexNotchMeter-0.1.3-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.4-universal.zip
+            dist/CodexNotchMeter-0.1.4-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.4-universal.dmg
+            dist/CodexNotchMeter-0.1.4-universal.dmg.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -116,22 +119,23 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-0.1.3-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-0.1.3-universal.dmg.sha256
+          sha256sum --check CodexNotchMeter-0.1.4-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-0.1.4-universal.dmg.sha256
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.3" --jq '.[] | select(.ref == "refs/tags/v0.1.3") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.3") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.4" --jq '.[] | select(.ref == "refs/tags/v0.1.4") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.4") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.3 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.4 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.3
-          安装与个性化预览：新增拖入“应用程序”的 DMG、设置中的“登录时启动”选项，以及五款皮肤与可选流光彩虹动效。保留默认细轮廓与悬停详情。
+          ## Codex Notch Meter v0.1.4
+          刘海对齐修复预览：保留系统报告的原始边界中心，将窗口像素取整与轮廓绘制分开。新增默认 0 的水平微调，按内建屏幕在本机保存，0.5 pt 一步、最多 ±8 pt，并可重置。
+          保留五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、DMG 和可选登录时启动。照片无法证明统一修正量，本版不会擅自向左移动。
 
           优先下载 Universal DMG，将 .app 拖到 Applications，再从“应用程序”打开；ZIP 仍可选。两种产物均包含 Apple Silicon / Intel 二进制。
           登录时启动默认关闭，仅由用户点击请求启用；macOS 可能要求批准或拒绝临时签名。安装映像与测试不会注册登录项。
@@ -142,19 +146,20 @@ jobs:
           Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only native geometry, drawing, motion, Quit-layout and shutdown checks passed in this workflow.
           Read-only inspection of the current official signed desktop DMG resolved its bundled helper within the production deadline; no downloaded Codex executable or account session was started.
           All five skins passed native 1x/2x full-U contour alpha/color/arc/live-selection/phase gates. Remaining fills from the left; the consumed right suffix is pure black. A shared maximum-15fps color scheduler passed synthetic lifecycle pause/resume checks.
+          Raw-edge native pixel-axis and mirrored-corner checks passed for off-center, odd/even/fractional inputs, signed calibration and reset; the recreated old edge-rounding control was rejected. Forced 1x/2x captures are not physical Retina placement tests.
           Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.3" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.3 \
+            -f ref="refs/tags/v0.1.4" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.4 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.3 · macOS Developer Preview" \
+            --title "v0.1.4 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.3-universal.zip \
-            dist/CodexNotchMeter-0.1.3-universal.zip.sha256 \
-            dist/CodexNotchMeter-0.1.3-universal.dmg \
-            dist/CodexNotchMeter-0.1.3-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.4-universal.zip \
+            dist/CodexNotchMeter-0.1.4-universal.zip.sha256 \
+            dist/CodexNotchMeter-0.1.4-universal.dmg \
+            dist/CodexNotchMeter-0.1.4-universal.dmg.sha256
