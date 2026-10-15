@@ -1,8 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.3 候选状态
+## v0.1.3 开发预览
 
-DMG、登录项界面与五款皮肤正在原生 CI 验证。此文件描述候选行为，不代表已经发布或实际重启验证成功。
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.3)
+
+原生编译、五款皮肤/动效检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
 ## 安装
 

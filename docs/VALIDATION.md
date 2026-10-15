@@ -2,13 +2,41 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.3 candidate — native results pending
+## v0.1.3 observed macOS results
 
-The candidate adds a drag-to-Applications DMG, opt-in native login-item settings, and five skins with optional animated Rainbow. One full-U contour now represents the selected/shortest-known quota window: remaining is a left prefix, consumed is a pure-black right suffix. Existing quota discovery/protocol and the external contour envelope remain unchanged apart from version metadata.
+[Diagnostic run #12](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38671460345) and [release run #13](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38672374256) passed on 2026-10-15 using standard hosted `macos-15` runners.
 
-New tests cover login status/readback, external revocation, approval cancellation, rejected registrations/removals, install-location boundaries, demo mutation blocking and theme fallback. Native smoke uses injected login states, plus a separate read-only call to the actual ServiceManagement status API; no real registration, removal, System Settings launch or reboot occurs in CI. All five skins run the calibrated 1x/2x pixel suite at 0/25/50/75/83/100 and unknown, including same-window theme/window switching, restoration and fixed animation phases. Reversed direction, old opposed halves, gray consumed tail and center-gap controls must be rejected. A real production color scheduler is exercised with synthetic visibility/accessibility/power flags to check advance,≤15fps cadence, pause, resume and retired-timer inactivity. DMG gates must verify the mounted app bytes/signatures/version/architectures, read-only mount, exact Applications link, cleanup and portable checksums before release.
+- Tested source and immutable release tag: [`b2f7d5e053f585db2cc9c22d6eee19d7c2d01c6b`](https://github.com/Junming-Liang/codex-notch-meter/commit/b2f7d5e053f585db2cc9c22d6eee19d7c2d01c6b)
+- Source tree: `32ff9dd1b63e538e29c2da18084602aefc894cdd`
+- XCTest: 83 discovered, 82 synthetic tests passed, one opt-in artifact test skipped in the synthetic job, zero failures
+- Separate official signed-desktop artifact test: passed; diagnostic-run production discovery took 10.05 seconds within the unchanged 30-second budget, without executing Codex
+- Apple Silicon and Intel builds, universal archive, Info.plist and ad-hoc signature verification: passed
+- Four demo-only native window, geometry, motion, Quit and orderly-shutdown scenarios: passed
+- 21 installer safety simulations: passed; native subprocesses mocked in these simulations
 
-Actual login/reboot, system approval and ad-hoc registration acceptance remain unverified. New native and packaging checks are not yet claimed successful.
+### Full-U skins and native motion evidence
+
+The selected quota window, or shortest returned known duration by default, drives one continuous upper-left → bottom → upper-right path. Remaining is a left prefix; the consumed suffix is pure black. Zero/unknown render no colored marker or gray line. All quota rows remain available in the expanded card.
+
+All five skins passed the calibrated 1x/2x own-view pixel suite. Each skin has 48 collapsed scene/scale checks covering 0/25/50/75/83/100, unknown, stale/reset-pending, live quota-window selection, live theme switching/restoration and color phases. Transparent interior/corners, the nominal 3pt / maximum 4pt envelope, true arc boundary and pure-black unused suffix are checked independently. Reversed fill, old opposed halves, a gray tail, center gap, missing progress and solid rectangle negative controls are rejected. Rainbow color changes while its quota boundary stays fixed; other skins remain static.
+
+The production color scheduler passed actual native cadence, seven synthetic lifecycle pause reasons, resume, notification-burst and retired-timer checks in all four scenarios. In diagnostic run #12, all 28 resumed first publications arrived within 0.180 seconds, below the 1-second test bound. The initial run's harness checked at the first 0.2-second inspection callback; it was repaired to inspect the actual first publication timestamp and tick/count changes without altering production scheduling or loosening cadence/freeze requirements.
+
+### Login and installer evidence
+
+Native smoke compiled and read the real `SMAppService.mainApp.status` API (`notFound` in this runner). Synthetic state tests cover approval, cancellation, failures, external revocation and install-location guidance. Demo/CI mutation calls remained zero: no real registration, removal, System Settings launch, account login or reboot occurred.
+
+The actual generated DMG passed read-only mounting, exact mounted app-byte comparison, version/Info.plist, arm64 + x86_64 and ad-hoc signature verification, literal `/Applications` link inspection, UDZO integrity and owned-device detach/temporary-directory cleanup. It never executed the mounted app. Both archive checksum gates passed before release.
+
+### v0.1.3 release artifacts
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg): 983,322 bytes; [checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg.sha256): 102 bytes
+- GitHub-advertised DMG SHA-256: `d979859d2786f3f2c7a79e3ce2c930bd753221757bc21b19ffd32b8a85654f80`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip): 972,989 bytes; [checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip.sha256): 102 bytes
+- GitHub-advertised ZIP SHA-256: `0c47c26ab82aa7d297a3c4d57ff68f6cbe12d344106a2f1be9ce0dca29c142a0`
+- Release workflow checksums and public asset metadata were verified. Downloaded asset bytes were not independently rehashed here.
+
+**Limits:** ad-hoc signing only, no Developer ID or notarization. macOS may block opening or login-item registration. Actual registration, system approval and login/reboot behavior remain unverified. Native pixel evidence is calibrated offscreen rendering, not physical Retina or human PNG review. Physical notch interaction remains unverified; the user reported successful v0.1.1 quota reads, while CI uses no live account.
 
 ## v0.1.2 observed macOS results
 
@@ -88,6 +116,8 @@ macOS may block downloaded builds. Hosted execution does not guarantee that an u
 
 ## Still awaiting separate verification
 
+- Actual login-item registration, system approval and launch after login/reboot
+
 - Physical MacBook notch placement, Retina behavior, real hover/focus/click delivery, full-screen Spaces and multi-display interactions
 - Independent live-account validation: the user reports successful v0.1.1 quota reads, but CI uses no account
 - Actual native screenshots and visual acceptance
@@ -96,7 +126,7 @@ The 1x/2x unit geometry cases are mathematical checks, not physical Retina evide
 
 ## Historical v0.1.0
 
-[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.2.
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.3.
 
 The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 
