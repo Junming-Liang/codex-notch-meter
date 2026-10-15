@@ -83,11 +83,12 @@ struct RailView: View {
         let pending = window?.resetPending(at: model.now) ?? false
         let dim = model.degraded || pending
         let paint = quotaPaint(remaining, theme: model.theme, phase: model.skinPhase)
+        // Wider paint covers the same circular centerline; frame, path and clip stay unchanged.
         ZStack {
-            NotchRail(drawingRect: drawingRect, progress: progress, cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth).stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+            NotchRail(drawingRect: drawingRect, progress: progress, cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth).stroke(Color.black, style: StrokeStyle(lineWidth: 4, lineCap: .round))
             if let remaining, remaining > 0 {
                 NotchRail(drawingRect: drawingRect, progress: progress, cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth).trim(from: 0, to: remaining / 100)
-                    .stroke(paint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).opacity(dim ? 0.55 : 1)
+                    .stroke(paint, style: StrokeStyle(lineWidth: 3.5, lineCap: .round)).opacity(dim ? 0.55 : 1)
             }
         }
         .contentShape(Rectangle()).onHover(perform: hovered)

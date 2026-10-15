@@ -319,6 +319,7 @@ final class ContourRenderHarness: NSObject {
     private var passed = true
     private var orientations: [Int: Bool] = [:]
     private var results: [String: [Int: ContourMetrics]] = [:]
+    private var strokeCoverage: StrokeCoverageHarness?
     private var legacyPanel: TopEdgePanel?
     private var legacyExtent: CGSize = .zero
     init(model: MeterModel, island: IslandPanelController, completion: @escaping (Bool) -> Void) {
@@ -338,6 +339,7 @@ final class ContourRenderHarness: NSObject {
         }
         SmokeDiagnostics.mark("contour theme=\(model.theme.rawValue)")
         setScene()
+        strokeCoverage = StrokeCoverageHarness(model: model, geometry: island.geometry)
         // A native diagnostic fixture preserves the old hidden-detail sizing mechanism.
         let frame = CGRect(x: island.geometry.notch.midX - 116, y: island.geometry.screen.maxY - 39, width: 232, height: 39)
         let panel = TopEdgePanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -394,6 +396,10 @@ final class ContourRenderHarness: NSObject {
             SmokeDiagnostics.mark("contour backing scene=\(scene.name) scale=\(scale) pixels=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) points=\(view.bounds.size) valid=\(backingValid)")
             do { try bitmap.export(name: scene.name, hardware: island.geometry.notch.size) } catch { passed = false }
             if scene.expanded { continue }
+            if ["full", "half", "quarter", "zero", "unknown"].contains(scene.name) {
+                let coverage = strokeCoverage?.inspect(current: bitmap, hardware: hardware, scene: scene.name, percent: scene.left) ?? false
+                passed = passed && coverage
+            }
             let metrics = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: scene.secondary ? scene.right : scene.left)
             results[scene.name, default: [:]][scale] = metrics
             passed = passed && metrics.valid
@@ -474,6 +480,7 @@ final class ContourRenderHarness: NSObject {
     func stop() {
         timer?.invalidate(); timer = nil
         legacyPanel?.close(); legacyPanel = nil
+        strokeCoverage?.stop(); strokeCoverage = nil
         island.stop()
     }
 }
