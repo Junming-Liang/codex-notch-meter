@@ -14,6 +14,8 @@ The meter reads the official Codex CLI's account interface. It sends no model pr
 
 **v0.1.3 installation and skins preview is available.** A drag-to-Applications DMG, opt-in Launch at Login, and five skins including flowing Rainbow color. One full-U contour fills from the left; the consumed right suffix is pure black. Idle mode stays about 3pt outside the notch; hover opens the full details card. See [installation and settings](docs/INSTALLATION.md).
 
+**v0.1.4 alignment candidate is under validation:** preserve the raw system-reported midpoint and add default-zero per-display horizontal correction (0.5pt steps, up to ±8pt, with Reset). Downloads still point to released v0.1.3 until the new native gates pass.
+
 ## Download
 
 1. Download the [v0.1.3 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg) (983,322 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg.sha256)

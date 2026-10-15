@@ -47,3 +47,7 @@ The optional CI contour harness renders only this app's own demo views into 1x/2
 The user may explicitly enable or disable the main app's login item through Apple's `SMAppService.mainApp` API. System status is read when Settings appears, the app activates, and after a request; it is not replaced by a stored Boolean. No login item is registered at startup, installation, build time, in demo mode, or in CI. System Settings opens only when the user clicks. No launch daemon, privileged helper, custom LaunchAgent plist, automatic app relocation or security-setting change is used.
 
 The DMG contains the app, a link to Applications and installation instructions. It does not run an installer script. CI mounts its own image read-only for verification and detaches it; login-item mutations use injected synthetic services only. Skin and motion choices are local preferences. Rainbow uses one bounded color-animation clock only while a visible colored surface is eligible; it pauses for Reduce Motion, low power, sleep, session inactivity or disabled/hidden surfaces. It never adds network access or quota polling.
+
+### Horizontal calibration (v0.1.4 candidate)
+
+Optional alignment values are stored only in local preferences, keyed by the public display UUID for each built-in notched screen. The app does not query hardware serial numbers or transmit/log these identifiers. Default correction is zero; Reset removes the stored value. Demo/native test fixtures use synthetic identities and never save calibration preferences.
