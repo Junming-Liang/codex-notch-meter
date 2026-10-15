@@ -228,9 +228,10 @@ final class IslandPanelController: NSObject {
             guard let self, !self.stopped, self.frameGeneration == generation, self.motionFrames != nil else { return }
             self.advanceFrame(to: time)
         }
-        if #available(macOS 14.0, *), motionProfile == .adaptive, let view = panel.contentView {
+        if motionProfile == .synchronousBaseline { motionFrames = TimerIslandFrames(callback: callback) }
+        else if #available(macOS 14.0, *), motionProfile == .adaptive, let view = panel.contentView {
             motionFrames = DisplayIslandFrames(view: view, callback: callback)
-        } else { motionFrames = TimerIslandFrames(callback: callback) }
+        } else { motionFrames = DispatchIslandFrames(callback: callback) }
     }
     private func advanceFrame(to time: TimeInterval) {
         guard !stopped, let source = motionFrames, time.isFinite, time > lastMotionTime else { return }

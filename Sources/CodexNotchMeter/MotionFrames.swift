@@ -38,6 +38,43 @@ final class TimerIslandFrames: NSObject, IslandFrameSource {
     }
 }
 
+/// Short-transition fallback for macOS 13. Dispatch sources coalesce pending events;
+/// this never queues one block per missed frame or holds a process power assertion.
+@MainActor
+final class DispatchIslandFrames: IslandFrameSource {
+    private var source: DispatchSourceTimer?
+    private let callback: (TimeInterval) -> Void
+    private var generation = 1
+    private var deliveries = 0
+    var kind: String { "dispatch-60hz" }
+    var isRunning: Bool { source != nil }
+    init(callback: @escaping (TimeInterval) -> Void) {
+        self.callback = callback
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        self.source = source
+        let generation = self.generation
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.tick(generation: generation)
+            }
+        }
+        source.schedule(deadline: .now() + .nanoseconds(16_666_667),
+            repeating: .nanoseconds(16_666_667), leeway: .milliseconds(1))
+        source.resume()
+    }
+    private func tick(generation: Int) {
+        guard generation == self.generation, source != nil else { return }
+        deliveries += 1; callback(CACurrentMediaTime())
+    }
+    func stop() { generation += 1; source?.cancel(); source = nil }
+    func verifyRetiredCallbackIsInert() -> Bool {
+        let retiredGeneration = generation, count = deliveries
+        stop(); tick(generation: retiredGeneration)
+        return !isRunning && deliveries == count
+    }
+}
+
 /// Availability is isolated so the app still loads and runs on macOS13.
 @available(macOS 14.0, *)
 @MainActor

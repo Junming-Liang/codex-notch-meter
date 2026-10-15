@@ -32,6 +32,9 @@ final class NativeMotionHarness: NSObject {
     func start() {
         guard model.demo, CommandLine.arguments.contains("--motion-test") else { finish(false); return }
         model.theme = .rainbow
+        let historyControls = verifyPresentationHistoryControls()
+        SmokeDiagnostics.mark("motion presentation replacement-age controls valid=\(historyControls)")
+        guard historyControls else { finish(false); return }
         initialKey = NSApp.keyWindow
         startProfile()
         let timer = Timer(timeInterval: 0.02, target: self, selector: #selector(check(_:)), userInfo: nil, repeats: true)
@@ -162,6 +165,31 @@ final class NativeMotionHarness: NSObject {
         island.smokePointer(at: point, now: now)
         SmokeDiagnostics.mark("motion boundary profile=\(profiles[profileIndex]) point=\(point) inside=\(inside) progress=\(island.smokeProgress) targetExpanded=\(island.smokeTargetExpanded)")
     }
+    private func recentPresentationSizes(at time: TimeInterval,
+        frames: [(time: TimeInterval, size: CGSize)], initial: CGSize) -> [CGSize] {
+        let history = [(time: -Double.infinity, size: initial)] + frames.filter { $0.time <= time }
+        return history.indices.filter { index in
+            index == history.count - 1 || time - history[index + 1].time <= 0.1
+        }.map { history[$0].size }
+    }
+    private func presentationMatches(_ bounds: CGRect, recent: [CGSize]) -> Bool {
+        bounds.origin == .zero && recent.contains {
+            abs($0.width - bounds.width) < 0.01 && abs($0.height - bounds.height) < 0.01
+        }
+    }
+    private func verifyPresentationHistoryControls() -> Bool {
+        let old = CGSize(width: 381, height: 512), new = CGSize(width: 313, height: 302)
+        let history = [(time: 10.0, size: new)]
+        func matches(_ size: CGSize, at time: TimeInterval) -> Bool {
+            presentationMatches(CGRect(origin: .zero, size: size),
+                recent: recentPresentationSizes(at: time, frames: history, initial: old))
+        }
+        // A long idle hold is valid, but a replaced size expires after100 ms.
+        return matches(old, at: 9.9) && !matches(new, at: 9.9)
+            && matches(old, at: 10.02) && matches(new, at: 10.02)
+            && !matches(old, at: 10.101) && matches(new, at: 10.101)
+            && !matches(CGSize(width: 999, height: 999), at: 10.02)
+    }
     private func percentile(_ values: [Double], _ fraction: Double) -> Double {
         guard !values.isEmpty else { return .infinity }
         let sorted = values.sorted()
@@ -178,12 +206,18 @@ final class NativeMotionHarness: NSObject {
         let maxRenderLag = mismatch.map { max(0, $0.observed - $0.renderedAt) }.max() ?? 0
         let presentationProbes = probes.filter { $0.layerPresentation != nil }
         let activePresentationCount = presentationProbes.filter { $0.running }.count
-        let presentationsValid = presentationProbes.allSatisfy { probe in
-            guard let bounds = probe.layerPresentation, bounds.origin == .zero else { return false }
-            let recent = [probe.frame.size] + samples.filter {
-                $0.observed <= probe.observed && probe.observed - $0.observed <= 0.1
-            }.map { $0.frame.size }
-            return recent.contains { abs($0.width - bounds.width) < 0.01 && abs($0.height - bounds.height) < 0.01 }
+        var presentationsValid = true
+        for probe in presentationProbes {
+            guard let bounds = probe.layerPresentation else { continue }
+            // A held frame does not grow stale while idle. Its replacement starts
+            // the <=100 ms presentation allowance, including the first moving frame.
+            let recent = recentPresentationSizes(at: probe.observed,
+                frames: samples.map { (time: $0.observed, size: $0.frame.size) }, initial: geometry.frame(progress: 0).size)
+            let valid = presentationMatches(bounds, recent: recent)
+            if !valid {
+                SmokeDiagnostics.mark("motion presentation rejected profile=\(profile) time=\(probe.observed) current=\(probe.frame.size) presentation=\(bounds) recent=\(recent)")
+                presentationsValid = false
+            }
         }
         let native = samples.allSatisfy { sample in
             let expected = geometry.frame(progress: sample.progress)
@@ -194,7 +228,7 @@ final class NativeMotionHarness: NSObject {
         let source = samples.first?.source ?? "missing"
         let expectedSource: String
         if #available(macOS 14.0, *), profile == .adaptive { expectedSource = "view-display-link" }
-        else { expectedSource = "timer-60hz" }
+        else { expectedSource = profile == .synchronousBaseline ? "timer-60hz" : "dispatch-60hz" }
         // Baseline is observational. The new path and13 fallback must meet bounded
         // callback and view-update limits under the same synthetic load.
         let cadence = maxGap <= 0.12 && p95Gap <= 0.05 && p95Apply <= 0.02 && maxRenderLag <= 0.12
