@@ -2,13 +2,21 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.6 compatibility candidate — native results pending
+## v0.1.6 compatibility / close-endpoint candidate — native results pending
 
 The candidate adds a shared capability planner and production reconciler. Runtime inputs are fresh AppKit screen rectangles/safe areas and public Core Graphics built-in/online/active/asleep/mirror flags; no model whitelist, physical-notch coordinate table or model telemetry is used. Invalid or incomplete geometry removes the old hit region immediately, with fresh rechecks scheduled at 150/600 ms. Unchanged display/Space notifications preserve the existing controller and hover trajectory. Sleep, inactive session, hidden app, disabled overlay and termination cancel overlay activity and delayed refreshes.
 
 New pure tests include 216 notched-family-shaped synthetic layouts across point scales, global origins, backing factors and off-center exclusion bounds; non-notched families and invalid states fall back to the menu bar. The native `--display-test` injects snapshots into the same production coordinator. It maps arbitrary cutout widths/depths to the hosted screen for actual 1x/2x bitmap-axis and expanded Quit checks, then exercises identity reuse, selective replacement, calibration/reconnect/reset, missing/duplicate identities, scale changes, fresh retries and retired-source cleanup. These tests have not run on macOS for this candidate yet. Existing motion, alignment, five-skin, quota, official-helper, DMG and login-safety gates remain required.
 
 The [compatibility matrix](COMPATIBILITY.md) is sourced from Apple pages checked on 2026-10-15. Native panel fixtures are not physical MacBook, closed-lid, mirrored-display or Spaces tests. The application still targets macOS 13+; later Macs need their own supported newer macOS, and unsupported older OS versions remain outside scope. Signing and real login/reboot limitations below remain.
+
+### Closing endpoint diagnostic follow-up
+
+[Initial diagnostic run #19](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38698995693) stopped in test compilation because two CGRect nonfinite literals had ambiguous scalar types. Both jobs encountered the same compile error; no native display or official-helper test ran. The follow-up qualifies those literals as CGFloat.
+
+The user also reported a visually abrupt final collapse. Source review found no exact-zero content swap: surface/rail fades are continuous and details remain in a non-sizing overlay. It did identify an unguarded synchronization boundary: the geometry source stopped immediately after requesting the final SwiftUI update and native window resize. The follow-up keeps only an animated close's source alive until a fresh zero-progress view update and matching viewport/native bounds are observed. Its 120 ms deadline retires at the next available main-loop callback, reports a timeout explicitly, and is canceled immediately by reentry or teardown. Opening trajectories, quota/color clocks and paint remain unchanged. This closes a source-level synchronization gap; it does not yet establish the user's physical visual cause.
+
+The standalone demo-only close test compares the old immediate-retirement strategy with the new five-skin adaptive path and dispatch fallback, records actual final callbacks, the one final display-call duration, acknowledgement versus actual retirement timestamps, and subsequent non-forcing view/layer-bound probes, and checks pending reentry/retirement. Separate calibrated 1x/2x own-view replays compare dense near-zero states in one global-coordinate canvas, including a visible-region metric outside the synthetic camera rectangle, transparent-interior controls, bounding boxes, and missing-line/stale-viewport/abrupt-replacement controls. Forced bitmap capture can flush drawing, so it is not labeled scanout or a perceptual smoothness test. The old strategy is observational; a reproduced old failure does not excuse a new-path failure. All results for this follow-up remain pending.
 
 ## v0.1.5 observed macOS results
 
