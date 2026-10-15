@@ -2,7 +2,7 @@
 
 ## What the meter reads
 
-The meter requests the account type and quota windows from the installed official Codex desktop helper or CLI using the documented app-server interface. An account response may contain identity fields; the meter's parser discards those fields and never logs or persists the raw response. Quota snapshots are held in memory only.
+The meter requests the account type and quota windows from the installed official Codex desktop helper or CLI using the documented app-server interface. The account-type parser discards account identity fields. When the existing quota response supplies its optional accountId, the meter keeps only a redacted, opaque continuity value in memory with the last snapshot. It is never displayed, logged, encoded, persisted, or included in rendering artifacts. Missing identity suppresses numerical consumption comparisons. Raw responses are never logged or persisted.
 
 The meter does not open or parse credential files, access tokens, conversation history, session recordings, or private Codex databases. It does not use private HTTP endpoints or request any model generation, login, logout, token refresh, or configuration change.
 
@@ -20,7 +20,7 @@ The app does not read Codex stdout except for its own protocol connection. Subpr
 
 ## Local preferences
 
-The app stores only the overlay and skin preferences, selected quota-group/window identifiers and motion/speed preferences, and optional Codex executable path in macOS UserDefaults. It does not persist quota values, account names, emails, tokens, or reset history.
+The app stores only overlay/skin/refresh-feedback preferences, selected quota-group/window identifiers, motion/speed preferences, optional per-display contour corrections, and an optional Codex executable path in macOS UserDefaults. It does not persist quota values, account names, emails, tokens, or reset history.
 
 ## Permissions and network
 
@@ -48,6 +48,12 @@ The user may explicitly enable or disable the main app's login item through Appl
 
 The DMG contains the app, a link to Applications and installation instructions. It does not run an installer script. CI mounts its own image read-only for verification and detaches it; login-item mutations use injected synthetic services only. Skin and motion choices are local preferences. Rainbow uses one bounded color-animation clock only while a visible colored surface is eligible; it pauses for Reduce Motion, low power, sleep, session inactivity or disabled/hidden surfaces. It never adds network access or quota polling.
 
-### Horizontal calibration (v0.1.4 candidate)
+### Local contour calibration
 
-Optional alignment values are stored only in local preferences, keyed by the public display UUID for each built-in notched screen. The app does not query hardware serial numbers or transmit/log these identifiers. Default correction is zero; Reset removes the stored value. Demo/native test fixtures use synthetic identities and never save calibration preferences.
+Optional alignment values are stored only in local preferences, keyed by the public display UUID for each built-in notched screen. The app does not query hardware serial numbers or transmit/log these identifiers. Horizontal, total-width, bottom-depth and corner corrections default to zero; Reset removes both correction stores for the selected display. Automatic fitting uses the current public exclusion rectangles and a documented circular approximation, so calibration is an optional fallback. Demo/native test fixtures use synthetic identities and never save calibration preferences.
+
+## Refresh feedback
+
+A transient update notice uses the same completed quota read; it adds no request, polling, notification permission or focus activation. A numerical decrease is shown only for fresh, monotonically ordered snapshots with the same supplied account continuity value, bucket/window identity, duration and future reset epoch. It means percentage points between those two reads, not tokens or a relative percentage. Initial reads, source/account changes, missing identity, errors, stale gaps, resets and increases use non-comparative wording. Only the newest pending notice is retained briefly behind active interaction.
+
+Refresh feedback is enabled by default for the requested update experience and can be disabled in Settings. Disabling it discards pending feedback and dismisses a passive notice without closing active hover details. This preference does not affect reads or login-item enrollment.

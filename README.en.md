@@ -14,7 +14,7 @@ The meter reads the official Codex CLI's account interface. It sends no model pr
 
 **v0.1.5 hover-motion preview is available.** It uses display-linked geometry and prewarmed details; reentering during collapse immediately redirects the existing motion. Five skins, the fine idle contour, per-display alignment, DMG installation and optional Launch at Login remain available. The [native timing checks](docs/VALIDATION.md) passed; perceived smoothness still needs real-device feedback.
 
-**v0.1.6 compatibility candidate is under validation:** runtime display capabilities drive placement across sizes and scaling modes; non-notched, external, closed-lid and mirrored setups retain menu-bar access. The currently verified download remains v0.1.5. See the [model and validation matrix](docs/COMPATIBILITY.md) for the OS boundary and synthetic-versus-physical evidence.
+**v0.1.6 candidate is under validation:** automatic circular contours, compact wrapped details, refresh feedback and display lifecycle compatibility are being tested together; non-notched, external, closed-lid and mirrored setups retain menu-bar access. The currently verified download remains v0.1.5. See the [model and validation matrix](docs/COMPATIBILITY.md) for the OS boundary and synthetic-versus-physical evidence.
 
 ## Download
 
