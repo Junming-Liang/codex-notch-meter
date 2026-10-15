@@ -60,7 +60,7 @@ struct CompactDetailView: View {
                     .background(GeometryReader { proxy in
                         Color.clear.preference(key: CompactQuitFrame.self, value: proxy.frame(in: .named("compactDetails")))
                     })
-            }.font(.system(size: 11)).frame(height: 28)
+            }.font(.system(size: 11)).frame(height: 28).padding(.horizontal, 2)
         }
         .padding(.bottom, 16)
         .frame(width: 304, height: height, alignment: .top)

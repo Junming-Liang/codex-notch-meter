@@ -272,6 +272,24 @@ final class CollapseRenderHarness: NSObject {
             y: area.maxY - CGFloat(maxY + 1) / CGFloat(scale),
             width: CGFloat(maxX - minX + 1) / CGFloat(scale), height: CGFloat(maxY - minY + 1) / CGFloat(scale))
     }
+    /// Measure each straight-side axis separately, so the long horizontal rail
+    /// cannot dilute a one-point viewport displacement in a whole-image average.
+    private func sideAxis(_ pixels: [Double], scale: Int, near axis: CGFloat) -> Double? {
+        let area = canvas, width = Int(area.width * CGFloat(scale)), height = Int(area.height * CGFloat(scale))
+        guard pixels.count == width * height * 4 else { return nil }
+        var weightedX = 0.0, weight = 0.0
+        for y in 0..<height {
+            let depth = geometry.screen.maxY - (area.maxY - (CGFloat(y) + 0.5) / CGFloat(scale))
+            guard depth >= 8, depth <= 18 else { continue }
+            for x in 0..<width {
+                let gx = area.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
+                guard abs(gx - axis) <= 4 else { continue }
+                let alpha = pixels[(y * width + x) * 4 + 3]
+                weightedX += Double(gx) * alpha; weight += alpha
+            }
+        }
+        return weight > 1 ? weightedX / weight : nil
+    }
     private func inspectReplay() {
         for scale in [1, 2] {
             guard let scenes = replayPixels[scale], scenes.count == progressPoints.count, let idle = scenes.last else { passed = false; continue }
@@ -342,9 +360,24 @@ final class CollapseRenderHarness: NSObject {
             let opaqueDelta = normalizedDifference(rectangle, idle, reference: idle)
             let staleViewportDelta = normalizedDifference(outsideHardware(shifted, scale: scale), visibleIdle, reference: visibleIdle)
             let abruptDelta = normalizedDifference(outsideHardware(scenes[0], scale: scale), visibleIdle, reference: visibleIdle)
-            let controls = missingDelta > 0.12 && opaqueDelta > 0.12 && staleViewportDelta > 0.12 && abruptDelta > 0.12
-            passed = late && controls && movingRail && passed
-            SmokeDiagnostics.mark("collapse tail gate theme=\(themes[replayTheme].rawValue) scale=\(scale) late=\(late) terminalBounds=\(terminalBounds) monotonicTail=\(monotonicTail) controls=\(controls) missing=\(missingDelta) opaque=\(opaqueDelta) staleViewport=\(staleViewportDelta) abruptReplacement=\(abruptDelta) valid=\(late && controls)")
+            let axes = [geometry.notch.minX - 1, geometry.notch.maxX + 1]
+            var terminalAxes = true, shiftedAxesRejected = true
+            for axis in axes {
+                guard let reference = sideAxis(idle, scale: scale, near: axis),
+                      let displaced = sideAxis(shifted, scale: scale, near: axis) else {
+                    terminalAxes = false; shiftedAxesRejected = false; continue
+                }
+                let tolerance = 0.12 / Double(scale)
+                let displacement = displaced - reference
+                let deltas = scenes.suffix(3).compactMap { sideAxis($0, scale: scale, near: axis).map { $0 - reference } }
+                let stable = deltas.count == 3 && deltas.allSatisfy { abs($0) <= tolerance }
+                let rejected = abs(displacement - 1) < 0.05 && abs(displacement) > tolerance
+                terminalAxes = terminalAxes && stable; shiftedAxesRejected = shiftedAxesRejected && rejected
+                SmokeDiagnostics.mark("collapse side-axis theme=\(themes[replayTheme].rawValue) scale=\(scale) expectedBand=\(axis) terminalDeltas=\(deltas) onePointFaultDelta=\(displacement) stable=\(stable) shiftedRejected=\(rejected)")
+            }
+            let controls = missingDelta > 0.12 && opaqueDelta > 0.12 && shiftedAxesRejected && abruptDelta > 0.12
+            passed = late && terminalAxes && controls && movingRail && passed
+            SmokeDiagnostics.mark("collapse tail gate theme=\(themes[replayTheme].rawValue) scale=\(scale) late=\(late) terminalBounds=\(terminalBounds) terminalAxes=\(terminalAxes) monotonicTail=\(monotonicTail) controls=\(controls) missing=\(missingDelta) opaque=\(opaqueDelta) staleViewport=\(staleViewportDelta) abruptReplacement=\(abruptDelta) valid=\(late && terminalAxes && controls)")
         }
     }
     private func finish(_ result: Bool) {

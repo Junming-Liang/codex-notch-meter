@@ -118,6 +118,15 @@ final class NativeMotionHarness: NSObject {
             if let event = trace {
                 SmokeDiagnostics.mark("motion reentry profile=\(profiles[profileIndex]) priorScheduled=\(event.scheduledTime) eventTime=\(event.eventTime) consumedElapsed=\(event.consumedElapsed) before=[\(event.before.progress),\(event.before.velocity)] integrated=[\(event.integrated.progress),\(event.integrated.velocity)] returned=[\(island.smokeProgress),\(island.smokeVelocity)] immediateTarget=\(island.smokeTargetExpanded) continuous=\(continuous)")
             }
+            // After the near-boundary reversal, move the synthetic pointer into
+            // the body for the hold. A fixed near-edge point could legitimately
+            // leave the visible side as the compact shoulder curves grow inward.
+            let heldFrame = geometry.frame(progress: island.smokeProgress)
+            heldPointer = CGPoint(x: heldFrame.midX, y: heldFrame.midY)
+            if let heldPointer {
+                passed = geometry.hoverContains(heldPointer, progress: island.smokeProgress) && passed
+                island.smokePointer(at: heldPointer, now: now)
+            }
             next(4, now: now)
         case 4 where island.smokeProgress == 1 && !island.smokeMotionRunning:
             heldPointer = nil; next(5, now: now)
@@ -157,8 +166,15 @@ final class NativeMotionHarness: NSObject {
     private func edgePoint(inside: Bool) -> CGPoint? {
         guard let island = controller else { return nil }
         let p = island.smokeProgress, frame = geometry.frame(progress: p), contour = geometry.contourRect(progress: p)
-        return CGPoint(x: frame.minX + contour.maxX + (inside ? -0.25 : 0.25),
+        // The straight side follows the shared contour's inward shoulder, not
+        // the rectangular host edge. Its midpoint is outside both circular turns.
+        let shoulder = min(12 * CGFloat(p), max(0, contour.width / 4 - 2))
+        let point = CGPoint(x: frame.minX + contour.maxX - shoulder + (inside ? -0.25 : 0.25),
             y: frame.maxY - contour.midY)
+        let classified = geometry.hoverContains(point, progress: p)
+        passed = (classified == inside) && passed
+        SmokeDiagnostics.mark("motion boundary classification progress=\(p) expectedInside=\(inside) actualInside=\(classified)")
+        return point
     }
     private func crossEdge(inside: Bool, now: TimeInterval) {
         guard let island = controller, let point = edgePoint(inside: inside) else { passed = false; return }
