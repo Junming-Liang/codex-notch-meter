@@ -47,49 +47,110 @@ public struct IslandMotion: Equatable, Sendable {
     public var isSettled: Bool { velocity == 0 && (progress == 0 || progress == 1) }
 }
 
+/// A user correction in points, independent of a display's backing scale.
+public enum HorizontalCalibration {
+    public static func sanitized(_ value: Double = 0) -> Double {
+        guard value.isFinite else { return 0 }
+        return (min(8, max(-8, value)) * 2).rounded() / 2
+    }
+}
+
 public struct IslandGeometry: Equatable, Sendable {
     public let screen: CGRect
+    /// Unmodified system-reported camera exclusion bounds from the auxiliary regions.
     public let notch: CGRect
+    public let horizontalAdjustment: Double
+    public let calibratedNotch: CGRect
+    /// Exact collapsed contour in global coordinates: 3pt on the sides/bottom.
+    public let contourFrame: CGRect
     public let collapsedSize: CGSize
     public let expandedSize: CGSize
     public let backingScale: CGFloat
-    private let collapsedFrame: CGRect
-    private let expandedFrame: CGRect
-    public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1) {
+    private let expandedContourFrame: CGRect
+    public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1, horizontalAdjustment: Double = 0) {
+        let hardware = notch.notch
+        let scale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
+        let width = min(380, screen.width - 24)
+        let height = min(hardware.height + 480, screen.height - 32)
+        let screenLeft = ceil(screen.minX * scale) / scale
+        let screenRight = floor(screen.maxX * scale) / scale
+        let expandedLeft = ceil((screen.minX + 12) * scale) / scale
+        let expandedRight = floor((screen.maxX - 12) * scale) / scale
+        var lower = max(-8, screenLeft - (hardware.minX - 3))
+        var upper = min(8, screenRight - (hardware.maxX + 3))
+        let centeredCardFits = hardware.midX - width / 2 >= expandedLeft
+            && hardware.midX + width / 2 <= expandedRight
+        if centeredCardFits {
+            lower = max(lower, expandedLeft + width / 2 - hardware.midX)
+            upper = min(upper, expandedRight - width / 2 - hardware.midX)
+        }
+        // Valid hardware has room for its 3pt contour. Restrict corrections to
+        // half-point steps that keep both that contour and the centered card in bounds.
+        // Zero stays zero; unsupported hardware must never acquire a hidden correction.
+        let requested = HorizontalCalibration.sanitized(horizontalAdjustment)
+        let adjustment: Double
+        if lower <= 0 && upper >= 0 {
+            adjustment = min(Double(floor(upper * 2) / 2), max(Double(ceil(lower * 2) / 2), requested))
+        } else {
+            adjustment = requested
+        }
         self.screen = screen
-        self.notch = notch.notch
-        self.backingScale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
-        // Nominal 3pt extension; outward alignment adds <1 backing pixel per edge.
-        // Align once relative to the actual camera bounds, including odd widths/origins.
-        let scale = self.backingScale
-        let left = floor((notch.notch.minX - 3) * scale) / scale
-        let right = ceil((notch.notch.maxX + 3) * scale) / scale
-        let bottom = floor((notch.notch.minY - 3) * scale) / scale
-        collapsedFrame = CGRect(x: left, y: bottom, width: right - left, height: screen.maxY - bottom)
-        collapsedSize = collapsedFrame.size
-        let width = ceil(min(380, screen.width - 24) * scale / 2) * 2 / scale
-        let height = ceil(min(notch.notch.height + 480, screen.height - 32) * scale) / scale
-        let x = ((notch.notch.midX - width / 2) * scale).rounded() / scale
-        expandedFrame = CGRect(x: x, y: screen.maxY - height, width: width, height: height)
-        expandedSize = expandedFrame.size
+        self.notch = hardware
+        self.horizontalAdjustment = adjustment
+        calibratedNotch = hardware.offsetBy(dx: adjustment, dy: 0)
+        self.backingScale = scale
+        contourFrame = CGRect(x: calibratedNotch.minX - 3, y: calibratedNotch.minY - 3,
+            width: calibratedNotch.width + 6, height: calibratedNotch.height + 3)
+        // Exception for a system-reported near-edge notch: retain a usable full
+        // card and contain it in the screen margins. Only the expanded card moves;
+        // the raw notch and exact collapsed contour are never recentered.
+        let expandedX = min(max(calibratedNotch.midX - width / 2, expandedLeft), expandedRight - width)
+        expandedContourFrame = CGRect(x: expandedX,
+            y: screen.maxY - height, width: width, height: height)
+        collapsedSize = Self.nativeFrame(containing: contourFrame, screen: screen, scale: scale).size
+        expandedSize = Self.nativeFrame(containing: expandedContourFrame, screen: screen, scale: scale).size
     }
     public func frame(progress: Double) -> CGRect {
+        Self.nativeFrame(containing: drawingFrame(progress: progress), screen: screen, scale: backingScale)
+    }
+    /// Exact drawing rectangle in top-down coordinates inside the normalized window.
+    /// Its origin must be honored; centering it in the window reintroduces grid bias.
+    public func contourRect(progress: Double) -> CGRect {
+        localRect(drawingFrame(progress: progress), progress: progress)
+    }
+    /// The fixed collapsed rail, translated into the current top-down window.
+    public func railRect(progress: Double) -> CGRect {
+        localRect(contourFrame, progress: progress)
+    }
+    private func localRect(_ contour: CGRect, progress: Double) -> CGRect {
+        let native = frame(progress: progress)
+        return CGRect(x: contour.minX - native.minX, y: native.maxY - contour.maxY,
+            width: contour.width, height: contour.height)
+    }
+    private func drawingFrame(progress: Double) -> CGRect {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
-        if p == 0 { return collapsedFrame }
-        if p == 1 { return expandedFrame }
-        // AppKit integralizes fractional NSWindow frames. Interpolate aligned
-        // edges and normalize before native placement, sizing and hit-testing.
-        let left = floor((collapsedFrame.minX + (expandedFrame.minX - collapsedFrame.minX) * p) * backingScale) / backingScale
-        let right = ceil((collapsedFrame.maxX + (expandedFrame.maxX - collapsedFrame.maxX) * p) * backingScale) / backingScale
-        let height = ceil((collapsedSize.height + (expandedSize.height - collapsedSize.height) * p) * backingScale) / backingScale
-        return CGRect(x: left, y: screen.maxY - height, width: right - left, height: height)
+        if p == 0 { return contourFrame }
+        if p == 1 { return expandedContourFrame }
+        let width = contourFrame.width + (expandedContourFrame.width - contourFrame.width) * p
+        let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * p
+        let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * p
+        return CGRect(x: center - width / 2,
+            y: screen.maxY - height, width: width, height: height)
+    }
+    private static func nativeFrame(containing contour: CGRect, screen: CGRect, scale: CGFloat) -> CGRect {
+        // Only the transparent native envelope is aligned. The visible contour
+        // retains its exact midpoint even for odd widths and fractional origins.
+        let left = floor(contour.minX * scale) / scale
+        let right = ceil(contour.maxX * scale) / scale
+        let bottom = floor(contour.minY * scale) / scale
+        return CGRect(x: left, y: bottom, width: right - left, height: screen.maxY - bottom)
     }
     public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
         // Never use visibleFrame: the island is attached to the physical top edge.
-        frame(progress: progress).contains(point)
+        drawingFrame(progress: progress).contains(point)
     }
     public func interactiveContains(_ point: CGPoint) -> Bool {
-        let frame = frame(progress: 1)
+        let frame = drawingFrame(progress: 1)
         // Only the fully revealed content accepts clicks, not corners or hardware cutout.
         return CGRect(x: frame.minX + 16, y: frame.minY + 16,
             width: frame.width - 32, height: frame.height - notch.height - 28).contains(point)

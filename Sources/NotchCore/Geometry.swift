@@ -9,21 +9,22 @@ public struct NotchGeometry: Equatable, Sendable {
     public let leftPanel: CGRect
     public let rightPanel: CGRect
 
-    public static func calculate(screen: CGRect, topInset: Double, auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, scale: Double = 2) -> NotchGeometry? {
+    public static func calculate(screen: CGRect, topInset: Double, auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, scale _: Double = 2) -> NotchGeometry? {
         guard topInset > 0, topInset < Double(screen.height) / 2,
               let left = auxiliaryLeft, let right = auxiliaryRight,
               left.width > 0, right.width > 0,
               left.maxX < right.minX,
               left.minX >= screen.minX - 1, right.maxX <= screen.maxX + 1,
               abs(left.maxY - screen.maxY) < 2, abs(right.maxY - screen.maxY) < 2 else { return nil }
-        let pixelScale = scale > 0 && scale.isFinite ? scale : 1
-        func align(_ value: CGFloat) -> CGFloat { (value * pixelScale).rounded() / pixelScale }
-        let x = align(left.maxX), y = align(screen.maxY - topInset)
-        let width = align(right.minX) - x
+        // Auxiliary edges describe system-reported camera exclusion bounds, not a native window.
+        // Keep them exact; backing-grid normalization belongs to window placement.
+        // The scale argument remains accepted for source compatibility.
+        let x = left.maxX, y = screen.maxY - topInset
+        let width = right.minX - x
         guard width > 0, width < screen.width / 2 else { return nil }
-        let notch = CGRect(x: x, y: y, width: width, height: align(topInset))
+        let notch = CGRect(x: x, y: y, width: width, height: topInset)
         let wing: CGFloat = 6, bottom: CGFloat = 7
-        let middle = align(notch.midX)
+        let middle = notch.midX
         return NotchGeometry(
             notch: notch,
             leftPanel: CGRect(x: notch.minX - wing, y: notch.minY - bottom, width: middle - notch.minX + wing, height: notch.height + bottom),
