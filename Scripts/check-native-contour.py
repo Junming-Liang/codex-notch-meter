@@ -4,21 +4,21 @@ import os
 from pathlib import Path
 import subprocess
 
-environment = os.environ.copy()
-environment['CODEX_CONTOUR_ARTIFACT_DIR'] = str(Path('dist/contour-rendering').resolve())
-process = subprocess.Popen(
-    ['dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter', '--contour-test'],
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
-)
-try:
-    stdout, stderr = process.communicate(timeout=25)
-except subprocess.TimeoutExpired:
-    process.kill()
-    stdout, stderr = process.communicate(timeout=5)
+for theme in ("standard", "rainbow", "aurora", "sunset", "ice"):
+    environment = os.environ.copy()
+    environment['CODEX_CONTOUR_ARTIFACT_DIR'] = str(Path('dist/contour-rendering', theme).resolve())
+    arguments = ['dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter', '--contour-test']
+    arguments.append('--skin=' + theme)
+    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment)
+    try:
+        stdout, stderr = process.communicate(timeout=25)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate(timeout=5)
+        print(stdout)
+        print(stderr)
+        raise SystemExit(f'Native {theme} contour test exceeded the 25-second deadline')
     print(stdout)
     print(stderr)
-    raise SystemExit('Native contour test exceeded the 25-second deadline')
-print(stdout)
-print(stderr)
-if process.returncode != 0 or 'CONTOUR_OK:' not in stdout or 'SMOKE_OK:' not in stdout:
-    raise SystemExit('Native contour or orderly-shutdown contract failed')
+    if process.returncode != 0 or 'CONTOUR_OK:' not in stdout or 'SMOKE_OK:' not in stdout:
+        raise SystemExit(f'Native {theme} contour or orderly-shutdown contract failed')
