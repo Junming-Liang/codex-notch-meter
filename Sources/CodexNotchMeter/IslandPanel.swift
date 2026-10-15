@@ -330,6 +330,17 @@ final class IslandPanelController: NSObject {
     }
     var smokeTargetExpanded: Bool { hover.isExpanded }
     var smokeStopped: Bool { stopped && pointerTimer == nil && motionFrames == nil && !panel.isVisible }
+    func verifyDisplayStopIsInert() -> Bool {
+        guard CommandLine.arguments.contains("--display-test") else { return false }
+        let pointer = pointerTimer, source = motionFrames
+        let frame = panel.frame, progress = motion.progress, velocity = motion.velocity
+        stop()
+        if let pointer { pollPointer(pointer) }
+        let sourceSafe = source?.verifyRetiredCallbackIsInert() ?? true
+        collapse(); beginSmokeExpansion()
+        return pointer != nil && source != nil && sourceSafe && smokeStopped && panel.frame == frame
+            && motion.progress == progress && motion.velocity == velocity && panel.ignoresMouseEvents
+    }
     func verifySmokeClickRouting() -> Bool {
         let frame = geometry.frame(progress: 1)
         updateClickRouting(CGPoint(x: frame.midX, y: frame.minY + 100))

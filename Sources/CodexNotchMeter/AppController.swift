@@ -8,9 +8,9 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
@@ -18,6 +18,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var contourHarness: ContourRenderHarness?
     private var alignmentHarness: AlignmentRenderHarness?
     private var motionHarness: NativeMotionHarness?
+    private var displayHarness: DisplayCompatibilityHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -28,7 +29,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var smokePhaseStarted: TimeInterval = 0
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
-    private var islands: [IslandPanelController] = []
+    private lazy var displayCoordinator = DisplayCoordinator(model: model,
+        snapshots: { NativeDisplays.snapshot() }, activity: { [weak self] in self?.displayActivity ?? DisplayActivity() },
+        makeIsland: { [unowned self] in self.makeIsland(geometry: $0) },
+        changed: { [weak self] in self?.updateSkinActivity() })
+    private var islands: [IslandPanelController] { displayCoordinator.islands }
+    private var displayActivity: DisplayActivity {
+        var state = DisplayActivity()
+        state.overlayEnabled = model.overlayEnabled; state.systemSleeping = sleeping
+        state.displaysSleeping = displaySleeping; state.sessionActive = sessionActive
+        state.applicationHidden = NSApp.isHidden; state.terminating = terminating
+        return state
+    }
     private var settingsWindow: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -88,7 +100,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             Task { @MainActor in self?.sleeping = false; self?.model.wake(); self?.rebuildIslands(); self?.updateSkinActivity() }
         })
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.sleeping = true; self?.model.sleep(); self?.stopIslands(); self?.updateSkinActivity() }
+            Task { @MainActor in self?.sleeping = true; self?.model.sleep(); self?.rebuildIslands(); self?.updateSkinActivity() }
         })
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rebuildIslands() }
@@ -105,13 +117,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     if change == 1 { self.displaySleeping = false }
                     if change == 2 { self.sessionActive = false }
                     if change == 3 { self.sessionActive = true }
-                    self.updateSkinActivity()
+                    self.rebuildIslands(); self.updateSkinActivity()
                 }
+            })
+        }
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: nil, queue: .main) { [weak self] note in
+            Task { @MainActor in
+                guard let self, let window = note.object as? NSWindow, self.displayCoordinator.owns(window) else { return }
+                self.rebuildIslands()
+            }
+        })
+        for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.rebuildIslands() }
             })
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
+            if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
+            else if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
             else if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
             else if CommandLine.arguments.contains("--contour-test") { runContourTest() }
             else { runSmokeTest() }
@@ -142,7 +166,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -161,41 +185,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             print(smokeReady ? "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only" : "SMOKE_FAILED: native island checks failed")
         }
     }
-    private func stopIslands() { islands.forEach { $0.stop() }; islands.removeAll() }
+    private func stopIslands() { displayCoordinator.stop() }
     private func rebuildIslands() {
-        defer { updateSkinActivity() }
-        stopIslands(); model.displayNotice = nil
-        guard !smokeMode else { return } // Native fixtures own their synthetic displays and preferences.
-        let eligible = NSScreen.screens.compactMap { screen -> (NSScreen, NotchGeometry, String?)? in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-                  CGDisplayIsBuiltin(CGDirectDisplayID(number.uint32Value)) != 0,
-                  let notch = NotchGeometry.calculate(screen: screen.frame, topInset: screen.safeAreaInsets.top,
-                    auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-                    scale: screen.backingScaleFactor) else { return nil }
-            // Public display UUID, stored only as a local preference key. Never log or upload it.
-            let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
-            let key = uuid.map { CFUUIDCreateString(nil, $0) as String }
-            return (screen, notch, key)
-        }
-        model.configureCalibrationDisplays(eligible.compactMap { screen, notch, key in
-            key.map {
-                CalibrationDisplay(id: $0, name: screen.localizedName,
-                    minimum: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor, horizontalAdjustment: -8).horizontalAdjustment,
-                    maximum: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor, horizontalAdjustment: 8).horizontalAdjustment)
-            }
-        })
-        guard model.overlayEnabled, !sleeping, !terminating else { return }
-        for (screen, notch, key) in eligible {
-            let geometry = IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor,
-                horizontalAdjustment: model.horizontalAdjustment(for: key))
-            let screenBounds = screen.frame.insetBy(dx: -0.001, dy: -0.001)
-            guard screenBounds.contains(geometry.frame(progress: 0)), screenBounds.contains(geometry.frame(progress: 1)) else {
-                model.displayNotice = "当前屏幕边界无法容纳刘海轮廓，已保留菜单栏入口。"; continue
-            }
-            let island = makeIsland(geometry: geometry)
-            if island.placementIsValid { islands.append(island) }
-            else { island.stop(); model.displayNotice = "系统未提供可靠的刘海位置，已保留菜单栏入口。" }
-        }
+        guard !smokeMode, !terminating else { return }
+        displayCoordinator.refresh()
     }
     private func updateSkinActivity() {
         let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
@@ -293,6 +286,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
             selector: #selector(advanceSmokeTest(_:)), userInfo: nil, repeats: true)
+    }
+    private func runDisplayTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        displayHarness = DisplayCompatibilityHarness(model: model, screen: screen, menuAvailable: { [weak self] in self?.statusItem?.button != nil }) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        displayHarness?.start()
     }
     private func runMotionTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }

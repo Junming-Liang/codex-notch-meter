@@ -27,9 +27,9 @@ final class MeterModel: ObservableObject {
         didSet { if !demo { defaults.set(horizontalCalibrations, forKey: "horizontalCalibrations") } }
     }
     @Published private(set) var now = Date()
-    @Published var overlayEnabled: Bool { didSet { defaults.set(overlayEnabled, forKey: "overlayEnabled") } }
-    @Published var preferredBucket: String { didSet { defaults.set(preferredBucket, forKey: "preferredBucket") } }
-    @Published var executablePath: String { didSet { defaults.set(executablePath, forKey: "executablePath") } }
+    @Published var overlayEnabled: Bool { didSet { if !demo { defaults.set(overlayEnabled, forKey: "overlayEnabled") } } }
+    @Published var preferredBucket: String { didSet { if !demo { defaults.set(preferredBucket, forKey: "preferredBucket") } } }
+    @Published var executablePath: String { didSet { if !demo { defaults.set(executablePath, forKey: "executablePath") } } }
     private let defaults = UserDefaults.standard
     private var policy = RefreshPolicy()
     private var nextAttempt = Date.distantPast
@@ -231,7 +231,7 @@ final class MeterModel: ObservableObject {
     }
     /// Synthetic rendering fixtures update the SAME live published model; never enable account I/O.
     func setContourFixture(left: Double?, right: Double?, stale: Bool = false, pending: Bool = false) {
-        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") else { return }
+        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") else { return }
         now = Date(); error = nil
         snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [left, right].enumerated().map { index, remaining in
             QuotaWindow(id: "render-\(index)", usedPercent: remaining.map { 100 - $0 },

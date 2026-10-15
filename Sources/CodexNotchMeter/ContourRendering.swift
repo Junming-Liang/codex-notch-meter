@@ -5,7 +5,7 @@ import NotchCore
 
 /// Own-view bitmap evidence only. Never captures the desktop, other windows, or an account.
 @MainActor
-private final class ScaleCalibrationView: NSView {
+final class ScaleCalibrationView: NSView {
     private(set) var drawingScale: CGSize = .zero
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -18,7 +18,7 @@ private final class ScaleCalibrationView: NSView {
     }
 }
 
-private struct ContourPixel {
+struct ContourPixel {
     var r: Double, g: Double, b: Double, a: Double
     var chromatic: Bool { a > 0.2 && max(r, max(g, b)) - min(r, min(g, b)) > 0.12 }
     var light: Double { (r + g + b) / 3 }
@@ -34,7 +34,7 @@ private struct ContourPixel {
 }
 
 @MainActor
-private struct NativeContourBitmap {
+struct NativeContourBitmap {
     let representation: NSBitmapImageRep
     let size: CGSize
     let scale: Int
