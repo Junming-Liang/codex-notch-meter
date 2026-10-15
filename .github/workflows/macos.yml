@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.2 developer-preview ZIP after all checks pass
+        description: Publish v0.1.3 developer-preview DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -26,6 +26,8 @@ jobs:
         run: python3 Scripts/check-source.py
       - name: Synthetic unit and subprocess tests
         run: swift test
+      - name: Installer safety simulations
+        run: python3 Scripts/test-build-dmg.py
       - name: Build and verify universal app
         id: package
         run: bash Scripts/build-app.sh --universal
@@ -33,7 +35,7 @@ jobs:
         run: |
           python3 - <<'PYSMOKE'
           import subprocess
-          for scenario in ([], ["--smoke-empty"], ["--smoke-many"]):
+          for scenario in ([], ["--smoke-empty"], ["--smoke-many"], ["--rainbow"]):
               process = subprocess.Popen(
                   ["dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter", "--smoke-test", *scenario],
                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -68,12 +70,14 @@ jobs:
       - name: Native transparent contour and live-update pixel gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-contour.py
+      - name: Build and inspect drag-to-Applications installer
+        run: python3 Scripts/build-dmg.py
       - name: Retain synthetic native rendering evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CodexNotchMeter-native-contour-evidence
-          path: dist/contour-rendering/*.png
+          path: dist/contour-rendering/**/*.png
           if-no-files-found: warn
           retention-days: 7
       - name: Upload verified developer preview
@@ -81,8 +85,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.2-universal.zip
-            dist/CodexNotchMeter-0.1.2-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.3-universal.zip
+            dist/CodexNotchMeter-0.1.3-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.3-universal.dmg
+            dist/CodexNotchMeter-0.1.3-universal.dmg.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -109,40 +115,45 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sed 's#dist/##' CodexNotchMeter-0.1.2-universal.zip.sha256 | sha256sum --check -
+          sha256sum --check CodexNotchMeter-0.1.3-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-0.1.3-universal.dmg.sha256
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.2" --jq '.[] | select(.ref == "refs/tags/v0.1.2") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.2") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.3" --jq '.[] | select(.ref == "refs/tags/v0.1.3") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.3") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.2 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.3 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.2
-          外观修复预览：默认仅显示刘海轮廓外的细额度线，透明底色与圆角；保留悬停展开和明显退出入口。
+          ## Codex Notch Meter v0.1.3
+          安装与个性化预览：新增拖入“应用程序”的 DMG、设置中的“登录时启动”选项，以及五款皮肤与可选流光彩虹动效。保留默认细轮廓与悬停详情。
 
-          下载 Universal ZIP，解压后可获得同时包含 Apple Silicon / Intel 二进制的 .app。
+          优先下载 Universal DMG，将 .app 拖到 Applications，再从“应用程序”打开；ZIP 仍可选。两种产物均包含 Apple Silicon / Intel 二进制。
+          登录时启动默认关闭，仅由用户点击请求启用；macOS 可能要求批准或拒绝临时签名。安装映像与测试不会注册登录项。
           需要 macOS 13+ 和已登录 ChatGPT 账户的官方 Codex 桌面应用或 CLI。未知桌面打包布局会安全报错。
 
           **开发预览 / Developer preview:** 仅使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。
           macOS 可能阻止下载产物启动。项目不提供关闭 Gatekeeper 或绕过安全检查的指令。
           Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only native geometry, drawing, motion, Quit-layout and shutdown checks passed in this workflow.
           Read-only inspection of the current official signed desktop DMG resolved its bundled helper within the production deadline; no downloaded Codex executable or account session was started.
-          Native 1x/2x offscreen contour alpha/color/arc/live-update gates passed. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
+          All five skins passed native 1x/2x full-U contour alpha/color/arc/live-selection/phase gates. Remaining fills from the left; the consumed right suffix is pure black. A shared maximum-15fps color scheduler passed synthetic lifecycle pause/resume checks.
+          Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.2" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.2 \
+            -f ref="refs/tags/v0.1.3" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.3 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.2 · macOS Developer Preview" \
+            --title "v0.1.3 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.2-universal.zip \
-            dist/CodexNotchMeter-0.1.2-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.3-universal.zip \
+            dist/CodexNotchMeter-0.1.3-universal.zip.sha256 \
+            dist/CodexNotchMeter-0.1.3-universal.dmg \
+            dist/CodexNotchMeter-0.1.3-universal.dmg.sha256
