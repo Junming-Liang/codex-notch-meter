@@ -38,6 +38,14 @@ CI 仅模拟注册/取消状态转换，并在原生进程中只读观察系统 
 
 彩虹仅在固定额度弧内改变颜色，不移动进度端点、不添加光晕、不扩大约 3pt 轮廓。共享时钟最高 15fps；减少动态效果、低电量模式、屏幕休眠、会话不活跃、覆盖层关闭或没有可见彩色内容时暂停。不增加额度轮询。低额度仍有琥珀/珊瑚提示，过期/待重置状态保留准确文字并降低亮度。
 
+## 水平微调（v0.1.4 候选）
+
+默认按系统报告的刘海安全区域对齐，不自动左移。若实物仍有轻微偏差，可在“设置 → 显示 → 水平微调”使用减号向左、加号向右；单位是 macOS 逻辑点，每次 0.5 pt，最多 ±8 pt，靠近屏幕边界时进一步限制。可随时“重置”回到 0。
+
+此设置只在本机按内建显示器的公开 UUID 分别保存，不读取硬件序列号、不上传标识。更改会关闭旧轮廓窗口并重建对应的绘制与鼠标区域，避免残留点击区。没有带刘海的内建屏幕或无法取得稳定标识时不开放校准。
+
+Apple 的辅助安全区是系统报告的相机遮挡范围，并非实物轮廓的精密测量。照片有透视，屏幕截图又不显示硬件遮挡，不能据此承诺一个适用于所有机器的固定左移量。
+
 ---
 
 ## English summary
@@ -49,3 +57,5 @@ Settings provides an opt-in Launch at Login switch using Apple's macOS 13+ `SMAp
 The ad-hoc, unnotarized preview may be blocked or refused by macOS. CI does not mutate real login items or validate reboot/login behavior. No security bypass is provided.
 
 Five skins are available. Mint is static by default; choosing Rainbow opts into a slow color loop with a separate motion switch and 8s/12s speed. A single full-U contour fills from the left; consumed quota leaves a pure-black right suffix. The selected/shortest-known window drives the contour, while the expanded card retains all windows. Color phase never changes quota length. One maximum-15fps clock pauses for Reduce Motion, low power, sleep, hidden/disabled surfaces or inactive sessions. Demo preferences do not persist.
+
+The v0.1.4 candidate adds default-zero per-built-in-display horizontal calibration in logical points, with 0.5pt steps, bounds and Reset. Public display UUIDs are local preference keys only; no serial-number lookup or identifier upload occurs. Actual physical alignment still needs observation.

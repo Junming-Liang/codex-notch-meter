@@ -2,6 +2,16 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.4 candidate — native results pending
+
+The user reported slight horizontal offset in v0.1.3. Source audit identified a bounded rounding mechanism: independently rounding both auxiliary edges can move their midpoint by up to half a backing pixel. The supplied photograph and screenshot cannot establish an exact physical offset or prove this accounts for the whole observed difference.
+
+The candidate preserves raw system-reported camera exclusion bounds. Only the transparent native window envelope is pixel-aligned; the visible rail, fill and clip use exact local rectangles. Optional per-built-in-display calibration starts at zero, uses 0.5pt steps up to ±8pt, respects screen bounds and can be reset. Public display UUIDs remain local; demo fixtures never persist them.
+
+New synthetic geometry cases cover off-center, odd/even/fractional coordinates, positive/negative origins, raw midpoint preservation, signed/reset/invalid calibration and bounded expansion. A new native own-view gate measures full-mint vertical stroke axes from chroma-weighted pixel-center centroids against independently supplied raw edges plus known correction, checks mirrored lower corners, and rejects an actually rendered old-rounded-edge control. It logs actual native backing separately from calibrated 1x/2x offscreen contexts. Live synthetic preference tests cover two display identities, reorder, changed bounds, stored-value Reset and unchanged saved preferences.
+
+All existing five-skin, quota-direction/black-tail, motion, Quit, desktop discovery, DMG and login-safety gates remain required. New native execution is pending; no physical alignment or screenshot inspection claim is made. This version does not change account reads or skin behavior apart from version metadata.
+
 ## v0.1.3 observed macOS results
 
 [Diagnostic run #12](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38671460345) and [release run #13](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38672374256) passed on 2026-10-15 using standard hosted `macos-15` runners.
