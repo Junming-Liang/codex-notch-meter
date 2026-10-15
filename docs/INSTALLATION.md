@@ -1,8 +1,8 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.5 开发预览
+## v0.1.6 开发预览
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.5)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.6)
 
 原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
@@ -40,7 +40,7 @@ CI 仅模拟注册/取消状态转换，并在原生进程中只读观察系统 
 
 ## 悬停展开与收起
 
-v0.1.5 在 macOS 14+ 使用随显示器刷新的几何更新，macOS 13 使用仅在过渡期间运行的主队列定时回退。首次悬停有短暂停留判定；离开有缓冲，收起过程中移回会保留当前位置和速度继续展开。详情提前在不影响收起尺寸的容器中布局；开启系统“减少动态效果”时直接切换状态。
+v0.1.6 在 macOS 14+ 使用随显示器刷新的几何更新，macOS 13 使用仅在过渡期间运行的主队列定时回退。首次悬停有短暂停留判定；离开有缓冲，收起过程中移回会保留当前位置和速度继续展开。详情提前在不影响收起尺寸的容器中布局；开启系统“减少动态效果”时直接切换状态。
 
 几何动效与彩虹颜色时钟分开，后者仍最高 15 fps，不增加额度读取。云端原生时序与实际窗口/呈现层边界检查已通过；这不代表已在每种 Mac 或实际 macOS 13 上验证手感。
 
@@ -68,8 +68,8 @@ Version 0.1.5 provides default-zero per-built-in-display horizontal calibration 
 
 Version 0.1.5 adds display-linked hover geometry on macOS 14+ and a transition-only main-queue fallback for macOS 13. Mid-collapse reentry preserves position and velocity; prewarmed details remain non-sizing. Reduce Motion snaps to the target. Native timing checks passed on the hosted newer OS; physical smoothness and actual macOS 13 runtime remain unverified. The separate rainbow clock stays capped at 15 fps.
 
-## 显示兼容性候选 / Display compatibility candidate
+## 显示兼容性 / Display compatibility
 
-v0.1.6 正在验证按显示能力适配的改进；当前上方下载链接仍指向已发布的 v0.1.5。不同屏幕尺寸、缩放或主屏排列不会被转换成固定的机型坐标。有效的内建刘海屏幕使用系统报告的边界；无刘海、外接屏、合盖、镜像及无效数据使用菜单栏。请参阅[覆盖矩阵与系统边界](COMPATIBILITY.md)，其中明确区分合成验证与真机验证。
+v0.1.6 已发布，按显示能力适配的原生检查已通过。不同屏幕尺寸、缩放或主屏排列不会被转换成固定的机型坐标。有效的内建刘海屏幕使用系统报告的边界；无刘海、外接屏、合盖、镜像及无效数据使用菜单栏。请参阅[覆盖矩阵与系统边界](COMPATIBILITY.md)，其中明确区分合成验证与真机验证。
 
-The v0.1.6 candidate uses runtime display capabilities rather than model-specific notch coordinates. Non-notched, external-only, mirrored and invalid-geometry configurations retain the menu bar. The current verified download above remains v0.1.5; physical model-by-model validation is not claimed.
+The released v0.1.6 uses runtime display capabilities rather than model-specific notch coordinates. Non-notched, external-only, mirrored and invalid-geometry configurations retain the menu bar. The hosted native gates passed; physical model-by-model validation is not claimed.

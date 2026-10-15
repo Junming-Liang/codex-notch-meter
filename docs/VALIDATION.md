@@ -2,17 +2,45 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.6 integrated candidate — native results pending
+## v0.1.6 observed macOS results
 
-The capability planner/reconciler uses fresh AppKit safe-area/auxiliary rectangles and public built-in/online/active/asleep/mirror flags. It rejects invalid geometry, preserves unchanged controllers, selectively retires changed displays, and makes bounded fresh topology rechecks. No model whitelist or hardware radius table is used. The [Apple-sourced compatibility matrix](COMPATIBILITY.md), checked 2026-10-15, distinguishes synthetic profiles from physical-device evidence and retains the macOS 13+ boundary.
+[Diagnostic run #24](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38728721178) and [release run #25](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38730063651) passed on 2026-10-15 using standard hosted `macos-15` runners.
 
-[Run #19](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38698995693) stopped on two ambiguous CGRect nonfinite test literals; those now use CGFloat explicitly. [Run #20](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38708833400), on frozen source `03d92dd6deeef60d45a10a71361ea7b941135de9`, passed the native display compatibility gate and official helper inspection, but failed motion/close endpoint checks. No release was produced. Its close trace requested zero while the last reported SwiftUI progress remained 0.0009315; the fresh-zero deadline correctly failed.
+- Tested source and immutable release tag: [`629caa3c73c0a2284cc1fc3ce724dec90fc5cd97`](https://github.com/Junming-Liang/codex-notch-meter/commit/629caa3c73c0a2284cc1fc3ce724dec90fc5cd97)
+- Source tree: `fd418a890755687b68bf1e1f6b303acac3f4f080`
+- XCTest: 187 discovered, 186 synthetic tests passed, one opt-in official-artifact test skipped in that job, zero failures; the separate official test passed without executing its helper
+- Universal arm64/x86_64 builds, Info.plist, ad-hoc signature, four native smoke/color-clock/Quit scenarios, five skins' 240 scene/scale pixel checks and 21 installer safety simulations: passed
+- Actual read-only mounted DMG app-byte/architecture/signature/Applications-link/cleanup checks and both release checksum gates: passed
 
-The integrated follow-up replaces independent progress and resize observations with one coherent progress/viewport observation and avoids redundant same-progress publications. The old resize callback could report a captured previous progress after the new-progress callback. This is a source-supported explanation to verify, not a claimed reproduction of the user's physical symptom. Fresh acknowledgement, native/layer bounds, the 120 ms deadline, later non-forcing observations and separate tail-pixel gates remain mandatory. A deadline retires at the next available main-loop callback, not an unconditional wall-clock maximum.
+Detailed scene counts and timings below come from the fully reviewed Run24 receipts. Run25 repeated the same gated workflow successfully on the identical source, with release/tag/asset checks verified; an independently read complete Run25 pixel transcript is not claimed.
 
-The approved visual changes use one automatic circular contour for rail and body, a content-fit wrapped detail layout, and an intermediate refresh notice. The full-U left prefix, pure-black used suffix, all five skins, 15 fps color cap, alignment, owned-process cleanup, login opt-in and DMG gates remain. New pure tests cover bounded geometry corrections, circular centers/continuity, arbitrary spring targets, strict quota-update identity/freshness and fractional formatting. New native tests cover actual intermediate windows, two-second/0.8-second settled holds, no-focus/click-through behavior, live promotion/reversal, stale expiry rejection, content-fit deferral and measured Quit bounds. Own-view 1x/2x pixel tests retain independent raw-input axes, arc fractions, transparent corners, paint envelopes and negative controls.
+### Automatic contour, compact feedback and display handling
 
-No native compilation, integrated rendering pass or release is claimed for this new source yet. The shape policy is an automatic approximation grounded in public runtime rectangles and an open-source circular reference, not a promise of exact manufactured corners or physical testing on all MacBooks. See [design and source attribution](DESIGN.md). Actual macOS 13 hardware behavior, physical feel/fit, human bitmap inspection and login/reboot remain unverified.
+The rail and connected black body now share a circular contour, using runtime exclusion bounds and a documented open-source reference. This is an automatic approximation, not a manufacturer radius table. The [Apple-sourced coverage matrix](COMPATIBILITY.md) records the macOS 13+ boundary and 216 synthetic layouts; model names do not select runtime coordinates.
+
+The production capability planner/reconciler passed synthetic native lifecycle injection: valid built-in displays only, unchanged-controller reuse, selective retirement, fresh bounded topology retries, identity/calibration isolation and suspension/teardown. Actual physical clamshell, mirroring, Spaces and scaled-mode transitions are not established by injected snapshots.
+
+Native alignment passed 102 scale captures and 21 expanded Quit/routing checks, including width/depth/corner corrections, fractional origins, reset and rejected old-rounding controls. The corrected footer remains inside its strict 304pt viewport. All five skins retain the full-U left remaining prefix, pure-black consumed suffix and calibrated 1x/2x transparency/arc/phase gates.
+
+Compact wrapped details and passive refresh feedback passed intermediate-target, 2s/0.8s hold, immediate hover promotion, coalescing, stale-expiry rejection, Reduce Motion, deferred content fit and measured Quit checks. Numeric decreases require fresh matching transient account identity, window/duration and reset cycle; only the existing rate-limits response supplies that identity, which is never persisted or displayed. Other states do not invent consumption, and refresh frequency is unchanged.
+
+### Closing and motion evidence
+
+Run20 exposed competing progress/viewport callbacks that left a stale nonzero view observation after the native frame reached idle. One coherent observation repaired that hosted failure. Run24's five skin paths plus dispatch fallback acknowledged fresh zero in approximately 14.5–16.8ms, within the unchanged 120ms readiness deadline. Actual retirement and final display cost are separately recorded; a blocked main loop can service a timeout later.
+
+Separate own-view replay passed 138 captures, ten moving-rail/late-tail gates and 20 side-axis checks. The same tight positional predicate constrains actual terminal frames and rejects a 1pt translated viewport; missing rail, opaque rectangle and abrupt replacement controls are also rejected. These captures are not display scanout or proof of physical perceived smoothness.
+
+Run24 measured callback p95 of 18.52ms for the view display link and 19.72ms for the dispatch fallback under synthetic UI load. Actual frame/presentation, continuous reversal and retired-source checks passed. These are callback measurements, not claimed display FPS. The fallback ran on the hosted newer OS, not actual macOS 13.
+
+The unsuccessful intermediate runs were retained as evidence: Run21 exposed a test-only scalar overload; Run22 exposed fractional footer overflow and obsolete rectangle/whole-image test assumptions; Run23 exposed a synthetic pointer below the negatively corrected contour. Each was repaired without loosening the actual timing, terminal-paint or containment limits.
+
+### Download identity
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg), advertised SHA-256 `f57bc52eab135c619f5b45eb6aa5e511e3ba841a480a74da491918e9871b08d0`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip), advertised SHA-256 `3563d27bb8ef60a6f8ffd6e968508e843404bb97960d120e3c227c1f18efff67`
+- Both separate checksum files are 102 bytes. Release checksum checks and public metadata agree; no independent downloaded-byte rehash is claimed.
+
+**Limits:** ad-hoc signed and unnotarized; actual login registration/reboot, macOS 13 hardware, physical model-by-model fit/smoothness, cross-application click delivery and human PNG inspection remain unverified. Forced 2x rendering is offscreen evidence, not a physical Retina test. The user previously reported successful live quota reads; CI uses no account. See [design attribution and approximation](DESIGN.md).
 
 ## v0.1.5 observed macOS results
 
@@ -213,7 +241,7 @@ The 1x/2x unit geometry cases are mathematical checks, not physical Retina evide
 
 ## Historical v0.1.0
 
-[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.4.
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer the current v0.1.6 preview.
 
 The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 

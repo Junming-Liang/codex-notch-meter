@@ -54,7 +54,7 @@
 
 - [纯逻辑测试](../Tests/NotchCoreTests/DisplayTests.swift)包含 **216 组任意逻辑点布局**：四组官方原生像素比例 × 三种人为尺寸变换 × 三种全局原点 × 1×/2× backing scale × 三种水平偏移。刘海尺寸、安全区和尺寸变换均为合成输入，不是实测刘海或 Apple 默认缩放档位。
 - 另有无刘海、外接、镜像、睡眠、无效几何、空间不足、屏幕重排、校准身份与恢复等合成案例。用例覆盖不等于已在对应设备运行。
-- **v0.1.6 新增原生验证待完成；没有逐机型实机通过结论。** 既有托管 macOS 窗口、像素和动效结果只适用于[验证说明](VALIDATION.md)列出的精确提交，不能自动沿用到本版。实际 macOS 13、物理 Retina 面板、真实刘海对齐、缩放切换、合盖、镜像、睡眠唤醒及全屏交互仍需分别验收。
+- **v0.1.6 托管原生验证已通过；没有逐机型实机通过结论。** 生产显示协调器、合成生命周期注入、圆弧像素、102 次对齐捕获和 21 次展开检查绑定于[验证说明](VALIDATION.md)中的精确发布提交。实际 macOS 13、物理 Retina 面板、真实刘海对齐、缩放切换、合盖、镜像、睡眠唤醒及全屏交互仍需分别验收。
 - 预览产物使用 ad-hoc 签名，没有 Apple Developer ID 签名或公证；双架构兼容不保证 Gatekeeper 放行或每台 Mac 可直接启动。项目不提供绕过系统安全检查的指引。
 
-English summary: macOS 13+ universal architecture support and capability-based display handling are separate from physical-device validation. Model specifications inform documentation and synthetic fixtures only. Non-notched, external, mirrored or unavailable displays use the menu bar; new native validation and physical acceptance remain pending.
+English summary: macOS 13+ universal architecture support and capability-based display handling are separate from physical-device validation. Model specifications inform documentation and synthetic fixtures only. Non-notched, external, mirrored or unavailable displays use the menu bar; hosted native validation passed on the pinned release source, while physical acceptance remains pending.
