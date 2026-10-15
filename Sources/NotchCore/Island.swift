@@ -31,7 +31,11 @@ public struct IslandMotion: Equatable, Sendable {
     public private(set) var velocity: Double = 0
     public init() {}
     public mutating func advance(expanded: Bool, elapsed: TimeInterval, reduceMotion: Bool) {
-        let target: Double = expanded ? 1 : 0
+        advance(target: expanded ? 1 : 0, elapsed: elapsed, reduceMotion: reduceMotion)
+    }
+    public mutating func advance(target requested: Double, elapsed: TimeInterval, reduceMotion: Bool) {
+        guard requested.isFinite else { return }
+        let target = min(1, max(0, requested))
         if reduceMotion { progress = target; velocity = 0; return }
         guard elapsed.isFinite, elapsed > 0 else { return }
         // Exact critically damped solution, in normalized progress per second.
@@ -56,6 +60,7 @@ public struct IslandMotion: Equatable, Sendable {
         // 0.001 normalized position and 0.015 normalized velocity, as before.
         if abs(target - progress) < 0.001 && abs(velocity) < 0.015 { progress = target; velocity = 0 }
     }
+    public func isSettled(at target: Double) -> Bool { velocity == 0 && progress == target }
     public var isSettled: Bool { velocity == 0 && (progress == 0 || progress == 1) }
 }
 
@@ -72,24 +77,36 @@ public struct IslandGeometry: Equatable, Sendable {
     /// Unmodified system-reported camera exclusion bounds from the auxiliary regions.
     public let notch: CGRect
     public let horizontalAdjustment: Double
+    public let shapeCalibration: ContourCalibration
     public let calibratedNotch: CGRect
     /// Exact collapsed contour in global coordinates: 3pt on the sides/bottom.
     public let contourFrame: CGRect
     public let collapsedSize: CGSize
     public let expandedSize: CGSize
+    public let contentHeight: CGFloat
     public let backingScale: CGFloat
     private let expandedContourFrame: CGRect
-    public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1, horizontalAdjustment: Double = 0) {
+    public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1, horizontalAdjustment: Double = 0, shapeCalibration: ContourCalibration = ContourCalibration(), contentHeight: CGFloat = 180) {
         let hardware = notch.notch
+        // Keep the OS camera exclusion unchanged. Only the user-visible contour is corrected.
+        let topFlare = min(0.5, max(0, 4 * min(2, max(0.5, hardware.height / 32)) - 3))
+        let allowance = 3 + topFlare
+        let maxWidth = max(18, 2 * min(hardware.midX - screen.minX - allowance, screen.maxX - hardware.midX - allowance))
+        let correctedWidth = min(maxWidth, max(18, hardware.width + shapeCalibration.width))
+        let correctedDepth = min(screen.height - 35, max(9, hardware.height + shapeCalibration.depth))
+        let corrected = CGRect(x: hardware.midX - correctedWidth / 2,
+            y: hardware.maxY - correctedDepth, width: correctedWidth, height: correctedDepth)
         let scale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
-        let width = min(380, screen.width - 24)
-        let height = min(hardware.height + 480, screen.height - 32)
+        let width = min(max(340, hardware.width + 40), screen.width - 24)
+        let content = min(340, max(132, contentHeight.isFinite ? contentHeight : 180))
+        let height = min(hardware.height + 8 + content, screen.height - 32)
+        self.contentHeight = height - hardware.height - 8
         let screenLeft = ceil(screen.minX * scale) / scale
         let screenRight = floor(screen.maxX * scale) / scale
         let expandedLeft = ceil((screen.minX + 12) * scale) / scale
         let expandedRight = floor((screen.maxX - 12) * scale) / scale
-        var lower = max(-8, screenLeft - (hardware.minX - 3))
-        var upper = min(8, screenRight - (hardware.maxX + 3))
+        var lower = max(-8, screenLeft - (corrected.minX - allowance))
+        var upper = min(8, screenRight - (corrected.maxX + allowance))
         let centeredCardFits = hardware.midX - width / 2 >= expandedLeft
             && hardware.midX + width / 2 <= expandedRight
         if centeredCardFits {
@@ -109,7 +126,8 @@ public struct IslandGeometry: Equatable, Sendable {
         self.screen = screen
         self.notch = hardware
         self.horizontalAdjustment = adjustment
-        calibratedNotch = hardware.offsetBy(dx: adjustment, dy: 0)
+        self.shapeCalibration = shapeCalibration
+        calibratedNotch = corrected.offsetBy(dx: adjustment, dy: 0)
         self.backingScale = scale
         contourFrame = CGRect(x: calibratedNotch.minX - 3, y: calibratedNotch.minY - 3,
             width: calibratedNotch.width + 6, height: calibratedNotch.height + 3)
@@ -119,11 +137,19 @@ public struct IslandGeometry: Equatable, Sendable {
         let expandedX = min(max(calibratedNotch.midX - width / 2, expandedLeft), expandedRight - width)
         expandedContourFrame = CGRect(x: expandedX,
             y: screen.maxY - height, width: width, height: height)
-        collapsedSize = Self.nativeFrame(containing: contourFrame, screen: screen, scale: scale).size
+        collapsedSize = Self.nativeFrame(containing: IslandContour(rect: contourFrame, cornerAdjustment: shapeCalibration.corner, referenceDepth: hardware.height).bounds, screen: screen, scale: scale).size
         expandedSize = Self.nativeFrame(containing: expandedContourFrame, screen: screen, scale: scale).size
     }
+    public var updateProgress: Double {
+        let updateHeight = min(expandedContourFrame.height - 20, notch.height + 78)
+        return Double(max(0.15, min(0.8, (updateHeight - contourFrame.height) / (expandedContourFrame.height - contourFrame.height))))
+    }
+    public func hasSameAnchor(as other: IslandGeometry) -> Bool {
+        screen == other.screen && notch == other.notch && horizontalAdjustment == other.horizontalAdjustment
+            && shapeCalibration == other.shapeCalibration && backingScale == other.backingScale
+    }
     public func frame(progress: Double) -> CGRect {
-        Self.nativeFrame(containing: drawingFrame(progress: progress), screen: screen, scale: backingScale)
+        Self.nativeFrame(containing: IslandContour(rect: drawingFrame(progress: progress), progress: progress, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height).bounds, screen: screen, scale: backingScale)
     }
     /// Exact drawing rectangle in top-down coordinates inside the normalized window.
     /// Its origin must be honored; centering it in the window reintroduces grid bias.
@@ -143,9 +169,12 @@ public struct IslandGeometry: Equatable, Sendable {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
         if p == 0 { return contourFrame }
         if p == 1 { return expandedContourFrame }
-        let width = contourFrame.width + (expandedContourFrame.width - contourFrame.width) * p
+        // Reach the wrapped pill width smoothly before continuing down to details.
+        let widthProgress = min(1, p / CGFloat(updateProgress))
+        let widthEase = widthProgress * widthProgress * (3 - 2 * widthProgress)
+        let width = contourFrame.width + (expandedContourFrame.width - contourFrame.width) * widthEase
         let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * p
-        let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * p
+        let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * widthEase
         return CGRect(x: center - width / 2,
             y: screen.maxY - height, width: width, height: height)
     }
@@ -159,7 +188,10 @@ public struct IslandGeometry: Equatable, Sendable {
     }
     public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
         // Never use visibleFrame: the island is attached to the physical top edge.
-        drawingFrame(progress: progress).contains(point)
+        let rect = drawingFrame(progress: progress)
+        let local = CGPoint(x: point.x, y: screen.maxY - point.y)
+        let topDown = CGRect(x: rect.minX, y: 0, width: rect.width, height: rect.height)
+        return IslandContour(rect: topDown, progress: progress, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height).contains(local)
     }
     public func interactiveContains(_ point: CGPoint) -> Bool {
         let frame = drawingFrame(progress: 1)

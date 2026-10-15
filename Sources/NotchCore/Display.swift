@@ -68,7 +68,7 @@ public struct DisplayPlan: Equatable, Sendable {
     public var shouldRecheck: Bool { activity.permitsOverlay }
 
     public static func make(snapshots: [DisplaySnapshot], activity: DisplayActivity,
-                            calibrations: [String: Double] = [:]) -> DisplayPlan {
+                            calibrations: [String: Double] = [:], shapes: [String: ContourCalibration] = [:], contentHeight: CGFloat = 180) -> DisplayPlan {
         let counts = Dictionary(grouping: snapshots, by: \.id).mapValues(\.count)
         let keys = Dictionary(grouping: snapshots.compactMap(\.calibrationID).filter { !$0.isEmpty && $0.count <= 64 }, by: { $0 }).mapValues(\.count)
         var eligible: [DisplayTarget] = [], decisions: [DisplayDecision] = []
@@ -88,22 +88,25 @@ public struct DisplayPlan: Equatable, Sendable {
                       auxiliaryLeft: display.auxiliaryLeft, auxiliaryRight: display.auxiliaryRight) else {
                 decisions.append(DisplayDecision(id: display.id, fallback: .invalidGeometry)); continue
             }
+            guard notch.notch.width >= 18, notch.notch.height >= 9 else {
+                decisions.append(DisplayDecision(id: display.id, fallback: .insufficientRoom)); continue
+            }
             // Ambiguous/missing identity never inherits another display's calibration.
             let key = display.calibrationID.flatMap { keys[$0] == 1 ? $0 : nil }
             let geometry = IslandGeometry(notch: notch, screen: display.frame, backingScale: display.scale,
-                horizontalAdjustment: key.flatMap { calibrations[$0] } ?? 0)
+                horizontalAdjustment: key.flatMap { calibrations[$0] } ?? 0, shapeCalibration: key.flatMap { shapes[$0] } ?? ContourCalibration(), contentHeight: contentHeight)
             let container = display.frame.insetBy(dx: -0.001, dy: -0.001)
             guard container.contains(geometry.frame(progress: 0)), container.contains(geometry.frame(progress: 1)),
-                  // The existing full-U renderer's fixed turns need this minimum envelope.
+                  // Shared circular turns need this minimum valid contour envelope.
                   // These are drawing constraints, never inferred hardware/model dimensions.
                   geometry.contourFrame.width >= 24, geometry.contourFrame.height >= 12,
-                  geometry.expandedSize.width >= 372,
-                  geometry.expandedSize.height - notch.notch.height - 8 >= 280 else {
+                  geometry.expandedSize.width >= 332,
+                  geometry.expandedSize.height - notch.notch.height - 8 >= 132 else {
                 decisions.append(DisplayDecision(id: display.id, fallback: .insufficientRoom)); continue
             }
             eligible.append(DisplayTarget(id: display.id, calibrationID: key, name: display.name, geometry: geometry,
-                minimumAdjustment: IslandGeometry(notch: notch, screen: display.frame, backingScale: display.scale, horizontalAdjustment: -8).horizontalAdjustment,
-                maximumAdjustment: IslandGeometry(notch: notch, screen: display.frame, backingScale: display.scale, horizontalAdjustment: 8).horizontalAdjustment))
+                minimumAdjustment: IslandGeometry(notch: notch, screen: display.frame, backingScale: display.scale, horizontalAdjustment: -8, shapeCalibration: key.flatMap { shapes[$0] } ?? ContourCalibration(), contentHeight: contentHeight).horizontalAdjustment,
+                maximumAdjustment: IslandGeometry(notch: notch, screen: display.frame, backingScale: display.scale, horizontalAdjustment: 8, shapeCalibration: key.flatMap { shapes[$0] } ?? ContourCalibration(), contentHeight: contentHeight).horizontalAdjustment))
             decisions.append(DisplayDecision(id: display.id, fallback: nil))
         }
         return DisplayPlan(eligible: eligible, targets: activity.permitsOverlay ? eligible : [], decisions: decisions, activity: activity)

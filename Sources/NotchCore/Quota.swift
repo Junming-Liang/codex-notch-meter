@@ -40,10 +40,33 @@ public struct QuotaBucket: Equatable, Identifiable, Sendable {
     }
 }
 
+// In-memory continuity only. This deliberately has no raw-value accessor or encoding.
+// Redacted descriptions/reflection keep accidental snapshot diagnostics from exposing it.
+struct QuotaContinuityIdentity: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    private let value: String
+    init?(_ value: String?) {
+        guard let value,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              value.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        self.value = value
+    }
+    var description: String { "<opaque quota continuity>" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<Mirror.Child>()) }
+}
+
 public struct QuotaSnapshot: Equatable, Sendable {
     public let buckets: [QuotaBucket]
     public let fetchedAt: Date
-    public init(buckets: [QuotaBucket], fetchedAt: Date) { self.buckets = buckets; self.fetchedAt = fetchedAt }
+    let continuityIdentity: QuotaContinuityIdentity?
+    public init(buckets: [QuotaBucket], fetchedAt: Date) {
+        self.init(buckets: buckets, fetchedAt: fetchedAt, continuityIdentity: nil)
+    }
+    init(buckets: [QuotaBucket], fetchedAt: Date, continuityIdentity: QuotaContinuityIdentity?) {
+        self.buckets = buckets
+        self.fetchedAt = fetchedAt
+        self.continuityIdentity = continuityIdentity
+    }
     public func bucket(preferredID: String? = nil) -> QuotaBucket? {
         if let preferredID, let selected = buckets.first(where: { $0.id == preferredID }) { return selected }
         return buckets.first(where: { $0.id == "codex" }) ?? buckets.first
@@ -134,11 +157,14 @@ public enum QuotaParser {
     }
     private struct ResponseDTO: Decodable {
         let buckets: [String: BucketDTO]?, legacy: BucketDTO?
-        enum CodingKeys: String, CodingKey { case rateLimitsByLimitId, rateLimits }
+        let continuityIdentity: QuotaContinuityIdentity?
+        enum CodingKeys: String, CodingKey { case rateLimitsByLimitId, rateLimits, accountId }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             buckets = (try? c.decode(BucketMap.self, forKey: .rateLimitsByLimitId))?.values
             legacy = try? c.decode(BucketDTO.self, forKey: .rateLimits)
+            // Optional on older helpers; never infer identity from account type or quota values.
+            continuityIdentity = QuotaContinuityIdentity(try? c.decode(String.self, forKey: .accountId))
         }
     }
     public static func parse(_ data: Data, fetchedAt: Date = Date()) throws -> QuotaSnapshot {
@@ -149,7 +175,7 @@ public enum QuotaParser {
         } else if let legacy = dto.legacy { buckets = [legacy.value(key: "")] }
         else { throw MeterError.noQuota }
         guard buckets.contains(where: { !$0.windows.isEmpty }) else { throw MeterError.noQuota }
-        return QuotaSnapshot(buckets: buckets, fetchedAt: fetchedAt)
+        return QuotaSnapshot(buckets: buckets, fetchedAt: fetchedAt, continuityIdentity: dto.continuityIdentity)
     }
     public static func account(_ data: Data) throws -> AccountState {
         guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any], value.keys.contains("account") else { throw MeterError.malformedResponse }
