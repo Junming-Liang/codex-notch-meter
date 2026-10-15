@@ -39,8 +39,10 @@ private struct NativeContourBitmap {
     let size: CGSize
     let scale: Int
     let topRowFirst: Bool
-    static func capture(_ view: NSView, scale: Int, topRowFirst: Bool) -> NativeContourBitmap? {
-        let size = view.bounds.size
+    static func capture(_ view: NSView, scale: Int, topRowFirst: Bool, padToWholePixels: Bool = false) -> NativeContourBitmap? {
+        let bounds = view.bounds.size
+        let size = padToWholePixels ? CGSize(width: ceil(bounds.width * CGFloat(scale)) / CGFloat(scale),
+            height: ceil(bounds.height * CGFloat(scale)) / CGFloat(scale)) : bounds
         let width = size.width * CGFloat(scale), height = size.height * CGFloat(scale)
         guard width > 0, height > 0, width.isFinite, height.isFinite,
               abs(width - width.rounded()) < 0.001, abs(height - height.rounded()) < 0.001 else { return nil }
@@ -52,7 +54,8 @@ private struct NativeContourBitmap {
         bitmap.size = size
         bitmap.bitmapData?.initialize(repeating: 0, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-        view.cacheDisplay(in: view.bounds, to: bitmap)
+        // Padding extends the transparent capture canvas, never scales the view's point geometry.
+        view.cacheDisplay(in: CGRect(origin: .zero, size: size), to: bitmap)
         return NativeContourBitmap(representation: bitmap, size: size, scale: scale, topRowFirst: topRowFirst)
     }
     func pixel(x: Int, y: Int) -> ContourPixel {
@@ -461,5 +464,216 @@ final class ContourRenderHarness: NSObject {
         legacyPanel?.close(); legacyPanel = nil
         island.stop()
     }
+}
+/// Measures the painted axes against raw screen inputs, independently of frame()'s center.
+/// Synthetic geometry and own-view pixels only; never reads another window or a live account.
+@MainActor
+final class AlignmentRenderHarness: NSObject {
+    private struct Fixture {
+        let name: String
+        let width: CGFloat
+        let offCenter: CGFloat
+        let adjustment: Double
+        var roundedControl = false
+    }
+    private let model: MeterModel
+    private let screen: NSScreen
+    private let completion: (Bool) -> Void
+    private var fixtures: [Fixture] = []
+    private var index = 0
+    private var island: IslandPanelController?
+    private var retired: IslandPanelController?
+    private var retiredFrame: CGRect = .zero
+    private var rawEdges: (CGFloat, CGFloat) = (0, 0)
+    private var timer: Timer?
+    private var orientations: [Int: Bool] = [:]
+    private var passed = true
+    private var captures = 0
+    private enum Stage { case collapsed, expanded, recollapsed }
+    private var stage: Stage = .collapsed
+    private var expandedChecks = 0
+    init(model: MeterModel, screen: NSScreen, completion: @escaping (Bool) -> Void) {
+        self.model = model; self.screen = screen; self.completion = completion
+        for (name, width, offCenter) in [("even-quarter", CGFloat(220), CGFloat(0.25)),
+            ("odd-left", CGFloat(219), CGFloat(-61.25)), ("fractional-right", CGFloat(220.5), CGFloat(37.125)),
+            ("odd-right", CGFloat(221), CGFloat(61.25))] {
+            for adjustment in [0.0, -0.5, 0.5, -8, 8] {
+                fixtures.append(Fixture(name: name, width: width, offCenter: offCenter, adjustment: adjustment))
+            }
+        }
+        fixtures.append(Fixture(name: "reset-after-adjustment", width: 220, offCenter: 0.25, adjustment: 0))
+        fixtures.append(Fixture(name: "old-rounded-edges-control", width: 220, offCenter: 0.25, adjustment: 0, roundedControl: true))
+    }
+    func start() {
+        guard model.demo, CommandLine.arguments.contains("--alignment-test") else { finish(false); return }
+        model.theme = .standard
+        model.setContourFixture(left: 100, right: 38)
+        for scale in [1, 2] {
+            let view = ScaleCalibrationView(frame: CGRect(x: 0, y: 0, width: 8, height: 8))
+            guard let bitmap = NativeContourBitmap.capture(view, scale: scale, topRowFirst: true) else { passed = false; continue }
+            let top = bitmap.pixel(x: 2 * scale, y: scale), bottom = bitmap.pixel(x: 2 * scale, y: 6 * scale)
+            let valid = ((top.r > 0.9 && bottom.b > 0.9) || (top.b > 0.9 && bottom.r > 0.9))
+                && abs(view.drawingScale.width - CGFloat(scale)) < 0.01 && abs(view.drawingScale.height - CGFloat(scale)) < 0.01
+                && bitmap.representation.pixelsWide == 8 * scale && bitmap.representation.pixelsHigh == 8 * scale
+            passed = passed && valid; orientations[scale] = top.r > 0.9
+            SmokeDiagnostics.mark("alignment calibration captureScale=\(scale) CTM=\(view.drawingScale) pixels=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) valid=\(valid)")
+            let fractionalSize = CGSize(width: 8.5, height: 8.25)
+            let fractional = ScaleCalibrationView(frame: CGRect(origin: .zero, size: fractionalSize))
+            if let padded = NativeContourBitmap.capture(fractional, scale: scale, topRowFirst: top.r > 0.9, padToWholePixels: true) {
+                let paddedValid = fractional.bounds.size == fractionalSize
+                    && padded.representation.pixelsWide == Int(ceil(fractionalSize.width * CGFloat(scale)))
+                    && padded.representation.pixelsHigh == Int(ceil(fractionalSize.height * CGFloat(scale)))
+                    && abs(fractional.drawingScale.width - CGFloat(scale)) < 0.01
+                    && abs(fractional.drawingScale.height - CGFloat(scale)) < 0.01
+                    && padded.pixel(x: scale, y: scale).r > 0.9 && padded.pixel(x: scale, y: 6 * scale).b > 0.9
+                passed = passed && paddedValid
+                SmokeDiagnostics.mark("alignment fractional canvas captureScale=\(scale) points=\(fractional.bounds.size) CTM=\(fractional.drawingScale) pixels=\(padded.representation.pixelsWide)x\(padded.representation.pixelsHigh) valid=\(paddedValid)")
+            } else { passed = false }
+        }
+        let storedBefore = UserDefaults.standard.dictionary(forKey: "horizontalCalibrations") ?? [:]
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-a", name: "Demo A"), CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        model.selectedCalibrationDisplayID = "synthetic-a"; model.setHorizontalAdjustment(2.5)
+        model.selectedCalibrationDisplayID = "synthetic-b"
+        let isolated = model.selectedHorizontalAdjustment == 0
+        model.setHorizontalAdjustment(-100)
+        let bounded = model.selectedHorizontalAdjustment == -8
+        model.selectedCalibrationDisplayID = "synthetic-a"
+        let retained = model.selectedHorizontalAdjustment == 2.5
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-a", name: "Demo A", minimum: 0, maximum: 0), CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        let clampedStored = model.selectedHorizontalAdjustment == 0 && model.hasStoredHorizontalAdjustment
+        model.setHorizontalAdjustment(0)
+        let reset = model.selectedHorizontalAdjustment == 0 && model.horizontalCalibrations["synthetic-a"] == nil
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-b", name: "Demo B"), CalibrationDisplay(id: "synthetic-a", name: "Demo A")])
+        let reordered = model.selectedCalibrationDisplayID == "synthetic-a" && model.selectedHorizontalAdjustment == 0
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        let disconnected = model.selectedCalibrationDisplayID == "synthetic-b" && model.selectedHorizontalAdjustment == -8
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-a", name: "Demo A"), CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        model.selectedCalibrationDisplayID = "synthetic-a"
+        let stable = reordered && disconnected && model.selectedHorizontalAdjustment == 0
+        let storedAfter = UserDefaults.standard.dictionary(forKey: "horizontalCalibrations") ?? [:]
+        let noPersistence = NSDictionary(dictionary: storedBefore).isEqual(to: storedAfter)
+        passed = passed && isolated && bounded && retained && clampedStored && reset && stable && noPersistence
+        SmokeDiagnostics.mark("alignment synthetic preferences independent=\(isolated) bounded=\(bounded) retained=\(retained) clampedStored=\(clampedStored) reset=\(reset) reordered=\(stable) persistenceDisabled=\(model.demo) storedPreferencesUnchanged=\(noPersistence)")
+        setFixture()
+        let timer = Timer(timeInterval: 0.2, target: self, selector: #selector(captureFixture(_:)), userInfo: nil, repeats: true)
+        self.timer = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+    private func setFixture() {
+        stage = .collapsed
+        if let island { retired = island; retiredFrame = island.panel.frame; island.stop() }
+        let fixture = fixtures[index], frame = screen.frame
+        let left = frame.midX - fixture.width / 2 + fixture.offCenter, right = left + fixture.width
+        rawEdges = (left, right)
+        let scale = screen.backingScaleFactor
+        let suppliedLeft = fixture.roundedControl ? (left * scale).rounded() / scale : left
+        let suppliedRight = fixture.roundedControl ? (right * scale).rounded() / scale : right
+        guard let notch = NotchGeometry.calculate(screen: frame, topInset: 32,
+            auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - 32, width: suppliedLeft - frame.minX, height: 32),
+            auxiliaryRight: CGRect(x: suppliedRight, y: frame.maxY - 32, width: frame.maxX - suppliedRight, height: 32), scale: scale) else {
+            finish(false); return
+        }
+        model.setHorizontalAdjustment(fixture.adjustment)
+        let geometry = IslandGeometry(notch: notch, screen: frame, backingScale: scale,
+            horizontalAdjustment: model.selectedHorizontalAdjustment)
+        let controller = IslandPanelController(model: model, geometry: geometry, startPolling: false, reducedMotionOverride: true,
+            hovered: {}, refresh: {}, settings: {}, quit: {})
+        island = controller
+        // Actual ordered frame/content positions and safe-area behavior, including interruption sizes.
+        passed = controller.verifyNativeGeometry() && passed
+    }
+    private func axis(_ bitmap: NativeContourBitmap, expected: CGFloat) -> CGFloat? {
+        var total: Double = 0, moment: Double = 0
+        for y in 0..<bitmap.representation.pixelsHigh {
+            let py = (CGFloat(y) + 0.5) / CGFloat(bitmap.scale)
+            guard py >= 7 && py <= 17 else { continue }
+            for x in 0..<bitmap.representation.pixelsWide {
+                let px = (CGFloat(x) + 0.5) / CGFloat(bitmap.scale)
+                guard abs(px - expected) <= 3 else { continue }
+                let pixel = bitmap.pixel(x: x, y: y)
+                let weight = pixel.a * max(0, pixel.g - max(pixel.r, pixel.b))
+                total += weight; moment += Double(px) * weight
+            }
+        }
+        return total > 0.5 ? CGFloat(moment / total) : nil
+    }
+    private func cornerEnergy(_ bitmap: NativeContourBitmap, in rect: CGRect, erasing erased: CGRect? = nil) -> Double {
+        var sum: Double = 0
+        for y in 0..<bitmap.representation.pixelsHigh {
+            for x in 0..<bitmap.representation.pixelsWide {
+                let point = CGPoint(x: (CGFloat(x) + 0.5) / CGFloat(bitmap.scale), y: (CGFloat(y) + 0.5) / CGFloat(bitmap.scale))
+                guard rect.contains(point) else { continue }
+                let pixel = erased?.contains(point) == true ? ContourPixel(r: 0, g: 0, b: 0, a: 0) : bitmap.pixel(x: x, y: y)
+                sum += pixel.a * max(0, pixel.g - max(pixel.r, pixel.b))
+            }
+        }
+        return sum / Double(bitmap.scale * bitmap.scale)
+    }
+    @objc private func captureFixture(_ sender: Timer) {
+        guard sender === timer, let island, let view = island.panel.contentView else { finish(false); return }
+        let fixture = fixtures[index], frame = island.panel.frame
+        if stage == .expanded {
+            let expanded = island.smokeExpanded
+            let routing = island.verifySmokeClickRouting()
+            passed = passed && expanded && routing
+            expandedChecks += 1
+            SmokeDiagnostics.mark("alignment expanded fixture=\(fixture.name) offsetPoints=\(fixture.adjustment) quitAndLayout=\(expanded) routing=\(routing)")
+            island.collapse()
+            stage = .recollapsed
+            return // A separate run-loop dwell lets the actual detail subtree leave before recapture.
+        }
+        let expectedLeft = rawEdges.0 + fixture.adjustment - 1, expectedRight = rawEdges.1 + fixture.adjustment + 1
+        let expectedCenter = (expectedLeft + expectedRight) / 2
+        let localLeft = expectedLeft - frame.minX, localRight = expectedRight - frame.minX
+        let nativeValid = abs(frame.maxY - screen.frame.maxY) < 0.01 && island.placementIsValid
+            && view.frame.origin == .zero && view.bounds.origin == .zero && island.renderedViewport == view.bounds.size
+        let retiredValid = retired == nil || (retired?.smokeStopped == true && retired?.panel.frame == retiredFrame)
+        passed = passed && nativeValid && retiredValid
+        let backing = view.convertToBacking(CGRect(x: 0, y: 0, width: 1, height: 1)).size
+        SmokeDiagnostics.mark("alignment native fixture=\(fixture.name) stage=\(stage) offsetPoints=\(fixture.adjustment) rawLeft=\(rawEdges.0) rawRight=\(rawEdges.1) panel=\(frame) actualBacking=\(island.panel.backingScaleFactor) onePointBacking=\(backing) nativeValid=\(nativeValid) retired=\(retiredValid)")
+        for scale in [1, 2] {
+            guard let bitmap = NativeContourBitmap.capture(view, scale: scale, topRowFirst: orientations[scale] ?? true, padToWholePixels: true),
+                  let measuredLeft = axis(bitmap, expected: localLeft), let measuredRight = axis(bitmap, expected: localRight) else {
+                passed = false; SmokeDiagnostics.mark("alignment capture or painted axis unavailable"); continue
+            }
+            let left = measuredLeft + frame.minX, right = measuredRight + frame.minX, center = (left + right) / 2
+            // Pixel-center integration resolves subpixel axes; 0.12 backing pixel allows quantization/AA.
+            let tolerance = CGFloat(0.12) / CGFloat(scale)
+            let aligned = abs(left - expectedLeft) <= tolerance && abs(right - expectedRight) <= tolerance
+                && abs(center - expectedCenter) <= tolerance
+            // Independent oracle: the fixture supplies raw edges and a32pt inset, not production geometry.
+            let rawRect = CGRect(x: rawEdges.0 + fixture.adjustment - 3 - frame.minX, y: 0,
+                width: rawEdges.1 - rawEdges.0 + 6, height: 35)
+            let leftCorner = CGRect(x: rawRect.minX, y: rawRect.maxY - 12, width: 12, height: 12)
+            let rightCorner = CGRect(x: rawRect.maxX - 12, y: rawRect.maxY - 12, width: 12, height: 12)
+            let le = cornerEnergy(bitmap, in: leftCorner), re = cornerEnergy(bitmap, in: rightCorner)
+            let symmetric: (Double, Double) -> Bool = { left, right in
+                min(left, right) > 0.5 && abs(left - right) <= max(left, right) * 0.08 + 0.02
+            }
+            let mirrored = symmetric(le, re)
+            let erasedLeft = cornerEnergy(bitmap, in: leftCorner, erasing: leftCorner)
+            let retainedRight = cornerEnergy(bitmap, in: rightCorner, erasing: leftCorner)
+            let erasedCornerRejected = !symmetric(erasedLeft, retainedRight)
+            let valid = fixture.roundedControl ? !aligned : aligned && mirrored && erasedCornerRejected
+            passed = passed && valid; captures += 1
+            SmokeDiagnostics.mark("alignment pixels fixture=\(fixture.name) stage=\(stage) captureScale=\(scale) canvas=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) nativePoints=\(view.bounds.size) expectedAxes=[\(expectedLeft),\(expectedRight)] measuredAxes=[\(left),\(right)] centerErrorPoints=\(center - expectedCenter) cornerEnergy=[\(le),\(re)] mirrored=\(mirrored) erasedCornerRejected=\(erasedCornerRejected) oldRoundingRejected=\(fixture.roundedControl && !aligned) valid=\(valid)")
+        }
+        if stage == .collapsed && !fixture.roundedControl && [0.0, -8, 8].contains(fixture.adjustment) {
+            island.beginSmokeExpansion()
+            stage = .expanded
+            return // Real expanded layout and measured Quit bounds are inspected after a bounded dwell.
+        }
+        index += 1
+        if index < fixtures.count { setFixture() }
+        else {
+            let expectedExpansions = fixtures.filter { !$0.roundedControl && [0.0, -8, 8].contains($0.adjustment) }.count
+            finish(passed && expandedChecks == expectedExpansions && captures == (fixtures.count + expectedExpansions) * 2)
+        }
+    }
+    private func finish(_ result: Bool) {
+        stop()
+        print(result ? "ALIGNMENT_OK: raw-edge pixel axes, known corrections and calibration reset verified" : "ALIGNMENT_FAILED: native raw-edge alignment contract failed")
+        completion(result)
+    }
+    func stop() { timer?.invalidate(); timer = nil; island?.stop(); retired?.stop() }
 }
 #endif

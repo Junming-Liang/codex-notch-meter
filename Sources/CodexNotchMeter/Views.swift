@@ -59,7 +59,9 @@ private func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
 
 /// One uninterrupted U: upper left → lower left → bottom → lower right → upper right.
 struct NotchRail: Shape {
-    func path(in rect: CGRect) -> Path {
+    var drawingRect: CGRect? = nil
+    func path(in viewport: CGRect) -> Path {
+        let rect = drawingRect ?? viewport
         var path = Path()
         path.move(to: CGPoint(x: 2, y: 0))
         path.addLine(to: CGPoint(x: 2, y: rect.height - 12))
@@ -67,13 +69,14 @@ struct NotchRail: Shape {
         path.addLine(to: CGPoint(x: rect.width - 12, y: rect.height - 2))
         path.addQuadCurve(to: CGPoint(x: rect.width - 2, y: rect.height - 12), control: CGPoint(x: rect.width - 2, y: rect.height - 2))
         path.addLine(to: CGPoint(x: rect.width - 2, y: 0))
-        return path
+        return path.applying(CGAffineTransform(translationX: rect.minX, y: rect.minY))
     }
 }
 
 @MainActor
 struct RailView: View {
     @ObservedObject var model: MeterModel
+    var drawingRect: CGRect? = nil
     let hovered: (Bool) -> Void
     var window: QuotaWindow? { model.primaryWindow }
     var body: some View {
@@ -82,9 +85,9 @@ struct RailView: View {
         let dim = model.degraded || pending
         let paint = quotaPaint(remaining, theme: model.theme, phase: model.skinPhase)
         ZStack {
-            NotchRail().stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+            NotchRail(drawingRect: drawingRect).stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
             if let remaining, remaining > 0 {
-                NotchRail().trim(from: 0, to: remaining / 100)
+                NotchRail(drawingRect: drawingRect).trim(from: 0, to: remaining / 100)
                     .stroke(paint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).opacity(dim ? 0.55 : 1)
             }
         }
@@ -329,6 +332,27 @@ struct SettingsView: View {
                     }
                     Text("整条轮廓显示一组额度：从左填充，用掉后从右端缩回。展开卡片保留全部额度。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    if model.calibrationDisplays.count > 1 {
+                        Picker("校准的内建屏幕", selection: $model.selectedCalibrationDisplayID) {
+                            ForEach(model.calibrationDisplays) { Text($0.name).tag($0.id) }
+                        }
+                    }
+                    HStack {
+                        Text("水平微调")
+                        Spacer()
+                        Button("−") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment - 0.5) }
+                            .accessibilityLabel("刘海轮廓左移 0.5 点")
+                            .disabled(model.selectedHorizontalAdjustment <= (model.selectedCalibrationDisplay?.minimum ?? -8))
+                        Text(String(format: "%+.1f pt", model.selectedHorizontalAdjustment))
+                            .font(.system(size: 11, design: .monospaced)).frame(width: 64)
+                        Button("+") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment + 0.5) }
+                            .accessibilityLabel("刘海轮廓右移 0.5 点")
+                            .disabled(model.selectedHorizontalAdjustment >= (model.selectedCalibrationDisplay?.maximum ?? 8))
+                        Button("重置") { model.setHorizontalAdjustment(0) }.disabled(!model.hasStoredHorizontalAdjustment)
+                    }.controlSize(.small).disabled(model.calibrationDisplays.isEmpty)
+                    Text(model.calibrationDisplays.isEmpty ? "连接带刘海的内建屏幕后可校准。" : "默认 0；负值向左，正值向右。每次 0.5 pt，最多 ±8 pt，仅在本机记住此屏幕的设置。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("没有刘海的显示器使用菜单栏。悬停进度线或点击菜单栏图标，即可查看完整额度。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
@@ -391,7 +415,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Text("v0.1.3 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v0.1.4 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")

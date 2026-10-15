@@ -3,18 +3,20 @@ import AppKit
 import SwiftUI
 import Combine
 import CoreGraphics
+import ColorSync
 import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
     private var smokeIsland: IslandPanelController?
     private var contourHarness: ContourRenderHarness?
+    private var alignmentHarness: AlignmentRenderHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -65,6 +67,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         model.$overlayEnabled.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.rebuildIslands() }
         }.store(in: &cancellables)
+        model.$horizontalCalibrations.removeDuplicates().sink { [weak self] _ in
+            // Rebuilding cancels old hit regions and animation timers before moving the contour.
+            DispatchQueue.main.async { self?.rebuildIslands() }
+        }.store(in: &cancellables)
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rebuildIslands() }
         })
@@ -104,7 +110,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--contour-test") { runContourTest() }
+            if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
+            else if CommandLine.arguments.contains("--contour-test") { runContourTest() }
             else { runSmokeTest() }
         }
         SmokeDiagnostics.mark("didFinishLaunching returned")
@@ -133,7 +140,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -156,14 +163,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func rebuildIslands() {
         defer { updateSkinActivity() }
         stopIslands(); model.displayNotice = nil
-        guard model.overlayEnabled, !sleeping, !terminating else { return }
-        for screen in NSScreen.screens {
+        guard !smokeMode else { return } // Native fixtures own their synthetic displays and preferences.
+        let eligible = NSScreen.screens.compactMap { screen -> (NSScreen, NotchGeometry, String?)? in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
                   CGDisplayIsBuiltin(CGDirectDisplayID(number.uint32Value)) != 0,
                   let notch = NotchGeometry.calculate(screen: screen.frame, topInset: screen.safeAreaInsets.top,
                     auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-                    scale: screen.backingScaleFactor) else { continue }
-            let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor))
+                    scale: screen.backingScaleFactor) else { return nil }
+            // Public display UUID, stored only as a local preference key. Never log or upload it.
+            let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
+            let key = uuid.map { CFUUIDCreateString(nil, $0) as String }
+            return (screen, notch, key)
+        }
+        model.configureCalibrationDisplays(eligible.compactMap { screen, notch, key in
+            key.map {
+                CalibrationDisplay(id: $0, name: screen.localizedName,
+                    minimum: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor, horizontalAdjustment: -8).horizontalAdjustment,
+                    maximum: IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor, horizontalAdjustment: 8).horizontalAdjustment)
+            }
+        })
+        guard model.overlayEnabled, !sleeping, !terminating else { return }
+        for (screen, notch, key) in eligible {
+            let geometry = IslandGeometry(notch: notch, screen: screen.frame, backingScale: screen.backingScaleFactor,
+                horizontalAdjustment: model.horizontalAdjustment(for: key))
+            let screenBounds = screen.frame.insetBy(dx: -0.001, dy: -0.001)
+            guard screenBounds.contains(geometry.frame(progress: 0)), screenBounds.contains(geometry.frame(progress: 1)) else {
+                model.displayNotice = "当前屏幕边界无法容纳刘海轮廓，已保留菜单栏入口。"; continue
+            }
+            let island = makeIsland(geometry: geometry)
             if island.placementIsValid { islands.append(island) }
             else { island.stop(); model.displayNotice = "系统未提供可靠的刘海位置，已保留菜单栏入口。" }
         }
@@ -264,6 +291,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
             selector: #selector(advanceSmokeTest(_:)), userInfo: nil, repeats: true)
+    }
+    private func runAlignmentTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        alignmentHarness = AlignmentRenderHarness(model: model, screen: screen) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        alignmentHarness?.start()
     }
     private func runContourTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }

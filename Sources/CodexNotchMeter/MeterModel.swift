@@ -3,6 +3,13 @@ import AppKit
 import Combine
 import NotchCore
 
+struct CalibrationDisplay: Identifiable, Equatable {
+    let id: String
+    let name: String
+    var minimum: Double = -8
+    var maximum: Double = 8
+}
+
 @MainActor
 final class MeterModel: ObservableObject {
     @Published private(set) var snapshot: QuotaSnapshot?
@@ -14,6 +21,11 @@ final class MeterModel: ObservableObject {
     @Published var skinSpeed: SkinMotionSpeed { didSet { if !demo { defaults.set(skinSpeed.rawValue, forKey: "skinSpeed") } } }
     @Published var preferredQuota: String { didSet { if !demo { defaults.set(preferredQuota, forKey: "preferredQuota") } } }
     @Published private(set) var skinPhase: Double = 0
+    @Published private(set) var calibrationDisplays: [CalibrationDisplay] = []
+    @Published var selectedCalibrationDisplayID = ""
+    @Published private(set) var horizontalCalibrations: [String: Double] = [:] {
+        didSet { if !demo { defaults.set(horizontalCalibrations, forKey: "horizontalCalibrations") } }
+    }
     @Published private(set) var now = Date()
     @Published var overlayEnabled: Bool { didSet { defaults.set(overlayEnabled, forKey: "overlayEnabled") } }
     @Published var preferredBucket: String { didSet { defaults.set(preferredBucket, forKey: "preferredBucket") } }
@@ -41,6 +53,13 @@ final class MeterModel: ObservableObject {
         overlayEnabled = defaults.object(forKey: "overlayEnabled") as? Bool ?? true
         preferredBucket = defaults.string(forKey: "preferredBucket") ?? "codex"
         executablePath = defaults.string(forKey: "executablePath") ?? ""
+        if !demo, let saved = defaults.dictionary(forKey: "horizontalCalibrations") {
+            horizontalCalibrations = saved.reduce(into: [:]) { result, entry in
+                if !entry.key.isEmpty, entry.key.count <= 64, let value = entry.value as? Double {
+                    result[entry.key] = HorizontalCalibration.sanitized(value)
+                }
+            }
+        }
         if demo {
             snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [
                 QuotaWindow(id: "codex:primary", usedPercent: 28, durationMinutes: 300, resetsAt: Date().addingTimeInterval(8160)),
@@ -56,6 +75,34 @@ final class MeterModel: ObservableObject {
                 }, fetchedAt: Date())
             }
         }
+    }
+    func configureCalibrationDisplays(_ displays: [CalibrationDisplay]) {
+        if calibrationDisplays != displays { calibrationDisplays = displays }
+        if !displays.contains(where: { $0.id == selectedCalibrationDisplayID }) {
+            selectedCalibrationDisplayID = displays.first?.id ?? ""
+        }
+    }
+    func horizontalAdjustment(for displayID: String?) -> Double {
+        guard let displayID else { return 0 }
+        let requested = HorizontalCalibration.sanitized(horizontalCalibrations[displayID] ?? 0)
+        guard let display = calibrationDisplays.first(where: { $0.id == displayID }) else { return requested }
+        return min(display.maximum, max(display.minimum, requested))
+    }
+    var selectedCalibrationDisplay: CalibrationDisplay? { calibrationDisplays.first { $0.id == selectedCalibrationDisplayID } }
+    var selectedHorizontalAdjustment: Double { horizontalAdjustment(for: selectedCalibrationDisplayID) }
+    var hasStoredHorizontalAdjustment: Bool { horizontalCalibrations[selectedCalibrationDisplayID] != nil }
+    func setHorizontalAdjustment(_ value: Double) {
+        let key = selectedCalibrationDisplayID
+        guard calibrationDisplays.contains(where: { $0.id == key }) else { return }
+        guard let display = selectedCalibrationDisplay else { return }
+        let value = min(display.maximum, max(display.minimum, HorizontalCalibration.sanitized(value)))
+        // Reset must clear a saved correction even when current bounds clamp its visible value to zero.
+        if value == 0 {
+            if horizontalCalibrations[key] != nil { horizontalCalibrations.removeValue(forKey: key) }
+            return
+        }
+        guard horizontalAdjustment(for: key) != value else { return }
+        horizontalCalibrations[key] = value
     }
     var bucket: QuotaBucket? { snapshot?.bucket(preferredID: preferredBucket) }
     var primaryWindow: QuotaWindow? { bucket?.primaryWindow(preferredID: preferredQuota) }
@@ -171,7 +218,7 @@ final class MeterModel: ObservableObject {
     }
     /// Synthetic rendering fixtures update the SAME live published model; never enable account I/O.
     func setContourFixture(left: Double?, right: Double?, stale: Bool = false, pending: Bool = false) {
-        guard demo, CommandLine.arguments.contains("--contour-test") else { return }
+        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") else { return }
         now = Date(); error = nil
         snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [left, right].enumerated().map { index, remaining in
             QuotaWindow(id: "render-\(index)", usedPercent: remaining.map { 100 - $0 },

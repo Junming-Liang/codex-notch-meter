@@ -21,7 +21,9 @@ private final class IslandPresentation: ObservableObject {
 
 struct IslandSilhouette: Shape {
     let progress: Double
-    func path(in rect: CGRect) -> Path {
+    var drawingRect: CGRect? = nil
+    func path(in viewport: CGRect) -> Path {
+        let rect = drawingRect ?? viewport
         let shoulder = CGFloat(progress) * 12
         let radius = min(12 + CGFloat(progress) * 12, rect.height / 2)
         var path = Path()
@@ -34,7 +36,7 @@ struct IslandSilhouette: Shape {
         path.addLine(to: CGPoint(x: rect.width - shoulder, y: shoulder))
         path.addQuadCurve(to: CGPoint(x: rect.width, y: 0), control: CGPoint(x: rect.width - shoulder, y: 0))
         path.closeSubpath()
-        return path
+        return path.applying(CGAffineTransform(translationX: rect.minX, y: rect.minY))
     }
 }
 
@@ -52,25 +54,27 @@ private struct IslandRootView: View {
         let p = presentation.progress
         GeometryReader { viewport in
             Color.clear
-                .overlay { IslandSilhouette(progress: p).fill(.black.opacity(min(1, p * 3))) }
-                .overlay(alignment: .top) {
-                    RailView(model: model, hovered: { _ in })
-                    .frame(width: geometry.collapsedSize.width, height: geometry.collapsedSize.height)
+                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)).fill(.black.opacity(min(1, p * 3))) }
+                .overlay(alignment: .topLeading) {
+                    RailView(model: model, drawingRect: geometry.railRect(progress: p), hovered: { _ in })
+                    .frame(width: viewport.size.width, height: geometry.collapsedSize.height)
                     .opacity(max(0, 1 - p * 4))
                     .accessibilityHidden(p > 0.1)
                 }
-                .overlay(alignment: .top) {
+                .overlay(alignment: .topLeading) {
                     // Opacity-zero fixed-height content MUST NOT size the collapsed root.
                     if p > 0 {
                         DetailView(model: model, embedded: true, embeddedHeight: geometry.expandedSize.height - geometry.notch.height - 8, quitFrameChanged: quitFrameChanged, hovered: { _ in }, refresh: refresh, settings: settings, quit: quit)
-                            .padding(.top, geometry.notch.height + 8)
+                            .frame(width: 340)
+                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 170,
+                                    y: geometry.notch.height + 8)
                             .opacity(min(1, max(0, (p - 0.35) / 0.5)))
                             .allowsHitTesting(p == 1)
                             .accessibilityHidden(p < 1)
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                .clipShape(IslandSilhouette(progress: p))
+                .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)))
                 .onAppear { viewportChanged(viewport.size) }
                 .onChange(of: viewport.size) { viewportChanged($0) }
             }
@@ -143,7 +147,7 @@ final class IslandPanelController: NSObject {
         }
     }
     func setContourTestProgress(_ progress: Double) {
-        guard CommandLine.arguments.contains("--contour-test") else { return }
+        guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") else { return }
         apply(progress: progress)
     }
     @objc private func pollPointer(_ timer: Timer) {
@@ -251,7 +255,7 @@ final class IslandPanelController: NSObject {
         let quitVisible = quitFrame.width > 0 && quitFrame.height >= 20
             && CGRect(x: 0, y: 0, width: 340, height: contentHeight).contains(quitFrame)
         let frame = geometry.frame(progress: 1)
-        let originX = frame.midX - 170
+        let originX = frame.minX + geometry.contourRect(progress: 1).midX - 170
         let contentTop = frame.maxY - geometry.notch.height - 8
         let clickPoints = [
             CGPoint(x: originX + quitFrame.minX + 3, y: contentTop - quitFrame.minY - 3),
