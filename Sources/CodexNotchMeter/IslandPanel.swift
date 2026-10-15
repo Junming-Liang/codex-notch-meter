@@ -54,10 +54,7 @@ private struct IslandRootView: View {
             Color.clear
                 .overlay { IslandSilhouette(progress: p).fill(.black.opacity(min(1, p * 3))) }
                 .overlay(alignment: .top) {
-                    HStack(spacing: 0) {
-                        RailView(model: model, left: true, hovered: { _ in })
-                        RailView(model: model, left: false, hovered: { _ in })
-                    }
+                    RailView(model: model, hovered: { _ in })
                     .frame(width: geometry.collapsedSize.width, height: geometry.collapsedSize.height)
                     .opacity(max(0, 1 - p * 4))
                     .accessibilityHidden(p > 0.1)
@@ -100,11 +97,12 @@ final class IslandPanelController: NSObject {
     private var quitFrame: CGRect = .zero
     private(set) var renderedViewport: CGSize = .zero
     private let hovered: () -> Void
+    private let activityChanged: () -> Void
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
-         hovered: @escaping () -> Void, refresh: @escaping () -> Void,
+         activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
-        self.geometry = geometry; self.hovered = hovered; self.reducedMotionOverride = reducedMotionOverride
+        self.geometry = geometry; self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
         panel = TopEdgePanel(contentRect: geometry.frame(progress: 0), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.isReleasedWhenClosed = false
@@ -133,7 +131,9 @@ final class IslandPanelController: NSObject {
     }
     private func apply(progress: Double) {
         guard !stopped else { return }
+        let hadDetails = displaysColoredDetails
         presentation.progress = progress
+        if hadDetails != displaysColoredDetails { activityChanged() }
         let expected = geometry.frame(progress: progress)
         panel.setFrame(expected, display: true)
         panel.contentView?.layoutSubtreeIfNeeded()
@@ -220,6 +220,7 @@ final class IslandPanelController: NSObject {
             : CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
         updatePointer(point, now: now)
     }
+    var displaysColoredDetails: Bool { presentation.progress > 0.35 }
     var smokeProgress: Double { motion.progress }
     var smokeTargetExpanded: Bool { hover.isExpanded }
     var smokeStopped: Bool { stopped && pointerTimer == nil && motionTimer == nil && !panel.isVisible }

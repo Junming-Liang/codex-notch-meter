@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import AppKit
 import NotchCore
 
 private enum MeterStyle {
@@ -22,6 +23,23 @@ private func quotaColor(_ remaining: Double?) -> Color {
     return MeterStyle.mint
 }
 
+private func quotaPaint(_ remaining: Double?, theme: MeterTheme, phase: Double = 0) -> AnyShapeStyle {
+    guard let remaining, remaining > 25 else { return AnyShapeStyle(quotaColor(remaining)) }
+    let colors: [Color]
+    switch theme {
+    case .standard: return AnyShapeStyle(MeterStyle.mint)
+    case .rainbow:
+        // Only color phase moves. The separate path trim remains the actual quota fraction.
+        colors = (0...24).map { index in
+            Color(hue: (Double(index) / 24 + phase).truncatingRemainder(dividingBy: 1), saturation: 0.64, brightness: 0.98)
+        }
+    case .aurora: colors = [Color(red: 0.40, green: 0.91, blue: 0.89), Color(red: 0.71, green: 0.60, blue: 1)]
+    case .sunset: colors = [Color(red: 0.98, green: 0.81, blue: 0.53), Color(red: 0.93, green: 0.57, blue: 0.50)]
+    case .ice: colors = [Color(red: 0.71, green: 0.85, blue: 1), Color(red: 0.51, green: 0.66, blue: 0.82)]
+    }
+    return AnyShapeStyle(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+}
+
 private func windowTitle(_ window: QuotaWindow) -> String {
     guard let minutes = window.durationMinutes else { return "额度窗口" }
     if minutes % 1440 == 0 { return "\(minutes / 1440) 天" }
@@ -39,18 +57,16 @@ private func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
     return "\(minutes) 分钟后重置"
 }
 
+/// One uninterrupted U: upper left → lower left → bottom → lower right → upper right.
 struct NotchRail: Shape {
-    let left: Bool
     func path(in rect: CGRect) -> Path {
-        let edge: CGFloat = left ? 2 : rect.width - 2
-        let end: CGFloat = left ? rect.width - 2 : 2
-        let direction: CGFloat = left ? 1 : -1
         var path = Path()
-        path.move(to: CGPoint(x: edge, y: 0))
-        path.addLine(to: CGPoint(x: edge, y: rect.height - 12))
-        // Approximate the hardware's rounded lower corners; NSScreen exposes bounds, not a curve.
-        path.addQuadCurve(to: CGPoint(x: edge + direction * 10, y: rect.height - 2), control: CGPoint(x: edge, y: rect.height - 2))
-        path.addLine(to: CGPoint(x: end, y: rect.height - 2))
+        path.move(to: CGPoint(x: 2, y: 0))
+        path.addLine(to: CGPoint(x: 2, y: rect.height - 12))
+        path.addQuadCurve(to: CGPoint(x: 12, y: rect.height - 2), control: CGPoint(x: 2, y: rect.height - 2))
+        path.addLine(to: CGPoint(x: rect.width - 12, y: rect.height - 2))
+        path.addQuadCurve(to: CGPoint(x: rect.width - 2, y: rect.height - 12), control: CGPoint(x: rect.width - 2, y: rect.height - 2))
+        path.addLine(to: CGPoint(x: rect.width - 2, y: 0))
         return path
     }
 }
@@ -58,39 +74,23 @@ struct NotchRail: Shape {
 @MainActor
 struct RailView: View {
     @ObservedObject var model: MeterModel
-    let left: Bool
     let hovered: (Bool) -> Void
-    var window: QuotaWindow? {
-        let windows = model.bucket?.windows ?? []
-        let index = left ? 0 : 1
-        return windows.indices.contains(index) ? windows[index] : nil
-    }
+    var window: QuotaWindow? { model.primaryWindow }
     var body: some View {
         let remaining = window?.remainingPercent
         let pending = window?.resetPending(at: model.now) ?? false
         let dim = model.degraded || pending
-        let color = (remaining ?? 0) > 25 ? (left ? MeterStyle.mint : MeterStyle.sky) : quotaColor(remaining)
+        let paint = quotaPaint(remaining, theme: model.theme, phase: model.skinPhase)
         ZStack {
-            NotchRail(left: left).stroke(Color.black.opacity(0.8), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
-            NotchRail(left: left).stroke(Color.white.opacity(remaining == nil ? 0.12 : 0.42), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-            if let remaining {
-                NotchRail(left: left).trim(from: 0, to: remaining / 100)
-                    .stroke(color.opacity(dim ? 0.55 : 1), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                if remaining == 0 {
-                    // A zero endpoint marker is not a positive progress segment.
-                    GeometryReader { proxy in
-                        Circle().fill(MeterStyle.coral).frame(width: 1.5, height: 1.5)
-                            .position(x: left ? 2 : proxy.size.width - 2, y: 1.5)
-                    }
-                }
-            } else {
-                NotchRail(left: left).stroke(MeterStyle.unknown.opacity(0.9), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [3, 5]))
+            NotchRail().stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+            if let remaining, remaining > 0 {
+                NotchRail().trim(from: 0, to: remaining / 100)
+                    .stroke(paint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).opacity(dim ? 0.55 : 1)
             }
         }
-        .contentShape(Rectangle())
-        .onHover(perform: hovered)
+        .contentShape(Rectangle()).onHover(perform: hovered)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(window.map(windowTitle) ?? "额度不可用")
+        .accessibilityLabel(window.map { "刘海主额度 · " + windowTitle($0) } ?? "额度不可用")
         .accessibilityValue((remaining.map { "剩余 \(Int($0.rounded()))%" } ?? "未知") + (model.degraded ? "，上次读取" : "") + (pending ? "，等待刷新确认" : ""))
     }
 }
@@ -153,7 +153,7 @@ struct DetailView: View {
                                     }.padding(.horizontal, 2)
                                 }
                                 ForEach(bucket.windows) { window in
-                                    QuotaRow(window: window, now: model.now, degraded: model.degraded)
+                                    QuotaRow(window: window, now: model.now, degraded: model.degraded, theme: model.theme, phase: model.skinPhase, selected: window.id == model.primaryWindow?.id)
                                 }
                                 if bucket.windows.isEmpty { emptyQuota("这个额度组暂未提供窗口数据") }
                             }
@@ -197,7 +197,7 @@ struct DetailView: View {
     private var header: some View {
         HStack(spacing: 9) {
             Image(systemName: "chart.bar.xaxis").font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(MeterStyle.mint).frame(width: 28, height: 28)
+                .foregroundStyle(quotaPaint(100, theme: model.theme, phase: model.skinPhase)).frame(width: 28, height: 28)
                 .background(MeterStyle.mint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Codex Notch Meter").font(.system(size: 13, weight: .semibold))
@@ -231,11 +231,15 @@ struct QuotaRow: View {
     let window: QuotaWindow
     let now: Date
     let degraded: Bool
+    var theme: MeterTheme = .standard
+    var phase: Double = 0
+    var selected = false
     private var pending: Bool { window.resetPending(at: now) }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(windowTitle(window)).font(.system(size: 12, weight: .medium))
+                if selected { Text("刘海显示").font(.system(size: 9)).foregroundStyle(MeterStyle.secondary) }
                 Spacer()
                 if pending { StatePill(text: "等待确认", color: MeterStyle.amber) }
                 else if degraded { StatePill(text: "上次读取", color: MeterStyle.amber) }
@@ -252,9 +256,9 @@ struct QuotaRow: View {
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.08))
+                    Capsule().fill(Color.black)
                     if let remaining = window.remainingPercent {
-                        Capsule().fill(quotaColor(remaining).opacity(degraded || pending ? 0.45 : 1))
+                        Capsule().fill(quotaPaint(remaining, theme: theme, phase: phase)).opacity(degraded || pending ? 0.45 : 1)
                             .frame(width: geometry.size.width * remaining / 100)
                     }
                 }
@@ -278,6 +282,7 @@ struct QuotaRow: View {
 @MainActor
 struct SettingsView: View {
     @ObservedObject var model: MeterModel
+    @ObservedObject var login: LoginSettingsModel
     let chooseExecutable: () -> Void
     let quit: () -> Void
     var body: some View {
@@ -292,18 +297,66 @@ struct SettingsView: View {
                 }
                 Spacer()
             }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("在刘海边缘显示额度进度线", isOn: $model.overlayEnabled)
+                    Picker("外观皮肤", selection: $model.theme) {
+                        ForEach(MeterTheme.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("皮肤动效", isOn: $model.skinMotionEnabled).disabled(!model.theme.supportsMotion)
+                    if model.theme.supportsMotion {
+                        Picker("流动速度", selection: $model.skinSpeed) {
+                            Text("舒缓 · 12 秒").tag(SkinMotionSpeed.slow)
+                            Text("标准 · 8 秒").tag(SkinMotionSpeed.normal)
+                        }.disabled(!model.skinMotionEnabled)
+                    }
+                    Text("彩虹颜色缓慢流动，额度长度不动。减少动态效果、低电量模式或屏幕休眠时自动静止。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if let buckets = model.snapshot?.buckets, buckets.count > 1 {
                         Picker("显示的额度组", selection: $model.preferredBucket) {
                             ForEach(buckets) { bucket in Text(bucket.name).tag(bucket.id) }
                         }
                     }
+                    if let windows = model.bucket?.windows, !windows.isEmpty {
+                        Picker("刘海主额度", selection: Binding(get: {
+                            windows.contains(where: { $0.id == model.preferredQuota }) ? model.preferredQuota : ""
+                        }, set: { model.preferredQuota = $0 })) {
+                            Text("自动 · 最短周期").tag("")
+                            ForEach(windows) { Text(windowTitle($0)).tag($0.id) }
+                        }
+                    }
+                    Text("整条轮廓显示一组额度：从左填充，用掉后从右端缩回。展开卡片保留全部额度。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("没有刘海的显示器使用菜单栏。悬停进度线或点击菜单栏图标，即可查看完整额度。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             } label: { Label("显示", systemImage: "display").font(.system(size: 12, weight: .semibold)) }
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("登录时启动", isOn: Binding(get: { login.isEnabled }, set: { login.setEnabled($0) }))
+                        .disabled(login.synthetic || (!login.canEnable && !login.isEnabled))
+                        .accessibilityValue(login.systemStatusText)
+                    Text(login.statusText).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if login.issue != nil || login.location != .applications {
+                        Text("系统记录：" + login.systemStatusText).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if login.needsApproval {
+                        HStack {
+                            Button("在系统设置中批准…") { login.openSettings() }
+                            Button("取消待批准请求") { login.cancelPending() }
+                        }.controlSize(.small).disabled(login.synthetic)
+                    } else if login.status == .enabled && login.location != .applications {
+                        Button("停用系统登录项") { login.cancelPending() }.controlSize(.small).disabled(login.synthetic)
+                    }
+                    Text("默认关闭，仅在你选择后请求启用。此预览版为临时签名，系统可能拒绝注册；安装 DMG 不会自动开启。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button("打开系统登录项…") { login.openSettings() }.controlSize(.small).disabled(login.synthetic)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            } label: { Label("启动", systemImage: "power.circle").font(.system(size: 12, weight: .semibold)) }
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(model.executablePath.isEmpty ? "自动查找 · Codex 桌面应用 / CLI" : model.executablePath)
@@ -322,7 +375,7 @@ struct SettingsView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
                     Label("只读账户接口 · 不发送模型任务", systemImage: "checkmark.shield").font(.system(size: 12))
-                    Text("不收集聊天记录，不上传额度，不开机自启。不需要辅助功能或屏幕录制权限。")
+                    Text("不收集聊天记录，不上传额度。登录时启动由你选择。不需要辅助功能或屏幕录制权限。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Divider()
                     HStack(alignment: .top, spacing: 7) {
@@ -335,13 +388,16 @@ struct SettingsView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             } label: { Label("隐私与状态", systemImage: "lock.shield").font(.system(size: 12, weight: .semibold)) }
+                }
+            }
             HStack {
-                Text("v0.1.2 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v0.1.3 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")
             }.controlSize(.small)
-        }.padding(24).frame(width: 480)
+        }.padding(24).frame(width: 480, height: min(720, max(520, (NSScreen.main?.visibleFrame.height ?? 800) - 80)))
+            .onAppear { login.refresh() }
     }
 }
 #endif

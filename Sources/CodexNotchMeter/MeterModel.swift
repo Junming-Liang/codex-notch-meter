@@ -9,6 +9,11 @@ final class MeterModel: ObservableObject {
     @Published private(set) var error: MeterError?
     @Published private(set) var refreshing = false
     @Published var displayNotice: String?
+    @Published var theme: MeterTheme { didSet { if !demo { defaults.set(theme.rawValue, forKey: "theme") } } }
+    @Published var skinMotionEnabled: Bool { didSet { if !demo { defaults.set(skinMotionEnabled, forKey: "skinMotionEnabled") } } }
+    @Published var skinSpeed: SkinMotionSpeed { didSet { if !demo { defaults.set(skinSpeed.rawValue, forKey: "skinSpeed") } } }
+    @Published var preferredQuota: String { didSet { if !demo { defaults.set(preferredQuota, forKey: "preferredQuota") } } }
+    @Published private(set) var skinPhase: Double = 0
     @Published private(set) var now = Date()
     @Published var overlayEnabled: Bool { didSet { defaults.set(overlayEnabled, forKey: "overlayEnabled") } }
     @Published var preferredBucket: String { didSet { defaults.set(preferredBucket, forKey: "preferredBucket") } }
@@ -22,11 +27,17 @@ final class MeterModel: ObservableObject {
     private var outstandingTasks: [UUID: Task<Void, Never>] = [:]
     private var shuttingDown = false
     private var timer: Timer?
+    private lazy var skinAnimator = SkinAnimator { [weak self] in self?.skinPhase = $0 }
     private var sleeping = false
     let demo: Bool
 
     init(demo: Bool) {
         self.demo = demo
+        let fixtureTheme = CommandLine.arguments.first(where: { $0.hasPrefix("--skin=") }).map { String($0.dropFirst(7)) }
+        theme = demo ? MeterTheme.restored(fixtureTheme ?? (CommandLine.arguments.contains("--rainbow") ? "rainbow" : nil)) : MeterTheme.restored(defaults.string(forKey: "theme"))
+        skinMotionEnabled = demo ? true : defaults.object(forKey: "skinMotionEnabled") as? Bool ?? true
+        skinSpeed = demo ? .normal : SkinMotionSpeed.restored(defaults.string(forKey: "skinSpeed"))
+        preferredQuota = demo ? "" : defaults.string(forKey: "preferredQuota") ?? ""
         overlayEnabled = defaults.object(forKey: "overlayEnabled") as? Bool ?? true
         preferredBucket = defaults.string(forKey: "preferredBucket") ?? "codex"
         executablePath = defaults.string(forKey: "executablePath") ?? ""
@@ -47,6 +58,17 @@ final class MeterModel: ObservableObject {
         }
     }
     var bucket: QuotaBucket? { snapshot?.bucket(preferredID: preferredBucket) }
+    var primaryWindow: QuotaWindow? { bucket?.primaryWindow(preferredID: preferredQuota) }
+    /// One clock shared by every visible contour/card. Never drives quota polling.
+    func updateSkinActivity(_ policy: SkinMotionPolicy) {
+        // Synthetic fixed-phase captures own their phase. Lifecycle reads must not overwrite it.
+        guard !demo, !shuttingDown else { skinAnimator.stop(); return }
+        skinAnimator.set(policy: policy, speed: skinSpeed)
+    }
+    func setSkinPhaseForTesting(_ phase: Double) {
+        guard demo, CommandLine.arguments.contains("--contour-test"), phase.isFinite else { return }
+        skinPhase = min(0.999999, max(0, phase))
+    }
     var stale: Bool { (!demo || CommandLine.arguments.contains("--contour-test")) && (snapshot?.isStale(at: now) ?? false) }
     var degraded: Bool { stale || error != nil }
     var status: String {
@@ -131,6 +153,7 @@ final class MeterModel: ObservableObject {
     func wake() { sleeping = false; refresh() }
     func stop() {
         timer?.invalidate(); timer = nil
+        skinAnimator.stop()
         for pending in outstandingTasks.values { pending.cancel() }
     }
     func shutdown() async {

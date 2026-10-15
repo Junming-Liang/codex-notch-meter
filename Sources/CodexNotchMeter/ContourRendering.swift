@@ -22,6 +22,15 @@ private struct ContourPixel {
     var r: Double, g: Double, b: Double, a: Double
     var chromatic: Bool { a > 0.2 && max(r, max(g, b)) - min(r, min(g, b)) > 0.12 }
     var light: Double { (r + g + b) / 3 }
+    var hueBin: Int? {
+        let maximum = max(r, max(g, b)), minimum = min(r, min(g, b)), delta = maximum - minimum
+        guard a > 0.8, delta > 0.25 else { return nil }
+        let sector: Double
+        if maximum == r { sector = (g - b) / delta }
+        else if maximum == g { sector = 2 + (b - r) / delta }
+        else { sector = 4 + (r - g) / delta }
+        return Int(floor((sector + 6).truncatingRemainder(dividingBy: 6)))
+    }
 }
 
 @MainActor
@@ -105,6 +114,8 @@ private struct ContourMetrics {
     let colors: [Double]
     let track: [Double]
     let brightness: [Double]
+    let hueBins: [Int]
+    let signature: [Double]
     let failures: [String]
 }
 
@@ -163,84 +174,92 @@ private struct LegacyLayoutFixture: View {
 @MainActor
 private enum ContourPixelGate {
     /// Independent polyline sampling of the design contract, not the production SwiftUI Path.
-    static func arcPoint(_ fraction: Double, left: Bool, size: CGSize) -> CGPoint {
+    static func arcPoint(_ fraction: Double, size: CGSize) -> CGPoint {
         var points = [CGPoint(x: 2, y: 0), CGPoint(x: 2, y: size.height - 12)]
         for step in 1...100 {
             let t = CGFloat(step) / 100
             points.append(CGPoint(x: 2 + 10 * t * t, y: size.height - 12 + 20 * t - 10 * t * t))
         }
-        points.append(CGPoint(x: size.width / 2 - 2, y: size.height - 2))
+        points.append(CGPoint(x: size.width - 12, y: size.height - 2))
+        for step in 1...100 {
+            let t = CGFloat(step) / 100
+            points.append(CGPoint(x: size.width - 12 + 20 * t - 10 * t * t, y: size.height - 2 - 10 * t * t))
+        }
+        points.append(CGPoint(x: size.width - 2, y: 0))
         let lengths = zip(points, points.dropFirst()).map { pair in hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y) }
         var distance = CGFloat(fraction) * lengths.reduce(0, +)
-        var result = points.last!
         for (index, length) in lengths.enumerated() {
             if distance <= length {
                 let t = length > 0 ? distance / length : 0
-                result = CGPoint(x: points[index].x + (points[index + 1].x - points[index].x) * t,
+                return CGPoint(x: points[index].x + (points[index + 1].x - points[index].x) * t,
                     y: points[index].y + (points[index + 1].y - points[index].y) * t)
-                break
             }
             distance -= length
         }
-        if !left { result.x = size.width - result.x }
-        return result
+        return points.last!
     }
-    static func inspect(_ bitmap: NativeContourBitmap, hardware: CGRect, fractions: [Double?],
-                        transform: (ContourPixel) -> ContourPixel = { $0 }) -> ContourMetrics {
+    static func inspect(_ bitmap: NativeContourBitmap, hardware: CGRect, percent: Double?,
+                        transform: (ContourPixel) -> ContourPixel = { $0 }, reversed: Bool = false,
+                        eraseCenter: Bool = false, graySuffix: Bool = false, opposedHalves: Bool = false) -> ContourMetrics {
         let size = bitmap.size
         let corners = [CGPoint(x: 0.5, y: size.height - 0.5), CGPoint(x: 2.5, y: size.height - 0.5),
                        CGPoint(x: 0.5, y: size.height - 2.5), CGPoint(x: size.width - 0.5, y: size.height - 0.5),
                        CGPoint(x: size.width - 2.5, y: size.height - 0.5)]
         let transparent = corners.allSatisfy { point in
-            let p = transform(bitmap.pixel(x: Int(point.x * CGFloat(bitmap.scale)), y: Int(point.y * CGFloat(bitmap.scale))))
-            return p.a < 0.05
+            transform(bitmap.pixel(x: Int(point.x * CGFloat(bitmap.scale)), y: Int(point.y * CGFloat(bitmap.scale)))).a < 0.05
         }
         let interior = transform(bitmap.pixel(x: bitmap.representation.pixelsWide / 2, y: 8 * bitmap.scale)).a < 0.05
+        var nonblackExterior = 0
         var colors = [0.0, 0.0], track = [0.0, 0.0], light = [0.0, 0.0], lightCount = [0.0, 0.0]
         for y in 0..<bitmap.representation.pixelsHigh {
             for x in 0..<bitmap.representation.pixelsWide {
                 let px = CGFloat(x) / CGFloat(bitmap.scale), py = CGFloat(y) / CGFloat(bitmap.scale)
-                // Only observable area outside the simulated rectangular camera exclusion counts.
                 guard !hardware.contains(CGPoint(x: px, y: py)) else { continue }
                 let pixel = transform(bitmap.pixel(x: x, y: y)); let side = px < size.width / 2 ? 0 : 1
                 if pixel.chromatic { colors[side] += 1 }
-                // Fixed spatial population: chroma-threshold selection biases stale
-                // means upward when darker antialiased pixels fall below the threshold.
+                if pixel.a > 0.01 && max(pixel.r, max(pixel.g, pixel.b)) > 0.01 { nonblackExterior += 1 }
+                // Identical spatial population, including black and transparent pixels.
                 light[side] += pixel.light * pixel.a; lightCount[side] += 1
-                if pixel.a > 0.2 && pixel.light > 0.12 { track[side] += 1 }
+                if pixel.a > 0.2 { track[side] += 1 }
             }
         }
-        var samplesValid = true
-        var failures: [String] = []
+        var hues = Set<Int>(), signature: [Double] = [], failures: [String] = []
         if !transparent { failures.append("opaque-corner") }; if !interior { failures.append("opaque-interior") }
-        for side in 0...1 {
-            if let percent = fractions[side] {
-                // Dense 5% probes plus explicit boundary probes, outside cap/AA uncertainty.
-                let probes = stride(from: 0.05, through: 0.95, by: 0.05).map { $0 }
-                    + [percent / 100 - 0.055, percent / 100 + 0.055].filter { $0 > 0 && $0 < 1 }
-                for location in probes where abs(location - percent / 100) > 0.045 {
-                    let point = arcPoint(location, left: side == 0, size: size)
-                    let colored = bitmap.near(point, transform: transform).contains { $0.chromatic }
-                    if colored != (location < percent / 100) { failures.append("rail\(side)-arc\(location)-colored\(colored)") }
-                    samplesValid = samplesValid && (colored == (location < percent / 100))
-                }
-                if percent > 0 { samplesValid = samplesValid && colors[side] > 15 * Double(bitmap.scale * bitmap.scale) }
-                else { samplesValid = samplesValid && colors[side] < 10 * Double(bitmap.scale * bitmap.scale) }
-            } else {
-                samplesValid = samplesValid && colors[side] < 2 * Double(bitmap.scale * bitmap.scale)
-                let levels = (5..<95).map { step in
-                    bitmap.near(arcPoint(Double(step) / 100, left: side == 0, size: size), transform: transform)
-                        .map(\.light).max() ?? 0
-                }
-                samplesValid = samplesValid && (levels.max() ?? 0) - (levels.min() ?? 0) > 0.15
+        let fraction = (percent ?? 0) / 100
+        // Dense full-U probes prove a left prefix, right consumed suffix and continuous center.
+        let probes = stride(from: 0.025, through: 0.975, by: 0.025).map { $0 }
+            + [fraction - 0.035, fraction + 0.035].filter { $0 > 0 && $0 < 1 }
+        for location in probes where abs(location - fraction) > 0.02 {
+            let point = arcPoint(reversed ? 1 - location : location, size: size)
+            var pixels = bitmap.near(point, transform: transform)
+            if eraseCenter && abs(location - 0.5) < 0.03 { pixels = [ContourPixel(r: 0, g: 0, b: 0, a: 0)] }
+            if graySuffix && location > fraction { pixels = [ContourPixel(r: 0.3, g: 0.3, b: 0.3, a: 1)] }
+            if opposedHalves {
+                let oldColor = location < fraction / 2 || location > 1 - fraction / 2
+                pixels = [oldColor ? ContourPixel(r: 0.4, g: 0.9, b: 0.7, a: 1) : ContourPixel(r: 0, g: 0, b: 0, a: 1)]
             }
-            if !samplesValid { failures.append("rail\(side)-coverage") }
-            if track[side] <= 30 * Double(bitmap.scale * bitmap.scale) { failures.append("rail\(side)-track") }
-            samplesValid = samplesValid && track[side] > 30 * Double(bitmap.scale * bitmap.scale)
+            let colored = pixels.contains { $0.chromatic }
+            let expectedColor = location < fraction
+            if colored != expectedColor { failures.append("arc\(location)-colored\(colored)") }
+            if !expectedColor && pixels.contains(where: { $0.a > 0.1 && max($0.r, max($0.g, $0.b)) > 0.035 }) {
+                failures.append("consumed-not-black-\(location)")
+            }
+            if !pixels.contains(where: { $0.a > 0.85 }) { failures.append("discontinuous-track-\(location)") }
+            for pixel in pixels { if let hue = pixel.hueBin { hues.insert(hue) } }
         }
-        return ContourMetrics(valid: transparent && interior && samplesValid,
-            colors: colors.map { $0 / Double(bitmap.scale * bitmap.scale) },
-            track: track.map { $0 / Double(bitmap.scale * bitmap.scale) }, brightness: (0...1).map { lightCount[$0] > 0 ? light[$0] / lightCount[$0] : 0 }, failures: failures)
+        for location in [0.2, 0.4, 0.6] {
+            let pixels = bitmap.near(arcPoint(location, size: size), transform: transform)
+            let core = pixels.max { $0.light * $0.a < $1.light * $1.a } ?? ContourPixel(r: 0, g: 0, b: 0, a: 0)
+            signature += [core.r * core.a, core.g * core.a, core.b * core.a]
+        }
+        let totalColor = colors.reduce(0, +) / Double(bitmap.scale * bitmap.scale)
+        if fraction == 0 && (totalColor != 0 || nonblackExterior != 0) { failures.append("zero-or-unknown-not-pure-black-\(nonblackExterior)") }
+        if fraction > 0 && totalColor < 15 { failures.append("missing-exterior-color") }
+        if track.contains(where: { $0 <= 30 * Double(bitmap.scale * bitmap.scale) }) { failures.append("missing-black-outline") }
+        return ContourMetrics(valid: failures.isEmpty, colors: colors.map { $0 / Double(bitmap.scale * bitmap.scale) },
+            track: track.map { $0 / Double(bitmap.scale * bitmap.scale) },
+            brightness: (0...1).map { lightCount[$0] > 0 ? light[$0] / lightCount[$0] : 0 },
+            hueBins: [hues.count], signature: signature, failures: failures)
     }
 }
 
@@ -250,16 +269,34 @@ final class ContourRenderHarness: NSObject {
     private struct Scene {
         let name: String, left: Double?, right: Double?
         var stale = false, pending = false, expanded = false
+        var theme: MeterTheme? = nil
+        var secondary = false
+        var phase: Double = 0
     }
     private let scenes: [Scene] = [
-        Scene(name: "full", left: 100, right: 100), Scene(name: "eighty-three", left: 83, right: 83),
-        Scene(name: "quarter", left: 25, right: 25), Scene(name: "zero", left: 0, right: 0),
-        Scene(name: "unknown", left: nil, right: nil), Scene(name: "stale", left: 83, right: 83, stale: true),
-        Scene(name: "reset-pending", left: 83, right: 83, pending: true), Scene(name: "mixed", left: 25, right: 83),
-        Scene(name: "updated-full", left: 100, right: 100), Scene(name: "expanded", left: 83, right: 83, expanded: true),
-        Scene(name: "recollapsed", left: 100, right: 100)
+        Scene(name: "full", left: 100, right: 38), Scene(name: "seventy-five", left: 75, right: 38),
+        Scene(name: "half", left: 50, right: 38), Scene(name: "quarter", left: 25, right: 38),
+        Scene(name: "zero", left: 0, right: 38), Scene(name: "unknown", left: nil, right: 38),
+        Scene(name: "eighty-three", left: 83, right: 38), Scene(name: "stale", left: 83, right: 38, stale: true),
+        Scene(name: "reset-pending", left: 83, right: 38, pending: true),
+        Scene(name: "primary-quarter", left: 25, right: 75),
+        Scene(name: "secondary-three-quarters", left: 25, right: 75, secondary: true),
+        Scene(name: "primary-restored", left: 25, right: 75),
+        Scene(name: "updated-full", left: 100, right: 38), Scene(name: "expanded", left: 83, right: 38, expanded: true),
+        Scene(name: "recollapsed", left: 100, right: 38),
+        Scene(name: "theme-standard", left: 100, right: 38, theme: .standard),
+        Scene(name: "theme-rainbow", left: 100, right: 38, theme: .rainbow),
+        Scene(name: "theme-aurora", left: 100, right: 38, theme: .aurora),
+        Scene(name: "theme-sunset", left: 100, right: 38, theme: .sunset),
+        Scene(name: "theme-ice", left: 100, right: 38, theme: .ice),
+        Scene(name: "theme-restored", left: 100, right: 38),
+        Scene(name: "phase-zero", left: 75, right: 38),
+        Scene(name: "phase-quarter", left: 75, right: 38, phase: 0.25),
+        Scene(name: "phase-half", left: 75, right: 38, phase: 0.5),
+        Scene(name: "phase-three-quarters", left: 75, right: 38, phase: 0.75)
     ]
     private let model: MeterModel
+    private let initialTheme: MeterTheme
     private let island: IslandPanelController
     private let completion: (Bool) -> Void
     private var timer: Timer?
@@ -270,7 +307,7 @@ final class ContourRenderHarness: NSObject {
     private var legacyPanel: TopEdgePanel?
     private var legacyExtent: CGSize = .zero
     init(model: MeterModel, island: IslandPanelController, completion: @escaping (Bool) -> Void) {
-        self.model = model; self.island = island; self.completion = completion
+        self.model = model; self.initialTheme = model.theme; self.island = island; self.completion = completion
     }
     func start() {
         for scale in [1, 2] {
@@ -284,6 +321,7 @@ final class ContourRenderHarness: NSObject {
             orientations[scale] = top.r > 0.9
             SmokeDiagnostics.mark("contour calibration scale=\(scale) pixels=\(raw.representation.pixelsWide)x\(raw.representation.pixelsHigh) topRowFirst=\(top.r > 0.9) drawingScale=\(calibration.drawingScale) valid=\(valid)")
         }
+        SmokeDiagnostics.mark("contour theme=\(model.theme.rawValue)")
         setScene()
         // A native diagnostic fixture preserves the old hidden-detail sizing mechanism.
         let frame = CGRect(x: island.geometry.notch.midX - 116, y: island.geometry.screen.maxY - 39, width: 232, height: 39)
@@ -298,11 +336,17 @@ final class ContourRenderHarness: NSObject {
     }
     private func setScene() {
         let scene = scenes[sceneIndex]
+        model.theme = scene.theme ?? initialTheme
+        model.preferredQuota = scene.secondary ? "render-1" : ""
+        model.setSkinPhaseForTesting(scene.phase)
         model.setContourFixture(left: scene.left, right: scene.right, stale: scene.stale, pending: scene.pending)
         island.setContourTestProgress(scene.expanded ? 1 : 0)
     }
     @objc private func captureScene(_ timer: Timer) {
         let scene = scenes[sceneIndex]
+        let phaseValid = abs(model.skinPhase - scene.phase) < 0.000001
+        passed = passed && phaseValid
+        SmokeDiagnostics.mark("contour actual phase scene=\(scene.name) expected=\(scene.phase) actual=\(model.skinPhase) valid=\(phaseValid)")
         guard let view = island.panel.contentView else { finish(false); return }
         if sceneIndex == 0, let legacy = legacyPanel?.contentView {
             legacy.layoutSubtreeIfNeeded(); legacy.displayIfNeeded()
@@ -310,7 +354,7 @@ final class ContourRenderHarness: NSObject {
             for scale in [1, 2] {
                 if let bitmap = NativeContourBitmap.capture(legacy, scale: scale, topRowFirst: orientations[scale] ?? true) {
                     do { try bitmap.export(name: "legacy-layout-control", hardware: CGSize(width: 220, height: 32)) } catch { passed = false }
-                    let metrics = ContourPixelGate.inspect(bitmap, hardware: CGRect(x: 6, y: 0, width: 220, height: 32), fractions: [100, 100])
+                    let metrics = ContourPixelGate.inspect(bitmap, hardware: CGRect(x: 6, y: 0, width: 220, height: 32), percent: 100)
                     SmokeDiagnostics.mark("legacy layout fixture scale=\(scale) measuredSilhouette=\(legacyExtent) extentAvailable=\(legacyExtent.width > 0 && legacyExtent.height > 0) colorArea=\(metrics.colors) contourContract=\(metrics.valid)")
                 }
             }
@@ -335,17 +379,30 @@ final class ContourRenderHarness: NSObject {
             SmokeDiagnostics.mark("contour backing scene=\(scene.name) scale=\(scale) pixels=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) points=\(view.bounds.size) valid=\(backingValid)")
             do { try bitmap.export(name: scene.name, hardware: island.geometry.notch.size) } catch { passed = false }
             if scene.expanded { continue }
-            let metrics = ContourPixelGate.inspect(bitmap, hardware: hardware, fractions: [scene.left, scene.right])
+            let metrics = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: scene.secondary ? scene.right : scene.left)
             results[scene.name, default: [:]][scale] = metrics
             passed = passed && metrics.valid
-            SmokeDiagnostics.mark("contour pixels scene=\(scene.name) scale=\(scale) colorArea=\(metrics.colors) trackArea=\(metrics.track) brightness=\(metrics.brightness) valid=\(metrics.valid) failures=\(metrics.failures)")
+            SmokeDiagnostics.mark("contour pixels scene=\(scene.name) scale=\(scale) colorArea=\(metrics.colors) trackArea=\(metrics.track) brightness=\(metrics.brightness) hueBins=\(metrics.hueBins) valid=\(metrics.valid) failures=\(metrics.failures)")
+            if scene.name == "full" || scene.name.hasPrefix("theme-") {
+                let themeVisible = metrics.hueBins.allSatisfy { model.theme == .rainbow ? $0 >= 5 : $0 >= 1 && $0 <= 4 }
+                passed = passed && themeVisible
+                SmokeDiagnostics.mark("contour theme coverage scene=\(scene.name) theme=\(model.theme.rawValue) scale=\(scale) hueBins=\(metrics.hueBins) valid=\(themeVisible)")
+            }
+            if scene.name == "quarter" {
+                let reverse = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 25, reversed: true)
+                let gray = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 25, graySuffix: true)
+                let opposed = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 25, opposedHalves: true)
+                passed = passed && !reverse.valid && !gray.valid && !opposed.valid
+                SmokeDiagnostics.mark("contour direction controls scale=\(scale) reversedFillRejected=\(!reverse.valid) graySuffixRejected=\(!gray.valid) opposedHalvesRejected=\(!opposed.valid)")
+            }
             if scene.name == "full" {
-                let rectangle = ContourPixelGate.inspect(bitmap, hardware: hardware, fractions: [100, 100], transform: { _ in ContourPixel(r: 0, g: 0, b: 0, a: 1) })
-                let noProgress = ContourPixelGate.inspect(bitmap, hardware: hardware, fractions: [100, 100], transform: { pixel in
+                let rectangle = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 100, transform: { _ in ContourPixel(r: 0, g: 0, b: 0, a: 1) })
+                let noProgress = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 100, transform: { pixel in
                     ContourPixel(r: pixel.light, g: pixel.light, b: pixel.light, a: pixel.a)
                 })
-                passed = passed && !rectangle.valid && !noProgress.valid
-                SmokeDiagnostics.mark("contour negative controls scale=\(scale) blackRectangleRejected=\(!rectangle.valid) missingProgressRejected=\(!noProgress.valid)")
+                let gap = ContourPixelGate.inspect(bitmap, hardware: hardware, percent: 100, eraseCenter: true)
+                passed = passed && !rectangle.valid && !noProgress.valid && !gap.valid
+                SmokeDiagnostics.mark("contour negative controls scale=\(scale) blackRectangleRejected=\(!rectangle.valid) missingProgressRejected=\(!noProgress.valid) centerGapRejected=\(!gap.valid)")
             }
         }
         sceneIndex += 1
@@ -355,12 +412,34 @@ final class ContourRenderHarness: NSObject {
                 guard let full = results["full"]?[scale], let quarter = results["quarter"]?[scale],
                       let fresh = results["eighty-three"]?[scale], let stale = results["stale"]?[scale],
                       let pending = results["reset-pending"]?[scale], let updated = results["updated-full"]?[scale],
-                      let recollapsed = results["recollapsed"]?[scale] else { passed = false; continue }
-                for side in 0...1 {
-                    passed = passed && full.colors[side] > quarter.colors[side] * 1.5
-                        && abs(full.colors[side] - updated.colors[side]) < 3
-                        && abs(full.colors[side] - recollapsed.colors[side]) < 3
+                      let recollapsed = results["recollapsed"]?[scale], let restored = results["theme-restored"]?[scale] else { passed = false; continue }
+                let area = { (value: ContourMetrics) in value.colors.reduce(0, +) }
+                let restoredValid = area(full) > area(quarter) * 2
+                    && abs(area(full) - area(updated)) < 3 && abs(area(full) - area(recollapsed)) < 3
+                    && abs(area(full) - area(restored)) < 3 && full.hueBins == restored.hueBins
+                    && zip(full.signature, restored.signature).allSatisfy { pair in abs(pair.0 - pair.1) < 0.01 }
+                passed = passed && restoredValid
+                SmokeDiagnostics.mark("contour restore scale=\(scale) valid=\(restoredValid)")
+                let themes = MeterTheme.allCases
+                for first in themes.indices {
+                    for second in themes.indices where second > first {
+                        guard let a = results["theme-" + themes[first].rawValue]?[scale],
+                              let b = results["theme-" + themes[second].rawValue]?[scale] else { passed = false; continue }
+                        let difference = zip(a.signature, b.signature).map { pair in abs(pair.0 - pair.1) }.reduce(0, +)
+                        let distinct = difference > 0.15
+                        passed = passed && distinct
+                        SmokeDiagnostics.mark("contour live palettes scale=\(scale) pair=\(themes[first].rawValue)/\(themes[second].rawValue) delta=\(difference) distinct=\(distinct)")
+                    }
                 }
+                if let phase0 = results["phase-zero"]?[scale] {
+                    for name in ["phase-quarter", "phase-half", "phase-three-quarters"] {
+                        guard let other = results[name]?[scale] else { passed = false; continue }
+                        let delta = zip(phase0.signature, other.signature).map { pair in abs(pair.0 - pair.1) }.reduce(0, +)
+                        let valid = initialTheme == .rainbow ? delta > 0.3 : delta < 0.01
+                        passed = passed && valid
+                        SmokeDiagnostics.mark("contour phase scale=\(scale) scene=\(name) theme=\(initialTheme.rawValue) delta=\(delta) endpointsValid=\(other.valid) valid=\(valid)")
+                    }
+                } else { passed = false }
                 for side in 0...1 {
                     let dimming = stale.brightness[side] < fresh.brightness[side] * 0.9
                         && pending.brightness[side] < fresh.brightness[side] * 0.9

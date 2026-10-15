@@ -6,14 +6,18 @@ import CoreGraphics
 import NotchCore
 
 @MainActor
-final class AppController: NSObject, NSApplicationDelegate {
+final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test"))
+    private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
     private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
     private var smokeIsland: IslandPanelController?
     private var contourHarness: ContourRenderHarness?
+    private var animationHarness: SkinAnimationHarness?
+    private var animationComplete = false
+    private var animationValid = false
     private var retiredSmokeIsland: IslandPanelController?
     private var retiredSmokeFrame: CGRect = .zero
     private var smokePhase = 0
@@ -27,6 +31,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var cancellables = Set<AnyCancellable>()
     private var sleeping = false
+    private var displaySleeping = false
+    private var sessionActive = true
     private var terminating = false
     private var quitRequested = false
 
@@ -42,15 +48,18 @@ final class AppController: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "Codex 剩余额度 · 点击查看 / 退出，右键打开菜单"
         }
-        popover.behavior = .transient
+        popover.behavior = .transient; popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: makeDetailView())
         model.$snapshot.combineLatest(model.$error, model.$preferredBucket).sink { [weak self] _, _, _ in
             DispatchQueue.main.async {
-                self?.updateStatus()
+                self?.updateStatus(); self?.updateSkinActivity()
                 if let self, self.popover.isShown, let view = self.popover.contentViewController?.view {
                     self.popover.contentSize = NSSize(width: 340, height: min(590, max(280, view.fittingSize.height)))
                 }
             }
+        }.store(in: &cancellables)
+        model.$preferredQuota.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateSkinActivity() }
         }.store(in: &cancellables)
         model.$now.sink { [weak self] _ in self?.updateStatus() }.store(in: &cancellables)
         model.$overlayEnabled.removeDuplicates().sink { [weak self] _ in
@@ -59,23 +68,50 @@ final class AppController: NSObject, NSApplicationDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rebuildIslands() }
         })
+        model.$theme.combineLatest(model.$skinMotionEnabled, model.$skinSpeed).sink { [weak self] _, _, _ in
+            DispatchQueue.main.async { self?.updateSkinActivity() }
+        }.store(in: &cancellables)
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification, NSApplication.didHideNotification, NSApplication.didUnhideNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                DispatchQueue.main.async { self?.updateSkinActivity() }
+            })
+        }
         let workspace = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.sleeping = false; self?.model.wake(); self?.rebuildIslands() }
+            Task { @MainActor in self?.sleeping = false; self?.model.wake(); self?.rebuildIslands(); self?.updateSkinActivity() }
         })
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.sleeping = true; self?.model.sleep(); self?.stopIslands() }
+            Task { @MainActor in self?.sleeping = true; self?.model.sleep(); self?.stopIslands(); self?.updateSkinActivity() }
         })
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rebuildIslands() }
         })
-        model.start(); rebuildIslands(); updateStatus()
+        for (name, change) in [
+            (NSWorkspace.screensDidSleepNotification, 0), (NSWorkspace.screensDidWakeNotification, 1),
+            (NSWorkspace.sessionDidResignActiveNotification, 2), (NSWorkspace.sessionDidBecomeActiveNotification, 3),
+            (NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, 4)
+        ] {
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if change == 0 { self.displaySleeping = true }
+                    if change == 1 { self.displaySleeping = false }
+                    if change == 2 { self.sessionActive = false }
+                    if change == 3 { self.sessionActive = true }
+                    self.updateSkinActivity()
+                }
+            })
+        }
+        model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
             if CommandLine.arguments.contains("--contour-test") { runContourTest() }
             else { runSmokeTest() }
         }
         SmokeDiagnostics.mark("didFinishLaunching returned")
     }
+    func popoverDidClose(_ notification: Notification) { updateSkinActivity() }
+    func popoverDidShow(_ notification: Notification) { updateSkinActivity() }
+    func applicationDidBecomeActive(_ notification: Notification) { loginSettings.refresh() }
     private func configureMainMenu() {
         let bar = NSMenu()
         let app = NSMenuItem()
@@ -97,7 +133,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop()
+        contourHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -118,6 +154,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
     private func stopIslands() { islands.forEach { $0.stop() }; islands.removeAll() }
     private func rebuildIslands() {
+        defer { updateSkinActivity() }
         stopIslands(); model.displayNotice = nil
         guard model.overlayEnabled, !sleeping, !terminating else { return }
         for screen in NSScreen.screens {
@@ -131,8 +168,20 @@ final class AppController: NSObject, NSApplicationDelegate {
             else { island.stop(); model.displayNotice = "系统未提供可靠的刘海位置，已保留菜单栏入口。" }
         }
     }
+    private func updateSkinActivity() {
+        let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
+        let visibleIsland = islands.contains { (coloredPrimary || $0.displaysColoredDetails) && $0.panel.isVisible && $0.panel.occlusionState.contains(.visible) }
+        // A visible details header is also a color consumer; empty/zero collapsed contours are not.
+        let visibleDetails = popover.isShown
+        model.updateSkinActivity(SkinMotionPolicy(theme: model.theme, motionEnabled: model.skinMotionEnabled,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            asleep: sleeping || displaySleeping || terminating, overlayEnabled: model.overlayEnabled,
+            hasVisibleOwnedSurface: !NSApp.isHidden && (visibleIsland || visibleDetails), sessionActive: sessionActive))
+    }
     private func makeIsland(geometry: IslandGeometry, polling: Bool = true, reducedMotion: Bool? = nil) -> IslandPanelController {
         IslandPanelController(model: model, geometry: geometry, startPolling: polling, reducedMotionOverride: reducedMotion,
+            activityChanged: { [weak self] in self?.updateSkinActivity() },
             hovered: { [weak self] in self?.model.hover() },
             refresh: { [weak self] in self?.model.refresh() },
             settings: { [weak self] in self?.showSettings() },
@@ -149,6 +198,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             settings: { [weak self] in self?.showSettings() }, quit: { [weak self] in self?.requestQuit() })
     }
     @objc private func statusClicked() {
+        defer { updateSkinActivity() }
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let button = statusItem.button {
             let menu = makeStatusMenu()
             NSMenu.popUpContextMenu(menu, with: event, for: button)
@@ -172,8 +222,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func refreshNow() { model.refresh() }
     @objc private func showSettings() {
         popover.performClose(nil); islands.forEach { $0.collapse() }
+        loginSettings.refresh()
         if settingsWindow == nil {
-            let view = SettingsView(model: model, chooseExecutable: { [weak self] in self?.chooseExecutable() }, quit: { [weak self] in self?.requestQuit() })
+            let view = SettingsView(model: model, login: loginSettings, chooseExecutable: { [weak self] in self?.chooseExecutable() }, quit: { [weak self] in self?.requestQuit() })
             let window = NSWindow(contentViewController: NSHostingController(rootView: view))
             window.title = "Codex Notch Meter 设置"
             window.styleMask = [.titled, .closable, .miniaturizable]
@@ -182,6 +233,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        updateSkinActivity()
     }
     private func chooseExecutable() {
         let open = NSOpenPanel()
@@ -192,6 +244,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         if open.runModal() == .OK, let url = open.url { model.setExecutable(url.path) }
     }
     private func runSmokeTest() {
+        animationHarness = SkinAnimationHarness { [weak self] valid in
+            self?.animationComplete = true; self?.animationValid = valid
+        }
         showSettings()
         guard let screen = NSScreen.main else { requestQuit(); return }
         let frame = screen.frame
@@ -201,8 +256,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             auxiliaryRight: CGRect(x: frame.midX + width / 2, y: frame.maxY - inset, width: (frame.width - width) / 2, height: inset)) else { requestQuit(); return }
         let island = makeIsland(geometry: IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor), polling: false, reducedMotion: false)
         smokeIsland = island
-        smokeGeometryValid = island.verifyNativeGeometry()
+        let loginSafety = loginSettings.verifySyntheticSafety()
+        smokeGeometryValid = island.verifyNativeGeometry() && loginSafety
         island.beginSmokeExpansion()
+        animationHarness?.start()
         smokeStarted = ProcessInfo.processInfo.systemUptime
         smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
@@ -247,12 +304,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             retiredSmokeFrame = island.panel.frame; island.stop(); retiredSmokeIsland = island
             let replacement = makeIsland(geometry: island.geometry, polling: false, reducedMotion: true)
             smokeIsland = replacement; replacement.beginSmokeExpansion(); smokePhase = 5; smokePhaseStarted = now
-        case 5 where phaseElapsed >= 0.30:
+        case 5 where phaseElapsed >= 0.30 && animationComplete:
             timer.invalidate(); smokeTimer = nil
             let expanded = island.smokeExpanded
             let routing = island.verifySmokeClickRouting()
             SmokeDiagnostics.mark("reduced-motion checkpoint elapsed=\(elapsed) expanded=\(expanded) routing=\(routing) retiredStopped=\(retiredSmokeIsland?.smokeStopped == true)")
-            smokeReady = model.demo && smokeGeometryValid && expanded && routing
+            smokeReady = model.demo && smokeGeometryValid && animationValid && expanded && routing
                 && retiredSmokeIsland?.smokeStopped == true && retiredSmokeIsland?.panel.frame == retiredSmokeFrame
                 && settingsWindow?.isVisible == true && statusItem.button != nil
             SmokeDiagnostics.mark(smokeReady ? "native hover reversal, teardown, reduced motion and Quit checks passed" : "native island checks failed")
