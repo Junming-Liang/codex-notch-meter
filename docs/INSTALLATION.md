@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.3 开发预览
+## v0.1.4 开发预览
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.3)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.4)
 
-原生编译、五款皮肤/动效检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
+原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
 ## 安装
 
@@ -38,7 +38,7 @@ CI 仅模拟注册/取消状态转换，并在原生进程中只读观察系统 
 
 彩虹仅在固定额度弧内改变颜色，不移动进度端点、不添加光晕、不扩大约 3pt 轮廓。共享时钟最高 15fps；减少动态效果、低电量模式、屏幕休眠、会话不活跃、覆盖层关闭或没有可见彩色内容时暂停。不增加额度轮询。低额度仍有琥珀/珊瑚提示，过期/待重置状态保留准确文字并降低亮度。
 
-## 水平微调（v0.1.4 候选）
+## 水平微调
 
 默认按系统报告的刘海安全区域对齐，不自动左移。若实物仍有轻微偏差，可在“设置 → 显示 → 水平微调”使用减号向左、加号向右；单位是 macOS 逻辑点，每次 0.5 pt，最多 ±8 pt，靠近屏幕边界时进一步限制。可随时“重置”回到 0。
 
@@ -58,4 +58,4 @@ The ad-hoc, unnotarized preview may be blocked or refused by macOS. CI does not 
 
 Five skins are available. Mint is static by default; choosing Rainbow opts into a slow color loop with a separate motion switch and 8s/12s speed. A single full-U contour fills from the left; consumed quota leaves a pure-black right suffix. The selected/shortest-known window drives the contour, while the expanded card retains all windows. Color phase never changes quota length. One maximum-15fps clock pauses for Reduce Motion, low power, sleep, hidden/disabled surfaces or inactive sessions. Demo preferences do not persist.
 
-The v0.1.4 candidate adds default-zero per-built-in-display horizontal calibration in logical points, with 0.5pt steps, bounds and Reset. Public display UUIDs are local preference keys only; no serial-number lookup or identifier upload occurs. Actual physical alignment still needs observation.
+Version 0.1.4 provides default-zero per-built-in-display horizontal calibration in logical points, with 0.5pt steps, bounds and Reset. Public display UUIDs are local preference keys only; no serial-number lookup or identifier upload occurs. Actual physical alignment still needs observation.

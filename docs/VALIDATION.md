@@ -2,15 +2,39 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.4 candidate — native results pending
+## v0.1.4 observed macOS results
+
+[Diagnostic run #14](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38682562047) and [release run #15](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38683231675) passed on 2026-10-15 using standard hosted `macos-15` runners.
+
+- Tested source and immutable release tag: [`0306d0e163603f5333e0cd790b19655486b47b27`](https://github.com/Junming-Liang/codex-notch-meter/commit/0306d0e163603f5333e0cd790b19655486b47b27)
+- Source tree: `fa76cb3050b6ba998b766a07991359fcd5435a2e`
+- XCTest: 92 discovered, 91 synthetic tests passed, one opt-in artifact test skipped in the synthetic job, zero failures
+- Separate official signed-desktop discovery: passed without executing Codex; diagnostic-run resolution took 10.519 seconds within the unchanged 30-second budget
+- Apple Silicon and Intel builds, universal packaging, Info.plist and ad-hoc signature verification: passed
+- All four native motion/Quit/scheduler scenarios, all five skins' 240 collapsed scene/scale checks, 21 installer safety simulations and actual read-only DMG inspection/cleanup: passed
+- Both release checksum gates: passed
+
+### Raw-edge alignment and calibration evidence
 
 The user reported slight horizontal offset in v0.1.3. Source audit identified a bounded rounding mechanism: independently rounding both auxiliary edges can move their midpoint by up to half a backing pixel. The supplied photograph and screenshot cannot establish an exact physical offset or prove this accounts for the whole observed difference.
 
-The candidate preserves raw system-reported camera exclusion bounds. Only the transparent native window envelope is pixel-aligned; the visible rail, fill and clip use exact local rectangles. Optional per-built-in-display calibration starts at zero, uses 0.5pt steps up to ±8pt, respects screen bounds and can be reset. Public display UUIDs remain local; demo fixtures never persist them.
+Version 0.1.4 preserves raw system-reported camera exclusion bounds. Only the transparent native window envelope is pixel-aligned; the visible rail, fill and clip use exact local rectangles. Optional per-built-in-display calibration starts at zero, uses 0.5pt steps up to ±8pt, respects screen bounds and can be reset. Public display UUIDs remain local; demo fixtures never persist them.
 
-New synthetic geometry cases cover off-center, odd/even/fractional coordinates, positive/negative origins, raw midpoint preservation, signed/reset/invalid calibration and bounded expansion. A new native own-view gate measures full-mint vertical stroke axes from chroma-weighted pixel-center centroids against independently supplied raw edges plus known correction, checks mirrored lower corners, and rejects an actually rendered old-rounded-edge control. It logs actual native backing separately from calibrated 1x/2x offscreen contexts. Live synthetic preference tests cover two display identities, reorder, changed bounds, stored-value Reset and unchanged saved preferences.
+The new native own-view gate passed 70 scale captures: 68 normal alignment/recollapse records and two rejected, actually rendered old-rounding controls. Independently supplied raw edges plus known correction are the oracle for chroma-weighted pixel-center stroke axes and mirrored lower corners. Inputs include off-center, odd/even/fractional edges and 0/±0.5/±8pt corrections. All 13 expanded detail/Quit/routing checks passed, including final reset to zero. Synthetic preference checks passed for two display identities, reorder, changed bounds, stored-value Reset and unchanged saved preferences.
 
-All existing five-skin, quota-direction/black-tail, motion, Quit, desktop discovery, DMG and login-safety gates remain required. New native execution is pending; no physical alignment or screenshot inspection claim is made. This version does not change account reads or skin behavior apart from version metadata.
+In diagnostic run #14, maximum measured midpoint error was 0.0500pt at calibrated offscreen 1x and 0.00658pt at 2x. The recreated old edge-rounded contour was displaced by −0.25pt in the targeted synthetic fixture and correctly rejected. The actual hosted window reported **1x backing**; the 2x bitmap is explicit offscreen-scale evidence, not a physical Retina test. Fractional-size capture calibration preserved the view's bounds, rounded only the bitmap canvas upward, and verified its drawing transform.
+
+Synthetic geometry tests additionally cover positive/negative global origins, raw midpoint preservation, invalid calibration and bounded expansion. Existing quota direction, pure-black consumed suffix, five skins, motion, discovery, DMG and login-safety behavior remains covered. Account requests and skin behavior are unchanged apart from version metadata.
+
+### v0.1.4 release artifacts
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg): 1,060,193 bytes; [checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg.sha256): 102 bytes
+- GitHub-advertised DMG SHA-256: `fc11d924a0e8bc397c1ea191e2c7cf940eb7ee7b06062a0e83fc5e3a037ba34a`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip): 1,051,659 bytes; [checksum file](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip.sha256): 102 bytes
+- GitHub-advertised ZIP SHA-256: `a29c28a4b8299ea27e222fd685bfdc44dfb342d1e8bb28715534c79ed9c87c38`
+- Release checksum gates and public asset metadata were verified. Downloaded asset bytes were not independently rehashed here.
+
+**Limits:** no precise cause or universal correction is inferred from the physical photo. Physical MacBook alignment, actual Retina behavior and human PNG review remain unverified. The user previously reported successful quota reads; CI uses no live account. Ad-hoc signing only, without Developer ID or notarization; macOS may block opening or login-item registration. Actual registration, system approval and login/reboot behavior remain unverified.
 
 ## v0.1.3 observed macOS results
 
@@ -136,7 +160,7 @@ The 1x/2x unit geometry cases are mathematical checks, not physical Retina evide
 
 ## Historical v0.1.0
 
-[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.3.
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer v0.1.4.
 
 The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 
