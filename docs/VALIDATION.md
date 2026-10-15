@@ -2,11 +2,23 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.7 stroke candidate — native results pending
+## v0.1.7 observed thicker-contour results
 
-Only contour paint width changes: color 2.5→3.5 pt and black backing 3.5→4 pt. The shared circular centerline, clipping silhouette, frame, calibration and quota trim are unchanged. There is no white stroke in the production rail; a light background showing through antialiasing or a physical contour mismatch is a hypothesis, not a reproduced hardware diagnosis.
+[Release run #26](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38753274566) passed on 2026-10-15. The immutable release tag points to [`13d54b278a18173dec57c2a9d44f5a2bfb43f128`](https://github.com/Junming-Liang/codex-notch-meter/commit/13d54b278a18173dec57c2a9d44f5a2bfb43f128), tree `40b7b202b42595e26b2c6784b3d8837b91a573cd`.
 
-The existing five-skin contour gate additionally compares the prior widths and the actual current view at calibrated 1x/2x, using fixed raw-input lower-circle normal bands. Alpha/background leakage and chromatic coverage are separate, with light/dark composites and black-only zero/unknown/consumed checks. All previous geometry, pixel, close, motion, display, update, process, installer and official-helper gates remain required. Native results and physical corner fit are pending.
+Only contour paint width changed: color 2.5→3.5 pt and black backing 3.5→4 pt. The shared circular centerline, clipping silhouette, frame, calibration and quota trim are unchanged. There is no white stroke in the production rail; this improves coverage without claiming that the user's physical white-fringe cause was reproduced.
+
+The native gate passed all 100 distinct paired records: five skins × full/half/quarter/zero/unknown × 1x/2x × two lower corners. Fixed raw-input normal bands measure alpha/background contribution separately from chromatic coverage. The old-width control is rejected by the same acceptance predicate, and both references and current views must have the expected opaque colored/black core. Existing transparency, four-point paint envelope and full-U fraction checks remain unchanged.
+
+For the standard full-quota left corner at 1x, mean inner-band alpha increased from 0.5296 to 0.7482 and background contribution fell from 0.4704 to 0.2518; chromatic coverage increased from 0.2164 to 0.3363. These are native own-view offscreen measurements, including light/dark composites, not a physical-notch screenshot or a model-specific fit guarantee.
+
+All retained required workflow gates passed, including unit/process tests, universal packaging, signature, native smoke/pixels/alignment/motion/close/update/display, official helper inspection and mounted DMG verification. No login item was registered and no account was used in CI.
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg): 1,652,431 bytes; advertised SHA-256 `e4ebf4d56846b85ec37a21794d5f70abcb757cec8c41ba0bf519677c0324f099`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip): 1,627,303 bytes; advertised SHA-256 `2c2b8692b1a0db269e7ce1355c23070070b3767515b23184e05452eb8c5de3e0`
+- Both separate checksum files are 102 bytes. Public asset identity and gated release checks agree; no independent downloaded-byte rehash is claimed.
+
+Ad-hoc/unnotarized signing and the physical fit, human PNG inspection, actual macOS 13 and login/reboot limits below remain applicable.
 
 ## v0.1.6 observed macOS results
 
@@ -247,7 +259,7 @@ The 1x/2x unit geometry cases are mathematical checks, not physical Retina evide
 
 ## Historical v0.1.0
 
-[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer the current v0.1.6 preview.
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer the current v0.1.7 preview.
 
 The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 

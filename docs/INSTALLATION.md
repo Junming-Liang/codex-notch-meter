@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.6 开发预览
+## v0.1.7 开发预览
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.6)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.7)
 
-原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
+本版仅加厚轮廓描边，路径与位置不变；五款皮肤的圆角旧/新宽度覆盖对比已通过。原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
 ## 安装
 
