@@ -115,7 +115,7 @@ final class DisplayTests: XCTestCase {
         for scale in [0.0, -1, .infinity, .nan] {
             XCTAssertEqual(plan([fixture(scale: scale)]).decisions.first?.fallback, .invalidGeometry)
         }
-        for frame in [CGRect(x: .nan, y: 0, width: 1512, height: 982), CGRect(x: 0, y: 0, width: .infinity, height: 982), CGRect(x: 0, y: 0, width: -1, height: 982), CGRect.zero] {
+        for frame in [CGRect(x: CGFloat.nan, y: 0, width: 1512, height: 982), CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 982), CGRect(x: 0, y: 0, width: -1, height: 982), CGRect.zero] {
             var value = fixture(); value.frame = frame
             XCTAssertEqual(plan([value]).decisions.first?.fallback, .invalidGeometry)
         }
@@ -123,7 +123,7 @@ final class DisplayTests: XCTestCase {
     func testInvalidAuxiliaryRectanglesAndMissingHalfFailClosed() {
         let bad = [CGRect.zero, CGRect(x: 0, y: 950, width: 600, height: -32),
             CGRect(x: 600, y: 982, width: -600, height: -32),
-            CGRect(x: 0, y: .nan, width: 600, height: 32), CGRect(x: -1, y: 950, width: 600, height: 32),
+            CGRect(x: 0, y: CGFloat.nan, width: 600, height: 32), CGRect(x: -1, y: 950, width: 600, height: 32),
             CGRect(x: 0, y: 900, width: 600, height: 82), CGRect(x: 0, y: 949, width: 600, height: 32)]
         for rect in bad {
             var value = fixture(); value.auxiliaryLeft = rect
