@@ -2,6 +2,12 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.7 stroke candidate — native results pending
+
+Only contour paint width changes: color 2.5→3.5 pt and black backing 3.5→4 pt. The shared circular centerline, clipping silhouette, frame, calibration and quota trim are unchanged. There is no white stroke in the production rail; a light background showing through antialiasing or a physical contour mismatch is a hypothesis, not a reproduced hardware diagnosis.
+
+The existing five-skin contour gate additionally compares the prior widths and the actual current view at calibrated 1x/2x, using fixed raw-input lower-circle normal bands. Alpha/background leakage and chromatic coverage are separate, with light/dark composites and black-only zero/unknown/consumed checks. All previous geometry, pixel, close, motion, display, update, process, installer and official-helper gates remain required. Native results and physical corner fit are pending.
+
 ## v0.1.6 observed macOS results
 
 [Diagnostic run #24](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38728721178) and [release run #25](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38730063651) passed on 2026-10-15 using standard hosted `macos-15` runners.
