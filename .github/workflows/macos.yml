@@ -71,6 +71,7 @@ jobs:
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-contour.py
       - name: Build and inspect drag-to-Applications installer
+        if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/build-dmg.py
       - name: Retain synthetic native rendering evidence
         if: always()
