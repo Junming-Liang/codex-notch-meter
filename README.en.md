@@ -8,11 +8,13 @@
 
 ## Overview
 
-A small SwiftUI and AppKit menu-bar utility. Two fine rails follow the MacBook notch; hover for remaining quota, the next reset date, and a countdown. Displays without a notch use the menu bar.
+A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook notch; hover for remaining quota, the next reset date, and a countdown. Displays without a notch use the menu bar.
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
 **v0.1.2 visual repair preview is available.** Idle mode is a thin transparent contour about 3pt outside the notch. Hover still opens the full details card; leaving restores the contour. Native 1x/2x offscreen pixel checks passed; physical MacBook appearance still awaits user feedback.
+
+**v0.1.3 candidate is under validation:** a drag-to-Applications DMG, opt-in Launch at Login, and five skins including flowing Rainbow color. See [installation and settings](docs/INSTALLATION.md) for signing and verification limits.
 
 ## Download
 
@@ -53,7 +55,7 @@ The current native interface is primarily Simplified Chinese. Right-click the me
 | State | Meaning |
 | --- | --- |
 | Solid rail | Remaining quota; numbers are always available in the card |
-| Dashed rail / em dash | Unknown or unavailable, never assumed full |
+| Black contour / em dash | Unknown or unavailable; zero has no colored fill, details distinguish the state |
 | Last reading / stale | Retained historical data, not a live allowance |
 | Reset pending | Reset time passed; awaiting a successful fresh response |
 | Demo badge | Synthetic data; no Codex process is running |

@@ -20,11 +20,11 @@ The app does not read Codex stdout except for its own protocol connection. Subpr
 
 ## Local preferences
 
-The app stores only the overlay preference, selected quota-group identifier, and optional Codex executable path in macOS UserDefaults. It does not persist quota values, account names, emails, tokens, or reset history.
+The app stores only the overlay and skin preferences, selected quota-group/window identifiers and motion/speed preferences, and optional Codex executable path in macOS UserDefaults. It does not persist quota values, account names, emails, tokens, or reset history.
 
 ## Permissions and network
 
-No telemetry, analytics, remote reporting, embedded web login, automatic updates, launch-at-login registration, Accessibility access, Screen Recording access, or global keyboard hooks are implemented. The meter has no HTTP client. Its Codex subprocess may contact OpenAI to retrieve current quotas.
+No telemetry, analytics, remote reporting, embedded web login, automatic updates, Accessibility access, Screen Recording access, or global keyboard hooks are implemented. The meter has no HTTP client. Its Codex subprocess may contact OpenAI to retrieve current quotas.
 
 The island reads only the current pointer position while its overlay is enabled, to apply hover delays and ignore mouse events outside the revealed content. It does not record pointer history, monitor keys, install an event tap, or request input-control permissions. Polling and animation timers stop on sleep, display removal, overlay disable, and Quit. Routing flags are tested on hosted macOS; real cross-application click-through still needs physical interaction validation.
 
@@ -41,3 +41,9 @@ Do not attach credentials, raw account responses, chat history, or private confi
 ## Synthetic rendering evidence
 
 The optional CI contour harness renders only this app's own demo views into 1x/2x offscreen bitmaps. Its workflow artifacts contain synthetic quota data and explicitly labeled synthetic cutout composites, never screenshots of the desktop, other applications, or the user's account. Normal app use does not export these images or request Screen Recording access.
+
+## Optional login item and installer
+
+The user may explicitly enable or disable the main app's login item through Apple's `SMAppService.mainApp` API. System status is read when Settings appears, the app activates, and after a request; it is not replaced by a stored Boolean. No login item is registered at startup, installation, build time, in demo mode, or in CI. System Settings opens only when the user clicks. No launch daemon, privileged helper, custom LaunchAgent plist, automatic app relocation or security-setting change is used.
+
+The DMG contains the app, a link to Applications and installation instructions. It does not run an installer script. CI mounts its own image read-only for verification and detaches it; login-item mutations use injected synthetic services only. Skin and motion choices are local preferences. Rainbow uses one bounded color-animation clock only while a visible colored surface is eligible; it pauses for Reduce Motion, low power, sleep, session inactivity or disabled/hidden surfaces. It never adds network access or quota polling.
