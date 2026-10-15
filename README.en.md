@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.3">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.4">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,21 +12,19 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.3 installation and skins preview is available.** A drag-to-Applications DMG, opt-in Launch at Login, and five skins including flowing Rainbow color. One full-U contour fills from the left; the consumed right suffix is pure black. Idle mode stays about 3pt outside the notch; hover opens the full details card. See [installation and settings](docs/INSTALLATION.md).
-
-**v0.1.4 alignment candidate is under validation:** preserve the raw system-reported midpoint and add default-zero per-display horizontal correction (0.5pt steps, up to ±8pt, with Reset). Downloads still point to released v0.1.3 until the new native gates pass.
+**v0.1.4 alignment preview is available.** It preserves the raw system-reported midpoint and adds default-zero per-display horizontal correction (0.5pt steps, up to ±8pt, with Reset). Five skins, flowing Rainbow, DMG installation and optional Launch at Login remain available. Idle mode is a fine contour; hover opens the full details card. See [installation and settings](docs/INSTALLATION.md).
 
 ## Download
 
-1. Download the [v0.1.3 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg) (983,322 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg.sha256)
+1. Download the [v0.1.4 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg) (1,060,193 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip) (972,989 bytes) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip) (1,051,659 bytes) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
-Universal packages contain Apple Silicon and Intel binaries. This release passed 82 synthetic tests, dual-architecture packaging and signature checks, four native window/animation scenarios, all five skins at calibrated 1x/2x with live switches, read-only official desktop helper discovery, and mounted-DMG integrity/cleanup checks. DMG and ZIP each have a separate SHA-256 checksum file. Exact tested revisions and limits are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. This release passed 91 synthetic tests, dual-architecture packaging and signature checks, four native window/animation scenarios, all five skins at calibrated 1x/2x with live switches, 70 native alignment captures and 13 calibrated expanded-action checks, read-only official desktop helper discovery, and mounted-DMG integrity/cleanup checks. DMG and ZIP each have a separate SHA-256 checksum file. Exact tested revisions and limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
@@ -60,6 +58,8 @@ The current native interface is primarily Simplified Chinese. Right-click the me
 After copying the app into Applications, open Settings to request Launch at Login. macOS may require approval or reject the ad-hoc signature; actual login/reboot behavior remains unverified. No enrollment happens automatically.
 
 Display settings select the skin, motion, speed and primary quota. Mint is static by default. Rainbow changes color inside the true remaining arc and pauses for Reduce Motion, sleep, low power or hidden/disabled surfaces.
+
+For a remaining physical offset, use Horizontal Adjustment in the same section: minus moves left, plus moves right, in 0.5pt steps. It starts at zero and includes Reset. Corrections stay local to each built-in display; system safe areas are not precise measurements of the physical edge.
 
 ## Quota states
 
