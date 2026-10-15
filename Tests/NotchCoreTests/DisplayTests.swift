@@ -142,7 +142,7 @@ final class DisplayTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(plan([value]).targets.first).geometry.notch.height, 32)
     }
     func testInsufficientViewportDoesNotCreateClippedDetails() {
-        let small = fixture(frame: CGRect(x: 0, y: 0, width: 360, height: 300), width: 100)
+        let small = fixture(frame: CGRect(x: 0, y: 0, width: 320, height: 180), width: 100)
         XCTAssertEqual(plan([small]).decisions.first?.fallback, .insufficientRoom)
     }
     func testTinyCutoutWidthFallsBackBeforeFixedTurnsReverse() {

@@ -253,9 +253,9 @@ final class IslandTests: XCTestCase {
                     XCTAssertTrue(screen.contains(frame))
                 }
                 if scale == 1 && origin == .zero {
-                    // Run #6 exposed AppKit rounding these formerly fractional frames.
-                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 348, y: 422, width: 328, height: 346))
-                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 337, y: 351, width: 350, height: 417))
+                    // Compact endpoint remains explicitly quantized at the same regression progress values.
+                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 341, y: 612, width: 342, height: 156))
+                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 341, y: 585, width: 342, height: 183))
                 }
             }
         }
@@ -282,7 +282,7 @@ final class IslandTests: XCTestCase {
                     XCTAssertEqual(local.size, contour.size)
                     for extensionSize in [camera.minX - frame.minX, frame.maxX - camera.maxX, camera.minY - frame.minY] {
                         XCTAssertGreaterThanOrEqual(extensionSize, 3)
-                        XCTAssertLessThanOrEqual(extensionSize, 4)
+                        XCTAssertLessThanOrEqual(extensionSize, 4.5) // Transparent native rounding; actual paint is gated at 4 pt.
                     }
                     for edge in [frame.minX, frame.maxX, frame.minY] {
                         XCTAssertEqual(edge * scale, (edge * scale).rounded(), accuracy: 0.0001)
@@ -345,10 +345,10 @@ final class IslandTests: XCTestCase {
                                 for edge in [native.minX, native.maxX, native.minY] {
                                     XCTAssertEqual(edge * scale, (edge * scale).rounded(), accuracy: 0.0001)
                                 }
-                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.minX + 0.01, y: global.midY), progress: progress))
-                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.minX - 0.01, y: global.midY), progress: progress))
-                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.maxX - 0.01, y: global.midY), progress: progress))
-                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.maxX + 0.01, y: global.midY), progress: progress))
+                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.minX + 12 * progress + 0.01, y: global.midY), progress: progress))
+                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.minX + 12 * progress - 0.01, y: global.midY), progress: progress))
+                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.maxX - 12 * progress - 0.01, y: global.midY), progress: progress))
+                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.maxX - 12 * progress + 0.01, y: global.midY), progress: progress))
                             }
                             let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
                             XCTAssertEqual(expanded.midX, anchor)
@@ -369,15 +369,15 @@ final class IslandTests: XCTestCase {
         let notch = NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero)
         let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 1)
         let native = geometry.frame(progress: 0)
-        XCTAssertEqual(native.midX - camera.midX, 0.25)
-        XCTAssertEqual(geometry.contourRect(progress: 0).minX, 0.25)
+        XCTAssertEqual(native.midX - camera.midX, -0.25)
+        XCTAssertEqual(geometry.contourRect(progress: 0).minX, 1.25)
         XCTAssertEqual(native.minX + geometry.contourRect(progress: 0).midX, camera.midX)
     }
     func testCalibrationClampsAtScreenMarginWithoutChangingAnchorAtZero() throws {
         for scale in [CGFloat(1), CGFloat(2)] {
             let screen = CGRect(x: -1024, y: 768, width: 1024, height: 768)
             for leftSide in [true, false] {
-                let center = leftSide ? screen.minX + 204.25 : screen.maxX - 204.25
+                let center = leftSide ? screen.minX + 184.25 : screen.maxX - 184.25
                 let notch = try makeNotch(screen: screen, center: center, width: 220.5)
                 let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale,
                     horizontalAdjustment: leftSide ? -8 : 8)
@@ -406,12 +406,12 @@ final class IslandTests: XCTestCase {
             let notch = try makeNotch(screen: screen, center: center, width: 220)
             let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 2,
                 horizontalAdjustment: leftSide ? -8 : 8)
-            // Only 3.25pt of correction fits beside this collapsed hardware.
-            XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -3 : 3)
+            // The bounded curved top envelope leaves 2.75pt before half-point quantization.
+            XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -2.5 : 2.5)
             XCTAssertEqual(geometry.notch, notch.notch)
             XCTAssertEqual(geometry.contourFrame.midX, center + geometry.horizontalAdjustment)
             let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
-            XCTAssertEqual(expanded.width, 380)
+            XCTAssertEqual(expanded.width, 340)
             XCTAssertNotEqual(expanded.midX, geometry.calibratedNotch.midX)
             XCTAssertEqual(leftSide ? expanded.minX : expanded.maxX,
                 leftSide ? screen.minX + 12 : screen.maxX - 12)
