@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.6">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.7">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,17 +12,17 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.6 is available.** A shared automatic circular contour drives the rail and connected black body. Details fit their content; brief refresh feedback shows truthful states and comparable decreases in percentage points. The rail moves and fades with the same outline, and closing waits for a fresh final view update.
+**v0.1.7 is available.** The colored stroke increases from 2.5 to 3.5 pt, with a 4 pt pure-black backing, improving inner-corner coverage. The automatic contour path, position and quota fraction stay unchanged; compact wrapped details, refresh feedback and gradual closing remain available.
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
 ## Download
 
-1. Download the [v0.1.6 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg.sha256)
+1. Download the [v0.1.7 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
