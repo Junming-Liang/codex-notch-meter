@@ -8,9 +8,9 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
@@ -19,6 +19,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var alignmentHarness: AlignmentRenderHarness?
     private var motionHarness: NativeMotionHarness?
     private var displayHarness: DisplayCompatibilityHarness?
+    private var collapseHarness: CollapseRenderHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -134,7 +135,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
+            if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
+            else if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
             else if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
             else if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
             else if CommandLine.arguments.contains("--contour-test") { runContourTest() }
@@ -166,7 +168,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -293,6 +295,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         displayHarness?.start()
+    }
+    private func runCollapseTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        let frame = screen.frame, left = frame.midX - 110 + 0.25, right = left + 220
+        guard let notch = NotchGeometry.calculate(screen: frame, topInset: 32,
+            auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - 32, width: left - frame.minX, height: 32),
+            auxiliaryRight: CGRect(x: right, y: frame.maxY - 32, width: frame.maxX - right, height: 32)) else { requestQuit(); return }
+        collapseHarness = CollapseRenderHarness(model: model,
+            geometry: IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor)) { [weak self] valid in
+                self?.smokeReady = valid; self?.requestQuit()
+            }
+        collapseHarness?.start()
     }
     private func runMotionTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }

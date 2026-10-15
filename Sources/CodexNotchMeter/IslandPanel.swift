@@ -80,7 +80,7 @@ private struct IslandRootView: View {
                 .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)))
                 .onAppear { viewportChanged(viewport.size); rendered(p, viewport.size) }
                 .onChange(of: p) { rendered($0, viewport.size) }
-                .onChange(of: viewport.size) { viewportChanged($0) }
+                .onChange(of: viewport.size) { viewportChanged($0); rendered(p, $0) }
             }
         .ignoresSafeArea(.all)
         // Native panel frame and this shape share one spring; no implicit size animation.
@@ -99,6 +99,15 @@ struct IslandMotionRetarget {
     let nextTarget: Bool
 }
 
+struct IslandCloseReceipt {
+    let requestedAt: TimeInterval
+    let acknowledgedAt: TimeInterval?
+    let completedAt: TimeInterval?
+    let finalDisplayDuration: TimeInterval
+    let renderedAt: TimeInterval?
+    let outcome: ClosePresentationDrain.Outcome
+}
+
 @MainActor
 final class IslandPanelController: NSObject {
     let geometry: IslandGeometry
@@ -113,6 +122,11 @@ final class IslandPanelController: NSObject {
     private var lastMotionTime = CACurrentMediaTime()
     private let motionProfile: IslandMotionProfile
     private let motionSample: ((IslandMotionSample) -> Void)?
+    private var closeDrain = ClosePresentationDrain()
+    private var closeGeneration: UInt64?
+    private var closeDeadline: Timer?
+    private let drainsClosePresentation: Bool
+    private(set) var closeReceipt: IslandCloseReceipt?
     private var lastRetarget: IslandMotionRetarget?
     private let reducedMotionOverride: Bool?
     private var reducedMotion: Bool { reducedMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -126,10 +140,12 @@ final class IslandPanelController: NSObject {
     private let activityChanged: () -> Void
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
-         motionProfile: IslandMotionProfile = .adaptive, motionSample: ((IslandMotionSample) -> Void)? = nil,
+         motionProfile: IslandMotionProfile = .adaptive, drainsClosePresentation: Bool = true, motionSample: ((IslandMotionSample) -> Void)? = nil,
          activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
-        self.motionProfile = model.demo && CommandLine.arguments.contains("--motion-test") ? motionProfile : .adaptive
+        let motionDiagnostic = model.demo && (CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--collapse-test"))
+        self.motionProfile = motionDiagnostic ? motionProfile : .adaptive
+        self.drainsClosePresentation = model.demo && CommandLine.arguments.contains("--collapse-test") ? drainsClosePresentation : true
         self.motionSample = motionSample
         self.geometry = geometry; self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
         panel = TopEdgePanel(contentRect: geometry.frame(progress: 0), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -175,7 +191,7 @@ final class IslandPanelController: NSObject {
         }
     }
     func setContourTestProgress(_ progress: Double) {
-        guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") else { return }
+        guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--collapse-test") else { return }
         apply(progress: progress)
     }
     @objc private func pollPointer(_ timer: Timer) {
@@ -186,7 +202,7 @@ final class IslandPanelController: NSObject {
         guard !stopped else { return }
         let before = hover.isExpanded
         hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
-            resumeExpanded: motion.progress > 0 && !motionTargetExpanded)
+            resumeExpanded: (motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded)
         if hover.isExpanded != before {
             if hover.isExpanded { hovered() }
             startMotion()
@@ -198,6 +214,7 @@ final class IslandPanelController: NSObject {
     }
     private func startMotion() {
         guard !stopped else { return }
+        cancelCloseDrain()
         let now = CACurrentMediaTime()
         let previousTime = lastMotionTime, previousMotion = motion, previousTarget = motionTargetExpanded
         let elapsed = motionFrames != nil ? max(0, now - lastMotionTime) : 0
@@ -237,8 +254,19 @@ final class IslandPanelController: NSObject {
         guard !stopped, let source = motionFrames, time.isFinite, time > lastMotionTime else { return }
         let now = CACurrentMediaTime(), elapsed = max(0, time - lastMotionTime)
         lastMotionTime = max(lastMotionTime, time)
+        let previousProgress = motion.progress
         motion.advance(expanded: motionTargetExpanded, elapsed: elapsed, reduceMotion: reducedMotion)
         let began = CACurrentMediaTime()
+        var startedCloseDrain = false
+        if drainsClosePresentation, let generation = closeDrain.begin(previousProgress: previousProgress,
+            progress: motion.progress, expanded: motionTargetExpanded, reduceMotion: reducedMotion, now: began) {
+            startedCloseDrain = true
+            closeGeneration = generation
+            closeReceipt = IslandCloseReceipt(requestedAt: began, acknowledgedAt: nil, completedAt: nil, finalDisplayDuration: 0, renderedAt: nil, outcome: .pending)
+            let deadline = Timer(timeInterval: closeDrain.timeout, target: self,
+                selector: #selector(closeDeadlineReached(_:)), userInfo: generation, repeats: false)
+            closeDeadline = deadline; RunLoop.main.add(deadline, forMode: .common)
+        }
         apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation)
         let duration = CACurrentMediaTime() - began
         motionSample?(IslandMotionSample(observed: now, scheduled: time, generation: frameGeneration, applyDuration: duration,
@@ -246,9 +274,43 @@ final class IslandPanelController: NSObject {
             frame: panel.frame, contentBounds: panel.contentView?.bounds ?? .zero,
             viewport: renderedViewport, visible: panel.isVisible, nonKey: !panel.isKeyWindow && !panel.canBecomeKey,
             source: source.kind))
-        if motion.isSettled && motion.progress == (motionTargetExpanded ? 1 : 0) { stopMotionFrames() }
+        // A callback may retarget through a diagnostic observer; never retire its new motion.
+        guard !stopped, motion.isSettled, motion.progress == (motionTargetExpanded ? 1 : 0) else { return }
+        if startedCloseDrain { return } // Never acknowledge within the requesting callback.
+        if closeDrain.isPending { observeClosePresentation(at: CACurrentMediaTime()) }
+        else { stopMotionFrames() }
+    }
+    private func observeClosePresentation(at time: TimeInterval) {
+        guard !stopped, !motionTargetExpanded, let generation = closeGeneration else { return }
+        let expected = geometry.frame(progress: 0)
+        let matches = panel.frame == expected && renderedViewport == expected.size
+            && panel.contentView?.bounds == CGRect(origin: .zero, size: expected.size)
+        let outcome = closeDrain.poll(generation: generation, now: time, renderedAt: renderedAt,
+            renderedProgress: renderedProgress, viewportMatches: matches)
+        guard outcome == .ready || outcome == .timedOut else { return }
+        let request = closeReceipt?.requestedAt, acknowledgedRender = renderedAt
+        // One final display opportunity after a normal-run-loop view acknowledgement.
+        // This is not a compositor/scanout guarantee and never forces per-frame layout.
+        let displayStarted = CACurrentMediaTime()
+        if outcome == .ready { panel.contentView?.displayIfNeeded() }
+        let displayDuration = outcome == .ready ? CACurrentMediaTime() - displayStarted : 0
+        stopMotionFrames()
+        if let request {
+            closeReceipt = IslandCloseReceipt(requestedAt: request,
+                acknowledgedAt: outcome == .ready ? time : nil, completedAt: CACurrentMediaTime(),
+                finalDisplayDuration: displayDuration, renderedAt: acknowledgedRender, outcome: outcome)
+        }
+    }
+    @objc private func closeDeadlineReached(_ sender: Timer) {
+        guard sender === closeDeadline, !stopped, closeDrain.isPending else { return }
+        observeClosePresentation(at: CACurrentMediaTime())
+    }
+    private func cancelCloseDrain() {
+        closeDrain.cancel(); closeGeneration = nil
+        closeDeadline?.invalidate(); closeDeadline = nil
     }
     private func stopMotionFrames() {
+        cancelCloseDrain()
         frameGeneration += 1
         motionFrames?.stop(); motionFrames = nil
     }
@@ -271,7 +333,7 @@ final class IslandPanelController: NSObject {
     }
     /// The explicit synthetic harness invokes a real retired source and stopped actions.
     func verifyRetiredMotionIsInert() -> Bool {
-        guard CommandLine.arguments.contains("--motion-test") else { return false }
+        guard CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--collapse-test") else { return false }
         let source = motionFrames
         let sourceSafe = source?.verifyRetiredCallbackIsInert() ?? false
         let before = (motion.progress, motion.velocity, panel.frame)
@@ -314,6 +376,17 @@ final class IslandPanelController: NSObject {
         let point = inside ? CGPoint(x: geometry.notch.midX, y: geometry.screen.maxY - geometry.notch.height - 2)
             : CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
         updatePointer(point, now: now)
+    }
+    var closePresentationPending: Bool { closeDrain.isPending }
+    func verifyRetiredCloseIsInert() -> Bool {
+        guard CommandLine.arguments.contains("--collapse-test"), closeDrain.isPending,
+              let deadline = closeDeadline, let source = motionFrames else { return false }
+        let before = (motion.progress, motion.velocity, panel.frame)
+        stop(); closeDeadlineReached(deadline)
+        let retired = source.verifyRetiredCallbackIsInert()
+        collapse(); beginSmokeExpansion()
+        return retired && smokeStopped && !closeDrain.isPending && closeDeadline == nil
+            && panel.frame == before.2 && motion.progress == before.0 && motion.velocity == before.1
     }
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
     var smokeProgress: Double { motion.progress }

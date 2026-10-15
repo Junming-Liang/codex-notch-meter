@@ -231,7 +231,7 @@ final class MeterModel: ObservableObject {
     }
     /// Synthetic rendering fixtures update the SAME live published model; never enable account I/O.
     func setContourFixture(left: Double?, right: Double?, stale: Bool = false, pending: Bool = false) {
-        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") else { return }
+        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") else { return }
         now = Date(); error = nil
         snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [left, right].enumerated().map { index, remaining in
             QuotaWindow(id: "render-\(index)", usedPercent: remaining.map { 100 - $0 },
