@@ -721,7 +721,9 @@ final class AlignmentRenderHarness: NSObject {
             SmokeDiagnostics.mark("alignment pixels fixture=\(fixture.name) stage=\(stage) captureScale=\(scale) canvas=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) nativePoints=\(view.bounds.size) expectedAxes=[\(expectedLeft),\(expectedRight)] measuredAxes=[\(left),\(right)] centerErrorPoints=\(center - expectedCenter) cornerEnergy=[\(le),\(re)] mirrored=\(mirrored) erasedCornerRejected=\(erasedCornerRejected) oldRoundingRejected=\(fixture.roundedControl && !aligned) shape=\(fixture.shape) curves=\(curvesVisible) topCurves=\(topCurves) escapedPaint=\(escaped) bottom=\(bottomVisible) transparentInterior=\(interiorClear) valid=\(valid)")
         }
         if stage == .collapsed && !fixture.roundedControl && ([0.0, -8, 8].contains(fixture.adjustment) || !fixture.shape.isZero) {
-            island.beginSmokeExpansion()
+            let triggered = island.beginSmokeExpansion()
+            passed = triggered && passed
+            SmokeDiagnostics.mark("alignment expansion trigger fixture=\(fixture.name) containedAndTargeted=\(triggered)")
             stage = .expanded
             return // Real expanded layout and measured Quit bounds are inspected after a bounded dwell.
         }

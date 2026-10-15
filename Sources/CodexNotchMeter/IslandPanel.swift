@@ -444,16 +444,28 @@ final class IslandPanelController: NSObject {
         SmokeDiagnostics.mark(valid ? "native island top-frame and nonactivation checks passed" : "native island geometry failed")
         return valid && placementIsValid
     }
-    func beginSmokeExpansion() {
-        let point = CGPoint(x: geometry.notch.midX, y: geometry.screen.maxY - geometry.notch.height - 2)
+    /// Synthetic pointer position follows the corrected visible contour, including
+    /// negative depth calibration. The raw camera exclusion is not a hover target.
+    private var smokeInteriorPoint: CGPoint {
+        let frame = geometry.frame(progress: motion.progress)
+        let contour = geometry.contourRect(progress: motion.progress)
+        return CGPoint(x: frame.minX + contour.midX, y: frame.maxY - contour.maxY + 1)
+    }
+    @discardableResult
+    func beginSmokeExpansion() -> Bool {
+        guard !stopped else { return false }
+        let point = smokeInteriorPoint
+        let contained = geometry.hoverContains(point, progress: motion.progress)
         updatePointer(point, now: 0); updatePointer(point, now: 0.13)
+        SmokeDiagnostics.mark("synthetic expansion contained=\(contained) targetExpanded=\(hover.isExpanded)")
+        return contained && hover.isExpanded
     }
     func smokePointer(at point: CGPoint, now: TimeInterval) {
         guard CommandLine.arguments.contains("--motion-test") else { return }
         updatePointer(point, now: now)
     }
     func smokePointer(inside: Bool, now: TimeInterval) {
-        let point = inside ? CGPoint(x: geometry.notch.midX, y: geometry.screen.maxY - geometry.notch.height - 2)
+        let point = inside ? smokeInteriorPoint
             : CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
         updatePointer(point, now: now)
     }
