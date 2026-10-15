@@ -10,12 +10,19 @@ public struct NotchGeometry: Equatable, Sendable {
     public let rightPanel: CGRect
 
     public static func calculate(screen: CGRect, topInset: Double, auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, scale _: Double = 2) -> NotchGeometry? {
-        guard topInset > 0, topInset < Double(screen.height) / 2,
+        func finitePositive(_ rect: CGRect) -> Bool {
+            [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, rect.maxX, rect.maxY].allSatisfy(\.isFinite)
+                && rect.size.width > 0 && rect.size.height > 0
+        }
+        guard finitePositive(screen), topInset.isFinite, topInset > 0, topInset < Double(screen.height) / 2,
               let left = auxiliaryLeft, let right = auxiliaryRight,
-              left.width > 0, right.width > 0,
+              finitePositive(left), finitePositive(right),
+              screen.insetBy(dx: -0.001, dy: -0.001).contains(left),
+              screen.insetBy(dx: -0.001, dy: -0.001).contains(right),
               left.maxX < right.minX,
-              left.minX >= screen.minX - 1, right.maxX <= screen.maxX + 1,
-              abs(left.maxY - screen.maxY) < 2, abs(right.maxY - screen.maxY) < 2 else { return nil }
+              abs(left.maxY - screen.maxY) < 0.001, abs(right.maxY - screen.maxY) < 0.001,
+              left.minY >= screen.maxY - topInset - 0.001,
+              right.minY >= screen.maxY - topInset - 0.001 else { return nil }
         // Auxiliary edges describe system-reported camera exclusion bounds, not a native window.
         // Keep them exact; backing-grid normalization belongs to window placement.
         // The scale argument remains accepted for source compatibility.
