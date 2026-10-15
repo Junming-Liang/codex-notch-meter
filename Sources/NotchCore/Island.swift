@@ -9,11 +9,13 @@ public struct IslandHoverState: Equatable, Sendable {
     private var enteredAt: TimeInterval?
     private var leftAt: TimeInterval?
     public init() {}
-    public mutating func update(inside: Bool, now: TimeInterval) {
+    public mutating func update(inside: Bool, now: TimeInterval, resumeExpanded: Bool = false) {
         if inside {
             leftAt = nil
             if enteredAt == nil { enteredAt = now }
-            if !isExpanded, now - (enteredAt ?? now) >= 0.12 { isExpanded = true }
+            // The caller may resume a still-visible closing island immediately.
+            // Initial entry keeps its dwell, and an outside hint never opens it.
+            if !isExpanded, resumeExpanded || now - (enteredAt ?? now) >= 0.12 { isExpanded = true }
         } else {
             enteredAt = nil
             if leftAt == nil { leftAt = now }
@@ -32,16 +34,26 @@ public struct IslandMotion: Equatable, Sendable {
         let target: Double = expanded ? 1 : 0
         if reduceMotion { progress = target; velocity = 0; return }
         guard elapsed.isFinite, elapsed > 0 else { return }
-        let duration = min(elapsed, 0.1)
-        let steps = max(1, Int(ceil(duration * 120)))
-        let dt = duration / Double(steps)
-        for _ in 0..<steps {
-            let acceleration = 260 * (target - progress) - 30 * velocity
-            velocity += acceleration * dt
-            progress += velocity * dt
-            if progress < 0 { progress = 0; velocity = max(0, velocity) }
-            if progress > 1 { progress = 1; velocity = min(0, velocity) }
-        }
+        // Exact critically damped solution, in normalized progress per second.
+        // 18 rad/s closely matches the former 120 Hz integration's early response.
+        // Preserve both state values when the target changes; never restart an easing.
+        let frequency = 18.0
+        let displacement = progress - target
+        let coefficient = velocity + frequency * displacement
+        let decay = exp(-frequency * elapsed)
+        // Consume a whole finite gap. Check underflow before elapsed products, so
+        // even greatestFiniteMagnitude cannot produce infinity * zero or NaN.
+        if decay == 0 { progress = target; velocity = 0; return }
+        let nextProgress = target + (displacement + coefficient * elapsed) * decay
+        let nextVelocity = (velocity - frequency * coefficient * elapsed) * decay
+        // Critical damping has a nonnegative response to a bounded target, so
+        // reachable states stay in 0...1 even during reversals. Clamp roundoff only.
+        progress = min(1, max(0, nextProgress))
+        velocity = nextVelocity
+        if progress == 0 { velocity = max(0, velocity) }
+        if progress == 1 { velocity = min(0, velocity) }
+        // Exact endpoints stop the scheduler. The final snap remains bounded by
+        // 0.001 normalized position and 0.015 normalized velocity, as before.
         if abs(target - progress) < 0.001 && abs(velocity) < 0.015 { progress = target; velocity = 0 }
     }
     public var isSettled: Bool { velocity == 0 && (progress == 0 || progress == 1) }
