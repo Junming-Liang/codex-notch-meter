@@ -24,6 +24,42 @@ final class IslandTests: XCTestCase {
         state.update(inside: false, now: 1.23)
         XCTAssertFalse(state.isExpanded)
     }
+    func testMidCollapseReentryResumesWithoutInitialDwell() {
+        var state = IslandHoverState()
+        state.update(inside: true, now: 0)
+        state.update(inside: true, now: 0.13)
+        state.update(inside: false, now: 0.2)
+        state.update(inside: false, now: 0.43)
+        XCTAssertFalse(state.isExpanded)
+        state.update(inside: true, now: 0.44, resumeExpanded: true)
+        XCTAssertTrue(state.isExpanded)
+    }
+    func testGracePeriodReentryDoesNotNeedResumeHintOrAnotherDwell() {
+        var state = IslandHoverState()
+        state.update(inside: true, now: 0)
+        state.update(inside: true, now: 0.13)
+        state.update(inside: false, now: 0.2)
+        state.update(inside: true, now: 0.3)
+        XCTAssertTrue(state.isExpanded)
+        state.update(inside: false, now: 0.31)
+        state.update(inside: false, now: 0.52)
+        XCTAssertTrue(state.isExpanded)
+        state.update(inside: false, now: 0.54)
+        XCTAssertFalse(state.isExpanded)
+    }
+    func testResumeHintIsIgnoredOutsideAndDoesNotBypassNextInitialDwell() {
+        var state = IslandHoverState()
+        state.update(inside: false, now: 0, resumeExpanded: true)
+        XCTAssertFalse(state.isExpanded)
+        state.update(inside: true, now: 0.01)
+        XCTAssertFalse(state.isExpanded)
+        state.update(inside: false, now: 0.08)
+        state.update(inside: true, now: 1)
+        state.update(inside: true, now: 1.11)
+        XCTAssertFalse(state.isExpanded)
+        state.update(inside: true, now: 1.13)
+        XCTAssertTrue(state.isExpanded)
+    }
     func testScreenChangeResetsPendingAndOpenState() {
         var state = IslandHoverState()
         state.update(inside: true, now: 0); state.update(inside: true, now: 1)
@@ -50,6 +86,139 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(motion.progress, 1); XCTAssertEqual(motion.velocity, 0)
         motion.advance(expanded: false, elapsed: 0.1, reduceMotion: true)
         XCTAssertEqual(motion.progress, 0)
+    }
+    func testSpringMatchesCriticalResponseAndConsumesWholeInterval() {
+        var motion = IslandMotion()
+        motion.advance(expanded: true, elapsed: 0.2, reduceMotion: false)
+        // Independent closed-form reference for a unit step at 18 rad/s.
+        XCTAssertEqual(motion.progress, 0.8743108767424542, accuracy: 1e-12)
+        XCTAssertEqual(motion.velocity, 1.7705772145845584, accuracy: 1e-12)
+    }
+    func testSpringIsIndependentOfCadenceAndIntervalPartition() {
+        // Every cadence reaches exactly the same target-change times, including
+        // irregular final ticks; no comparison relies on a rounded frame count.
+        let segments: [(expanded: Bool, duration: Double)] = [
+            (true, 0.12), (false, 0.035), (true, 0.045), (false, 0.2)
+        ]
+        var reference = IslandMotion()
+        for segment in segments {
+            reference.advance(expanded: segment.expanded, elapsed: segment.duration, reduceMotion: false)
+        }
+        for cadence in [24.0, 30, 60, 120, 144, 240] {
+            var motion = IslandMotion()
+            for segment in segments {
+                var remaining = segment.duration
+                while remaining > 0 {
+                    let elapsed = min(1 / cadence, remaining)
+                    motion.advance(expanded: segment.expanded, elapsed: elapsed, reduceMotion: false)
+                    remaining -= elapsed
+                }
+            }
+            XCTAssertEqual(motion.progress, reference.progress, accuracy: 1e-11, "cadence=\(cadence)")
+            XCTAssertEqual(motion.velocity, reference.velocity, accuracy: 1e-11, "cadence=\(cadence)")
+        }
+        var irregular = IslandMotion()
+        for elapsed in [0.001, 0.027, 0.002, 0.091, 0.079] {
+            irregular.advance(expanded: true, elapsed: elapsed, reduceMotion: false)
+        }
+        var single = IslandMotion()
+        single.advance(expanded: true, elapsed: 0.2, reduceMotion: false)
+        XCTAssertEqual(irregular.progress, single.progress, accuracy: 1e-12)
+        XCTAssertEqual(irregular.velocity, single.velocity, accuracy: 1e-12)
+    }
+    func testSpringReversalPreservesPositionAndVelocityInBothDirections() {
+        for initiallyExpanded in [false, true] {
+            var motion = IslandMotion()
+            motion.advance(expanded: initiallyExpanded, elapsed: 0, reduceMotion: true)
+            motion.advance(expanded: !initiallyExpanded, elapsed: 0.1, reduceMotion: false)
+            let before = motion
+            motion.advance(expanded: initiallyExpanded, elapsed: 0, reduceMotion: false)
+            XCTAssertEqual(motion, before)
+            let epsilon = 1e-6
+            motion.advance(expanded: initiallyExpanded, elapsed: epsilon, reduceMotion: false)
+            // A new target changes acceleration, not instantaneous velocity.
+            XCTAssertEqual((motion.progress - before.progress) / epsilon, before.velocity, accuracy: 0.001)
+            XCTAssertEqual(motion.velocity, before.velocity, accuracy: 0.001)
+            XCTAssertGreaterThan(motion.velocity * before.velocity, 0)
+        }
+    }
+    func testSpringRepeatedRapidReversalsStayFiniteAndBounded() {
+        var motion = IslandMotion()
+        let intervals = [0.001, 1.0 / 144, 0.013, 1.0 / 60, 0.041]
+        for index in 0..<1_000 {
+            motion.advance(expanded: index % 2 == 0, elapsed: intervals[index % intervals.count], reduceMotion: false)
+            XCTAssertTrue(motion.progress.isFinite)
+            XCTAssertTrue(motion.velocity.isFinite)
+            XCTAssertGreaterThanOrEqual(motion.progress, 0)
+            XCTAssertLessThanOrEqual(motion.progress, 1)
+        }
+        motion.advance(expanded: false, elapsed: 2, reduceMotion: false)
+        XCTAssertEqual(motion.progress, 0)
+        XCTAssertEqual(motion.velocity, 0)
+        XCTAssertTrue(motion.isSettled)
+    }
+    func testSpringLongGapsSettleWithoutDiscardingTimeOrOverflow() {
+        for elapsed in [1.0, 30, 1_000, Double.greatestFiniteMagnitude] {
+            var motion = IslandMotion()
+            motion.advance(expanded: true, elapsed: elapsed, reduceMotion: false)
+            XCTAssertEqual(motion.progress, 1)
+            XCTAssertEqual(motion.velocity, 0)
+            XCTAssertTrue(motion.isSettled)
+            motion.advance(expanded: false, elapsed: elapsed, reduceMotion: false)
+            XCTAssertEqual(motion.progress, 0)
+            XCTAssertEqual(motion.velocity, 0)
+            XCTAssertTrue(motion.isSettled)
+        }
+    }
+    func testSpringInvalidElapsedTimeLeavesStateUntouched() {
+        var motion = IslandMotion()
+        motion.advance(expanded: true, elapsed: 0.1, reduceMotion: false)
+        let before = motion
+        for elapsed in [0.0, -0.1, Double.nan, Double.infinity, -Double.infinity] {
+            motion.advance(expanded: false, elapsed: elapsed, reduceMotion: false)
+            XCTAssertEqual(motion, before)
+        }
+    }
+    func testSpringSettlesSymmetricallyAndStaysAtExactEndpoints() {
+        for initiallyExpanded in [false, true] {
+            var motion = IslandMotion()
+            motion.advance(expanded: initiallyExpanded, elapsed: 0, reduceMotion: true)
+            let target = !initiallyExpanded
+            var before = motion
+            for _ in 0..<60 {
+                before = motion
+                motion.advance(expanded: target, elapsed: 1.0 / 60, reduceMotion: false)
+                if motion.isSettled { break }
+            }
+            XCTAssertEqual(motion.progress, target ? 1 : 0)
+            XCTAssertEqual(motion.velocity, 0)
+            XCTAssertTrue(motion.isSettled)
+            // The preceding tick is already within a sub-point normalized tail.
+            XCTAssertLessThan(abs(motion.progress - before.progress), 0.002)
+            let settled = motion
+            for _ in 0..<10 {
+                motion.advance(expanded: target, elapsed: 1.0 / 144, reduceMotion: false)
+                XCTAssertEqual(motion, settled)
+            }
+        }
+    }
+    func testReduceMotionOverridesInvalidTimeAndCanResumeAnimation() {
+        for elapsed in [0.0, -1, Double.nan, Double.infinity] {
+            var motion = IslandMotion()
+            motion.advance(expanded: true, elapsed: 0.1, reduceMotion: false)
+            motion.advance(expanded: true, elapsed: elapsed, reduceMotion: true)
+            XCTAssertEqual(motion.progress, 1)
+            XCTAssertEqual(motion.velocity, 0)
+            XCTAssertTrue(motion.isSettled)
+            motion.advance(expanded: false, elapsed: 1.0 / 60, reduceMotion: false)
+            XCTAssertGreaterThan(motion.progress, 0)
+            XCTAssertLessThan(motion.progress, 1)
+            XCTAssertLessThan(motion.velocity, 0)
+            motion.advance(expanded: false, elapsed: elapsed, reduceMotion: true)
+            XCTAssertEqual(motion.progress, 0)
+            XCTAssertEqual(motion.velocity, 0)
+            XCTAssertTrue(motion.isSettled)
+        }
     }
     func testActualTopAnchorAtEveryIntermediateSizeOnNegativeScreen() throws {
         let screen = CGRect(x: -1512, y: 982, width: 1512, height: 982)
