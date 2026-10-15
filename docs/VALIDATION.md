@@ -2,17 +2,46 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v0.1.5 candidate — native results pending
+## v0.1.5 observed macOS results
 
-The user reported that hover motion still felt insufficiently smooth. Source review identified potentially expensive synchronous display/layout on every tick and cold detail construction at first expansion. These are hypotheses to measure, not proven causes of the reported feel. The old spring already retained reversal velocity; the new exact critically damped solver removes cadence-dependent integration and discarded elapsed time while retaining that continuity.
+[Diagnostic run #17](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38692547654) and [release run #18](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38693787318) passed on 2026-10-15 using standard hosted `macos-15` runners.
 
-The candidate uses the view-bound display link on macOS 14+ and a coalescing main-queue 60 Hz dispatch timer fallback on macOS 13. Both are active only during transitions, reject retired callbacks and stop at the current target. Full detail content remains mounted in a non-sizing, clipped overlay; collapsed alpha/footprint tests remain mandatory. One progress drives surface, rail and detail reveal, with immediate mid-collapse reentry and unchanged initial hover dwell. The rainbow color clock remains separately capped at 15 fps.
+- Tested source and immutable release tag: [`be65833128d7ccd7e512857e3e4df3e54f4f0e9a`](https://github.com/Junming-Liang/codex-notch-meter/commit/be65833128d7ccd7e512857e3e4df3e54f4f0e9a)
+- Source tree: `d3e2dd200076d1f19357d0ec53fa9efc8da290a0`
+- XCTest: 103 discovered, 102 synthetic tests passed, one opt-in artifact test skipped in the synthetic job, zero failures
+- Separate official signed-desktop helper discovery: passed without executing Codex; diagnostic resolution took 11.158 seconds within the unchanged 30-second budget, with clean detach
+- Universal arm64/x86_64 build, Info.plist and ad-hoc signature checks: passed
+- Four native smoke/color-scheduler/Quit scenarios with 28 resumed publications, all five skins' 240 scene/scale checks, 70 alignment captures and 13 expanded calibration checks: passed
+- New three-profile native motion, presentation, reversal and cleanup gate: passed
+- 21 installer safety simulations, read-only mounted DMG inspection/cleanup and release ZIP/DMG checksum gates: passed
 
-A new demo-only native gate compares the previous synchronous drawing/layout strategy, the new display-linked path and the timer fallback under the same four-bucket/eight-window synthetic UI updates and new spring. It separately records callback/apply timings, actual native frames, normal-run-loop view updates and validated layer-presentation bounds, first/repeated expansion, near-boundary chatter, post-grace reverse-state continuity, settled Quit routing and source cleanup. Bitmap capture stays outside the timed pass. This is not a complete old-binary benchmark, a physical display frame trace or a perceptual smoothness verdict. Native results are pending; existing alignment, five-skin pixels, discovery, DMG, login-safety and lifecycle gates remain required.
+### Hover-motion evidence
 
-The first [diagnostic run (#16)](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38691184031) compiled and exercised the new paths. The display-linked profile passed with callback p95 16.728 ms and maximum 20.948 ms under the eight-window load. The old run-loop Timer and initial Timer fallback each measured about 83 ms p95 despite low application cost. This supports investigating timer scheduling, without proving App Nap or a physical-display cause. The revised fallback uses a transition-only strict dispatch source with 1 ms leeway, cancellation/identity checks and no process-wide power assertion. Its native result remains pending. Presentation history now expires an old frame 100 ms after its replacement rather than aging it during a settled dwell; rejection diagnostics remain mandatory.
+The user reported insufficiently smooth hover motion. Source review identified forced synchronous display/layout and first-expansion detail construction as costs to measure; it did not prove the cause of that user's experience. The previous spring already retained velocity. The new exact critically damped solver removes cadence-dependent integration and discarded elapsed time, while immediate mid-collapse reentry preserves current position and velocity.
 
-API references: Apple's [view-bound display link](https://developer.apple.com/documentation/appkit/nsview/displaylink(target:selector:)), [macOS 14 AppKit release notes](https://developer.apple.com/documentation/macos-release-notes/appkit-release-notes-for-macos-14), [frame display behavior](https://developer.apple.com/documentation/appkit/nswindow/setframe(_:display:)) and [deferred window display](https://developer.apple.com/documentation/appkit/nswindow/display()), [strict timer leeway](https://developer.apple.com/documentation/dispatch/dispatchsource/timerflags) and [dispatch-source event coalescing](https://developer.apple.com/library/archive/documentation/General/Conceptual/ConcurrencyProgrammingGuide/GCDWorkQueues/GCDWorkQueues.html).
+The native harness compares the previous synchronous drawing/layout strategy, the new display-linked path and the macOS 13 dispatch fallback under the same four-bucket/eight-window UI load and new spring. Diagnostic run #17 measured:
+
+| Strategy | Callback p95 | Maximum callback gap | Apply p95 |
+| --- | ---: | ---: | ---: |
+| Previous run-loop Timer drawing strategy | 64.754 ms | 80.216 ms | 5.037 ms |
+| View-bound display link | 19.231 ms | 20.508 ms | 3.633 ms |
+| Coalescing dispatch fallback | 21.894 ms | 42.664 ms | 5.257 ms |
+
+The two new paths passed unchanged timing bounds, actual native-frame checks, and 67/72 active layer-presentation samples respectively. Sampled SwiftUI view-update lag was zero; this is a view-update observation, not a display scanout measurement. Near-boundary chatter, post-grace reentry, fresh event-time integration/velocity continuity, repeated expansion, measured Quit routing, duplicate/backward timestamps, and retired-source cleanup passed. A held presentation expires at most 100 ms after its replacement, with controls rejecting expired or impossible sizes. Bitmap checks run separately from timing.
+
+Full details stay mounted in a non-sizing clipped overlay, and all collapsed transparency/footprint gates remain required. One progress drives surface, rail and detail reveal. Geometry sources stop at settlement/teardown; the macOS 13 fallback uses a main-queue strict dispatch source with 1 ms leeway and no process power assertion. The independent rainbow clock remains capped at 15 fps.
+
+[Initial run #16](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38691184031) exposed approximately 83 ms p95 gaps in both ordinary Timer profiles despite low apply cost. The successful replacement supports the scheduler change without proving App Nap was responsible. Its presentation-history oracle was also corrected to age a predecessor from replacement, rather than from when a long-held settled frame was created. No cadence limit was loosened.
+
+This is an old-drawing-strategy comparison using the same new spring, not a full old-binary benchmark. The runner's actual backing was 1x; forced 2x captures are offscreen scale checks. Actual macOS 13 runtime, physical-display smoothness/alignment, human PNG inspection and real login/reboot remain unverified. The user previously reported successful live quota reads in v0.1.1; CI uses synthetic accounts and does not inspect that account. The preview remains ad-hoc signed and unnotarized.
+
+### Download identity
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg): 1,132,527 bytes; advertised SHA-256 `c242a30b1438fe40bdf8e835418702e77ccd877218e3cdb212e6965294450c02`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip): 1,126,048 bytes; advertised SHA-256 `aea51f4a1acbad8dd197baa6f1e8521afbadd53202c896d27974627435bcee2c`
+- Both separate checksum files are 102 bytes. Workflow checksum verification and public asset metadata agree; no independent downloaded-byte rehash is claimed.
+
+API references: Apple's [view-bound display link](https://developer.apple.com/documentation/appkit/nsview/displaylink(target:selector:)), [macOS 14 AppKit release notes](https://developer.apple.com/documentation/macos-release-notes/appkit-release-notes-for-macos-14), [frame display behavior](https://developer.apple.com/documentation/appkit/nswindow/setframe(_:display:)), [deferred window display](https://developer.apple.com/documentation/appkit/nswindow/display()), [strict timer leeway](https://developer.apple.com/documentation/dispatch/dispatchsource/timerflags) and [dispatch-source event coalescing](https://developer.apple.com/library/archive/documentation/General/Conceptual/ConcurrencyProgrammingGuide/GCDWorkQueues/GCDWorkQueues.html).
 
 ## v0.1.4 observed macOS results
 
