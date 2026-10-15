@@ -67,3 +67,9 @@ Five skins are available. Mint is static by default; choosing Rainbow opts into 
 Version 0.1.5 provides default-zero per-built-in-display horizontal calibration in logical points, with 0.5pt steps, bounds and Reset. Public display UUIDs are local preference keys only; no serial-number lookup or identifier upload occurs. Actual physical alignment still needs observation.
 
 Version 0.1.5 adds display-linked hover geometry on macOS 14+ and a transition-only main-queue fallback for macOS 13. Mid-collapse reentry preserves position and velocity; prewarmed details remain non-sizing. Reduce Motion snaps to the target. Native timing checks passed on the hosted newer OS; physical smoothness and actual macOS 13 runtime remain unverified. The separate rainbow clock stays capped at 15 fps.
+
+## 显示兼容性候选 / Display compatibility candidate
+
+v0.1.6 正在验证按显示能力适配的改进；当前上方下载链接仍指向已发布的 v0.1.5。不同屏幕尺寸、缩放或主屏排列不会被转换成固定的机型坐标。有效的内建刘海屏幕使用系统报告的边界；无刘海、外接屏、合盖、镜像及无效数据使用菜单栏。请参阅[覆盖矩阵与系统边界](COMPATIBILITY.md)，其中明确区分合成验证与真机验证。
+
+The v0.1.6 candidate uses runtime display capabilities rather than model-specific notch coordinates. Non-notched, external-only, mirrored and invalid-geometry configurations retain the menu bar. The current verified download above remains v0.1.5; physical model-by-model validation is not claimed.

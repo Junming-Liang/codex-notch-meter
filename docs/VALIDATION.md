@@ -2,6 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.6 compatibility candidate — native results pending
+
+The candidate adds a shared capability planner and production reconciler. Runtime inputs are fresh AppKit screen rectangles/safe areas and public Core Graphics built-in/online/active/asleep/mirror flags; no model whitelist, physical-notch coordinate table or model telemetry is used. Invalid or incomplete geometry removes the old hit region immediately, with fresh rechecks scheduled at 150/600 ms. Unchanged display/Space notifications preserve the existing controller and hover trajectory. Sleep, inactive session, hidden app, disabled overlay and termination cancel overlay activity and delayed refreshes.
+
+New pure tests include 216 notched-family-shaped synthetic layouts across point scales, global origins, backing factors and off-center exclusion bounds; non-notched families and invalid states fall back to the menu bar. The native `--display-test` injects snapshots into the same production coordinator. It maps arbitrary cutout widths/depths to the hosted screen for actual 1x/2x bitmap-axis and expanded Quit checks, then exercises identity reuse, selective replacement, calibration/reconnect/reset, missing/duplicate identities, scale changes, fresh retries and retired-source cleanup. These tests have not run on macOS for this candidate yet. Existing motion, alignment, five-skin, quota, official-helper, DMG and login-safety gates remain required.
+
+The [compatibility matrix](COMPATIBILITY.md) is sourced from Apple pages checked on 2026-10-15. Native panel fixtures are not physical MacBook, closed-lid, mirrored-display or Spaces tests. The application still targets macOS 13+; later Macs need their own supported newer macOS, and unsupported older OS versions remain outside scope. Signing and real login/reboot limitations below remain.
+
 ## v0.1.5 observed macOS results
 
 [Diagnostic run #17](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38692547654) and [release run #18](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38693787318) passed on 2026-10-15 using standard hosted `macos-15` runners.
