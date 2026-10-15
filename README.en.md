@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.5">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.6">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,21 +12,21 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.5 hover-motion preview is available.** It uses display-linked geometry and prewarmed details; reentering during collapse immediately redirects the existing motion. Five skins, the fine idle contour, per-display alignment, DMG installation and optional Launch at Login remain available. The [native timing checks](docs/VALIDATION.md) passed; perceived smoothness still needs real-device feedback.
+**v0.1.6 is available.** A shared automatic circular contour drives the rail and connected black body. Details fit their content; brief refresh feedback shows truthful states and comparable decreases in percentage points. The rail moves and fades with the same outline, and closing waits for a fresh final view update.
 
-**v0.1.6 candidate is under validation:** automatic circular contours, compact wrapped details, refresh feedback and display lifecycle compatibility are being tested together; non-notched, external, closed-lid and mirrored setups retain menu-bar access. The currently verified download remains v0.1.5. See the [model and validation matrix](docs/COMPATIBILITY.md) for the OS boundary and synthetic-versus-physical evidence.
+Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
 ## Download
 
-1. Download the [v0.1.5 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg) (1,132,527 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg.sha256)
+1. Download the [v0.1.6 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip) (1,126,048 bytes) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
-Universal packages contain Apple Silicon and Intel binaries. This release passed 102 synthetic tests, dual-architecture packaging and signature checks, four native window/animation scenarios, three-profile native timing/continuous-reversal checks, all five skins at calibrated 1x/2x with live switches, 70 native alignment captures and 13 calibrated expanded-action checks, read-only official desktop helper discovery, and mounted-DMG integrity/cleanup checks. DMG and ZIP each have a separate SHA-256 checksum file. Exact tested revisions and limits are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. This release passed 186 synthetic tests, universal packaging/signature checks, four native window scenarios, five-skin 1x/2x pixel checks, 102 alignment captures and 21 expanded-action checks, close-tail, compact refresh, display-lifecycle, official-helper discovery and DMG gates. Each archive has a separate SHA-256 checksum file. Exact source and evidence limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
@@ -37,6 +37,8 @@ Universal packages contain Apple Silicon and Intel binaries. This release passed
 - Mint, Rainbow, Aurora, Sunset and Ice skins; Rainbow has optional 8s/12s color motion and a shared maximum-15fps clock
 - Window labels derived from actual returned duration, with multiple quota groups
 - Real `NSScreen` notch geometry, global coordinates, display changes and a menu-bar fallback
+- Content-fit wrapped details and brief refresh feedback, enabled by default with a setting to disable it; unchanged reads hold for 0.8 seconds and other states for 2 seconds
+- Percentage-point decreases require fresh comparable account/window/reset context; initial, reset, increased and failed reads show truthful states
 - Continuous top-attached expansion with hover dwell, exit grace, reversible motion and Reduce Motion support
 - Visible Quit in the expanded island, menu bar and Settings; local `⌘Q` when the app is active
 - Restrained graphite cards, system typography, selectable skins, accessible state text and reduced-transparency support

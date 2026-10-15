@@ -4,9 +4,9 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg">下载 macOS Universal DMG</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip">ZIP 备用下载</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.5">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg">下载 macOS Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.6">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -24,9 +24,9 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v0.1.5 悬停动效迭代已发布。** 采用显示同步的展开和预布局详情；收起途中移回鼠标，会保留当前运动状态继续展开。五款皮肤、约 3 pt 细轮廓、逐屏水平微调、DMG 和可选登录时启动继续保留。[原生时序验证](docs/VALIDATION.md)已通过，实机手感仍以实际使用为准。
+> **v0.1.6 已发布。** 自动圆弧轮廓统一进度线与展开主体；详情按内容收紧，刷新时短暂展开显示准确状态，可比较时显示减少的百分点。进度线随同一轮廓移动并渐隐，收起末端等待最新界面状态后结束动效。
 
-**v0.1.6 改进候选正在验证：** 自动圆弧轮廓、紧凑包裹式详情、刷新变化提示与显示兼容性一起验证；无刘海、外接、合盖及镜像模式保留菜单栏。当前可下载的已验证版本仍是 v0.1.5。[机型与验证覆盖](docs/COMPATIBILITY.md)列出支持边界，并区分合成测试和实机测试。
+显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
 ## 目录
 
@@ -42,15 +42,15 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v0.1.5 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg)（1,132,527 字节），可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg.sha256)
+1. 下载 [v0.1.6 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.dmg.sha256)
 2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
 3. 从“应用程序”打开已安装的副本，再推出 DMG
 
-也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip)（1,126,048 字节）及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.6/CodexNotchMeter-0.1.6-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
-Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过 102 项合成测试、双架构打包与签名校验、四种原生窗口/动画场景、三种更新策略的原生时序/连续反向检查、五款皮肤的 1× / 2× 像素与实时切换检查、70 次原生对齐捕获及 13 次校准后展开操作检查、官方桌面 helper 只读发现，以及 DMG 只读挂载和清理检查。DMG 与 ZIP 分别提供独立 SHA-256 校验文件；源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
+Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过 186 项合成测试、双架构打包与签名校验、四种原生窗口场景、五款皮肤的 1× / 2× 像素检查、102 次对齐捕获及 21 次展开操作检查，以及关闭末端、紧凑刷新提示、显示生命周期、官方 helper 只读发现和 DMG 验证。DMG 与 ZIP 各提供独立 SHA-256 文件；精确源码与验证边界见[验证说明](docs/VALIDATION.md)。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
@@ -66,6 +66,8 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过 102 项�
 - 刘海默认显示最短的已知额度周期，也可选择主额度；展开卡片保留全部额度窗口
 - 经典薄荷、流光彩虹、极光、日落暖金、冰蓝五款皮肤；彩虹支持可关闭的 8 秒 / 12 秒颜色循环
 - 周期名称来自接口实际返回的时长，不把“主窗口 / 次窗口”写死成 5 小时 / 7 天
+- 详情与刷新提示包裹刘海、连接屏幕顶边；刷新提示默认开启，可在设置中关闭，未变化提示短暂停留 0.8 秒，其他状态停留 2 秒
+- 只有同一账户、额度窗口与重置周期的连续新鲜读数才计算减少的百分点；首读、重置、回升和失败显示实际状态
 - 从刘海顶边连续展开与收起；悬停停留判定、离开缓冲和可中断的弹簧动效，支持“减少动态效果”
 - 展开面板、菜单栏菜单与设置中均有明确的“退出”；应用激活时可用 `⌘Q`
 - 石墨色面板、系统字体与可选皮肤；兼顾降低透明度、提高对比度和读屏文字
