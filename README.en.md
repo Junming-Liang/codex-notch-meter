@@ -14,6 +14,8 @@ The meter reads the official Codex CLI's account interface. It sends no model pr
 
 **v0.1.4 alignment preview is available.** It preserves the raw system-reported midpoint and adds default-zero per-display horizontal correction (0.5pt steps, up to ±8pt, with Reset). Five skins, flowing Rainbow, DMG installation and optional Launch at Login remain available. Idle mode is a fine contour; hover opens the full details card. See [installation and settings](docs/INSTALLATION.md).
 
+**v0.1.5 motion candidate is under validation:** display-synchronized geometry, continuous reversals and prewarmed details will receive an independent native timing gate. Downloads remain on released v0.1.4; measured timing is not a physical smoothness verdict.
+
 ## Download
 
 1. Download the [v0.1.4 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg) (1,060,193 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.4/CodexNotchMeter-0.1.4-universal.dmg.sha256)
