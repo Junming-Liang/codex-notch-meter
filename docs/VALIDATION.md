@@ -2,6 +2,16 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.5 candidate — native results pending
+
+The user reported that hover motion still felt insufficiently smooth. Source review identified potentially expensive synchronous display/layout on every tick and cold detail construction at first expansion. These are hypotheses to measure, not proven causes of the reported feel. The old spring already retained reversal velocity; the new exact critically damped solver removes cadence-dependent integration and discarded elapsed time while retaining that continuity.
+
+The candidate uses the view-bound display link on macOS 14+ and a main-run-loop 60 Hz Timer fallback on macOS 13. Both are active only during transitions, reject retired callbacks and stop at the current target. Full detail content remains mounted in a non-sizing, clipped overlay; collapsed alpha/footprint tests remain mandatory. One progress drives surface, rail and detail reveal, with immediate mid-collapse reentry and unchanged initial hover dwell. The rainbow color clock remains separately capped at 15 fps.
+
+A new demo-only native gate compares the previous synchronous drawing/layout strategy, the new display-linked path and the timer fallback under the same four-bucket/eight-window synthetic UI updates and new spring. It separately records callback/apply timings, actual native frames, normal-run-loop view updates and validated layer-presentation bounds, first/repeated expansion, near-boundary chatter, post-grace reverse-state continuity, settled Quit routing and source cleanup. Bitmap capture stays outside the timed pass. This is not a complete old-binary benchmark, a physical display frame trace or a perceptual smoothness verdict. Native results are pending; existing alignment, five-skin pixels, discovery, DMG, login-safety and lifecycle gates remain required.
+
+API references: Apple's [view-bound display link](https://developer.apple.com/documentation/appkit/nsview/displaylink(target:selector:)), [macOS 14 AppKit release notes](https://developer.apple.com/documentation/macos-release-notes/appkit-release-notes-for-macos-14), [frame display behavior](https://developer.apple.com/documentation/appkit/nswindow/setframe(_:display:)) and [deferred window display](https://developer.apple.com/documentation/appkit/nswindow/display()).
+
 ## v0.1.4 observed macOS results
 
 [Diagnostic run #14](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38682562047) and [release run #15](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38683231675) passed on 2026-10-15 using standard hosted `macos-15` runners.
