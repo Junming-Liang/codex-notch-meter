@@ -100,8 +100,17 @@ final class IslandTests: XCTestCase {
                     let notch = NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero)
                     let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale)
                     let frame = geometry.frame(progress: 0)
+                    let contour = geometry.contourFrame
+                    let local = geometry.contourRect(progress: 0)
                     XCTAssertEqual(frame.size, geometry.collapsedSize)
                     XCTAssertEqual(frame.maxY, screen.maxY, accuracy: 0.0001)
+                    XCTAssertEqual(contour, CGRect(x: camera.minX - 3, y: camera.minY - 3,
+                        width: camera.width + 6, height: camera.height + 3))
+                    XCTAssertEqual(contour.midX, camera.midX)
+                    XCTAssertEqual(contour.maxY, camera.maxY)
+                    XCTAssertEqual(frame.minX + local.midX, camera.midX)
+                    XCTAssertEqual(local.minY, 0)
+                    XCTAssertEqual(local.size, contour.size)
                     for extensionSize in [camera.minX - frame.minX, frame.maxX - camera.maxX, camera.minY - frame.minY] {
                         XCTAssertGreaterThanOrEqual(extensionSize, 3)
                         XCTAssertLessThanOrEqual(extensionSize, 4)
@@ -113,5 +122,163 @@ final class IslandTests: XCTestCase {
             }
         }
     }
-
+    func testHorizontalCalibrationDefaultsRejectsNonfiniteAndUsesBoundedHalfPoints() {
+        XCTAssertEqual(HorizontalCalibration.sanitized(), 0)
+        for value in [Double.nan, .infinity, -.infinity] {
+            XCTAssertEqual(HorizontalCalibration.sanitized(value), 0)
+        }
+        for pair in [(0.0, 0.0), (0.24, 0), (-0.24, 0), (0.25, 0.5), (-0.25, -0.5),
+                     (1.26, 1.5), (-1.26, -1.5), (99, 8), (-99, -8),
+                     (Double.greatestFiniteMagnitude, 8), (-Double.greatestFiniteMagnitude, -8)] {
+            XCTAssertEqual(HorizontalCalibration.sanitized(pair.0), pair.1)
+        }
+    }
+    func testCalibrationKeepsRawHardwareAndResetsWithoutResidualOffset() throws {
+        let screen = CGRect(x: -1024, y: 768, width: 1024, height: 768)
+        let notch = try makeNotch(screen: screen, center: screen.midX + 61.25, width: 220.5)
+        let baseline = IslandGeometry(notch: notch, screen: screen, backingScale: 2)
+        for value in [-99.0, -8, -1.26, 0, 1.26, 8, 99, .nan, .infinity, -.infinity] {
+            let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 2, horizontalAdjustment: value)
+            let expected = HorizontalCalibration.sanitized(value)
+            XCTAssertEqual(geometry.horizontalAdjustment, expected)
+            XCTAssertEqual(geometry.notch, notch.notch)
+            XCTAssertEqual(geometry.calibratedNotch, notch.notch.offsetBy(dx: expected, dy: 0))
+            XCTAssertEqual(geometry.contourFrame.midX - baseline.contourFrame.midX, expected)
+            let reset = IslandGeometry(notch: notch, screen: screen, backingScale: 2, horizontalAdjustment: 0)
+            XCTAssertEqual(reset, baseline)
+        }
+    }
+    func testExactCalibratedAnchorThroughFramesRailHoverAndClick() throws {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            for origin in [CGPoint.zero, CGPoint(x: -1512, y: -982)] {
+                let screen = CGRect(origin: origin, size: CGSize(width: 1512, height: 982))
+                for width in [CGFloat(219), 220, 220.5, 221] {
+                    for offCenter in [CGFloat(-61.25), 0, 61.25] {
+                        let notch = try makeNotch(screen: screen, center: screen.midX + offCenter, width: width)
+                        for adjustment in [-8.0, -1.5, 0, 2.5, 8] {
+                            let geometry = IslandGeometry(notch: notch, screen: screen,
+                                backingScale: scale, horizontalAdjustment: adjustment)
+                            let anchor = notch.notch.midX + adjustment
+                            XCTAssertEqual(geometry.calibratedNotch.midX, anchor)
+                            for step in 0...20 {
+                                let progress = Double(step) / 20
+                                let native = geometry.frame(progress: progress)
+                                let contour = geometry.contourRect(progress: progress)
+                                let rail = geometry.railRect(progress: progress)
+                                let global = globalRect(contour, in: native)
+                                XCTAssertEqual(global.midX, anchor, accuracy: 0.0001)
+                                XCTAssertEqual(global.maxY, screen.maxY, accuracy: 0.0001)
+                                XCTAssertEqual(globalRect(rail, in: native), geometry.contourFrame)
+                                XCTAssertEqual(rail.size, geometry.contourFrame.size)
+                                XCTAssertTrue(screen.contains(native))
+                                XCTAssertTrue(native.insetBy(dx: -0.0001, dy: -0.0001).contains(global))
+                                XCTAssertEqual(contour.minY, 0, accuracy: 0.0001)
+                                for edge in [native.minX, native.maxX, native.minY] {
+                                    XCTAssertEqual(edge * scale, (edge * scale).rounded(), accuracy: 0.0001)
+                                }
+                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.minX + 0.01, y: global.midY), progress: progress))
+                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.minX - 0.01, y: global.midY), progress: progress))
+                                XCTAssertTrue(geometry.hoverContains(CGPoint(x: global.maxX - 0.01, y: global.midY), progress: progress))
+                                XCTAssertFalse(geometry.hoverContains(CGPoint(x: global.maxX + 0.01, y: global.midY), progress: progress))
+                            }
+                            let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
+                            XCTAssertEqual(expanded.midX, anchor)
+                            XCTAssertTrue(geometry.interactiveContains(CGPoint(x: expanded.minX + 16.01, y: expanded.midY)))
+                            XCTAssertFalse(geometry.interactiveContains(CGPoint(x: expanded.minX + 15.99, y: expanded.midY)))
+                            XCTAssertTrue(geometry.interactiveContains(CGPoint(x: expanded.maxX - 16.01, y: expanded.midY)))
+                            XCTAssertFalse(geometry.interactiveContains(CGPoint(x: expanded.maxX - 15.99, y: expanded.midY)))
+                            XCTAssertFalse(geometry.interactiveContains(CGPoint(x: anchor, y: screen.maxY - 4)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    func testContourOriginCancelsNativeEnvelopeMidpointBias() {
+        let screen = CGRect(x: 0, y: 0, width: 1024, height: 768)
+        let camera = CGRect(x: 401.25, y: 735.75, width: 219, height: 32.25)
+        let notch = NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero)
+        let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 1)
+        let native = geometry.frame(progress: 0)
+        XCTAssertEqual(native.midX - camera.midX, 0.25)
+        XCTAssertEqual(geometry.contourRect(progress: 0).minX, 0.25)
+        XCTAssertEqual(native.minX + geometry.contourRect(progress: 0).midX, camera.midX)
+    }
+    func testCalibrationClampsAtScreenMarginWithoutChangingAnchorAtZero() throws {
+        for scale in [CGFloat(1), CGFloat(2)] {
+            let screen = CGRect(x: -1024, y: 768, width: 1024, height: 768)
+            for leftSide in [true, false] {
+                let center = leftSide ? screen.minX + 204.25 : screen.maxX - 204.25
+                let notch = try makeNotch(screen: screen, center: center, width: 220.5)
+                let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale,
+                    horizontalAdjustment: leftSide ? -8 : 8)
+                XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -2 : 2)
+                XCTAssertEqual(geometry.notch, notch.notch)
+                for step in 0...20 {
+                    let progress = Double(step) / 20
+                    let native = geometry.frame(progress: progress)
+                    XCTAssertTrue(screen.contains(native))
+                    XCTAssertEqual(globalRect(geometry.contourRect(progress: progress), in: native).midX,
+                        center + geometry.horizontalAdjustment, accuracy: 0.0001)
+                }
+                let expanded = geometry.frame(progress: 1)
+                XCTAssertGreaterThanOrEqual(expanded.minX, screen.minX + 12)
+                XCTAssertLessThanOrEqual(expanded.maxX, screen.maxX - 12)
+                let reset = IslandGeometry(notch: notch, screen: screen, backingScale: scale)
+                XCTAssertEqual(reset.horizontalAdjustment, 0)
+                XCTAssertEqual(reset.contourFrame.midX, center)
+            }
+        }
+    }
+    func testNearEdgeExceptionKeepsFullCardAndRawCollapsedAnchor() throws {
+        let screen = CGRect(x: -1024, y: -768, width: 1024, height: 768)
+        for leftSide in [true, false] {
+            let center = leftSide ? screen.minX + 116.25 : screen.maxX - 116.25
+            let notch = try makeNotch(screen: screen, center: center, width: 220)
+            let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 2,
+                horizontalAdjustment: leftSide ? -8 : 8)
+            // Only 3.25pt of correction fits beside this collapsed hardware.
+            XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -3 : 3)
+            XCTAssertEqual(geometry.notch, notch.notch)
+            XCTAssertEqual(geometry.contourFrame.midX, center + geometry.horizontalAdjustment)
+            let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
+            XCTAssertEqual(expanded.width, 380)
+            XCTAssertNotEqual(expanded.midX, geometry.calibratedNotch.midX)
+            XCTAssertEqual(leftSide ? expanded.minX : expanded.maxX,
+                leftSide ? screen.minX + 12 : screen.maxX - 12)
+            for step in 0...20 {
+                let progress = Double(step) / 20
+                XCTAssertTrue(screen.contains(geometry.frame(progress: progress)))
+                XCTAssertEqual(globalRect(geometry.railRect(progress: progress), in: geometry.frame(progress: progress)), geometry.contourFrame)
+            }
+            XCTAssertTrue(geometry.interactiveContains(CGPoint(x: expanded.midX, y: expanded.midY)))
+        }
+    }
+    func testInvalidProgressAndBackingScaleUseDefaultGeometry() throws {
+        let screen = CGRect(x: 0, y: 0, width: 1024, height: 768)
+        let notch = try makeNotch(screen: screen, center: screen.midX + 0.25, width: 221)
+        let baseline = IslandGeometry(notch: notch, screen: screen)
+        for scale in [CGFloat(0), -1, .nan, .infinity] {
+            let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale)
+            XCTAssertEqual(geometry, baseline)
+        }
+        for progress in [Double.nan, .infinity, -.infinity, -1] {
+            XCTAssertEqual(baseline.frame(progress: progress), baseline.frame(progress: 0))
+            XCTAssertEqual(baseline.contourRect(progress: progress), baseline.contourRect(progress: 0))
+        }
+        XCTAssertEqual(baseline.frame(progress: 2), baseline.frame(progress: 1))
+    }
+    private func makeNotch(screen: CGRect, center: CGFloat, width: CGFloat) throws -> NotchGeometry {
+        let leftEdge = center - width / 2
+        let rightEdge = center + width / 2
+        return try XCTUnwrap(NotchGeometry.calculate(screen: screen, topInset: 32.25,
+            auxiliaryLeft: CGRect(x: screen.minX, y: screen.maxY - 32.25,
+                width: leftEdge - screen.minX, height: 32.25),
+            auxiliaryRight: CGRect(x: rightEdge, y: screen.maxY - 32.25,
+                width: screen.maxX - rightEdge, height: 32.25)))
+    }
+    private func globalRect(_ local: CGRect, in native: CGRect) -> CGRect {
+        CGRect(x: native.minX + local.minX, y: native.maxY - local.maxY,
+            width: local.width, height: local.height)
+    }
 }
