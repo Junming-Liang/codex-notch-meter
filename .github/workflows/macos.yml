@@ -76,6 +76,9 @@ jobs:
       - name: Native hover cadence and continuous reversal gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-motion.py
+      - name: Native close endpoint and tail-pixel gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-collapse.py
       - name: Native display compatibility and lifecycle gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-displays.py
