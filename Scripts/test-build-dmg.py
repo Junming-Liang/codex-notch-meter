@@ -44,7 +44,7 @@ class PackagingTests(unittest.TestCase):
             "CFBundleIdentifier": "org.codexnotchmeter.app",
             "CFBundleExecutable": "CodexNotchMeter",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "0.1.6",
+            "CFBundleShortVersionString": "0.1.7",
             "CFBundleVersion": "7",
             "LSMinimumSystemVersion": "13.0",
         }
@@ -103,7 +103,7 @@ class PackagingTests(unittest.TestCase):
         self.info["CFBundleShortVersionString"] = "0.1.2"
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
         with mock.patch.object(dmg, "run") as calls:
-            with self.assertRaisesRegex(RuntimeError, "0.1.6"):
+            with self.assertRaisesRegex(RuntimeError, "0.1.7"):
                 dmg.verify_app(self.app)
             calls.assert_not_called()
 
