@@ -14,6 +14,8 @@ The meter reads the official Codex CLI's account interface. It sends no model pr
 
 **v0.1.5 hover-motion preview is available.** It uses display-linked geometry and prewarmed details; reentering during collapse immediately redirects the existing motion. Five skins, the fine idle contour, per-display alignment, DMG installation and optional Launch at Login remain available. The [native timing checks](docs/VALIDATION.md) passed; perceived smoothness still needs real-device feedback.
 
+**v0.1.6 compatibility candidate is under validation:** runtime display capabilities drive placement across sizes and scaling modes; non-notched, external, closed-lid and mirrored setups retain menu-bar access. The currently verified download remains v0.1.5. See the [model and validation matrix](docs/COMPATIBILITY.md) for the OS boundary and synthetic-versus-physical evidence.
+
 ## Download
 
 1. Download the [v0.1.5 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg) (1,132,527 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.5/CodexNotchMeter-0.1.5-universal.dmg.sha256)
