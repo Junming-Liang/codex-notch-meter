@@ -4,8 +4,9 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip">下载 macOS Universal ZIP</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.2">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg">下载 macOS Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.3">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -23,9 +24,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v0.1.2 外观修复预览已发布。** 收起时只保留刘海外侧约 3 pt 的透明底细轮廓；悬停后仍可展开完整详情卡片，移开后恢复。已通过原生 1× / 2× 离屏像素检查；真实 MacBook 外观仍待使用反馈。
-
-> **v0.1.3 候选正在验证：**新增 DMG 拖放安装、用户自选“登录时启动”、五款皮肤与流光彩虹动效；单条 U 从左填充，已用右段纯黑。[安装与设置说明](docs/INSTALLATION.md)包含签名和实测边界。
+> **v0.1.3 安装与皮肤预览已发布。** 提供 DMG 拖放安装、可选“登录时启动”和五款皮肤；流光彩虹支持缓慢颜色动效。单条 U 从左显示剩余额度，用掉的右段纯黑。收起时仍是约 3 pt 细轮廓，悬停后展开完整详情。[安装与设置说明](docs/INSTALLATION.md)介绍使用方式与验证边界。
 
 ## 目录
 
@@ -41,13 +40,15 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v0.1.2 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip)（816,024 字节）；可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip.sha256)
-2. 解压，将 **Codex Notch Meter.app** 放入“应用程序”
-3. 启动应用，查看菜单栏中的额度入口
+1. 下载 [v0.1.3 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg)（983,322 字节），可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg.sha256)
+2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
+3. 从“应用程序”打开已安装的副本，再推出 DMG
+
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip)（972,989 字节）及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
-Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测试、双架构编译与打包、Info.plist 和临时签名校验、三种原生窗口回归场景、1× / 2× 轮廓像素与实时更新检查，以及官方签名桌面分发包的只读 helper 发现检查。每个发布归档附带 SHA-256 校验文件；具体测试源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
+Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过 82 项合成测试、双架构打包与签名校验、四种原生窗口/动画场景、五款皮肤的 1× / 2× 像素与实时切换检查、官方桌面 helper 只读发现，以及 DMG 只读挂载和清理检查。DMG 与 ZIP 分别提供独立 SHA-256 校验文件；源码版本与验证边界见[验证说明](docs/VALIDATION.md)。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
@@ -59,11 +60,14 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测
 | 自动适配系统报告的刘海位置 | 支持 Codex 返回的多个额度组 | 启动、唤醒及每 60 秒刷新 |
 | 无刘海时使用菜单栏 | 设置中选择额度组与 CLI 路径 | 错误退避、悬停防抖、手动刷新 |
 
-- 额度以 **剩余百分比** 展示：`100 − usedPercent`
+- 额度以 **剩余百分比** 展示：`100 − usedPercent`；整条 U 从左填充，消耗后右端退回，已用段纯黑
+- 刘海默认显示最短的已知额度周期，也可选择主额度；展开卡片保留全部额度窗口
+- 经典薄荷、流光彩虹、极光、日落暖金、冰蓝五款皮肤；彩虹支持可关闭的 8 秒 / 12 秒颜色循环
 - 周期名称来自接口实际返回的时长，不把“主窗口 / 次窗口”写死成 5 小时 / 7 天
 - 从刘海顶边连续展开与收起；悬停停留判定、离开缓冲和可中断的弹簧动效，支持“减少动态效果”
 - 展开面板、菜单栏菜单与设置中均有明确的“退出”；应用激活时可用 `⌘Q`
-- 石墨色面板、系统字体与低饱和薄荷色；兼顾降低透明度、提高对比度和读屏文字
+- 石墨色面板、系统字体与可选皮肤；兼顾降低透明度、提高对比度和读屏文字
+- “登录时启动”由用户自选，显示 macOS 实际状态和待批准提示
 - 不默认添加开机启动，不监听全局键盘，不请求辅助功能或屏幕录制权限
 
 ## 快速开始
@@ -83,7 +87,13 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过合成测
 
 子进程继承原有运行环境，包括 `CODEX_HOME`；本应用不会修改 Codex 配置。若你的环境变量只在终端中生效，请从相同终端启动应用的可执行文件。
 
-### 3. 保持轻量
+### 3. 自选启动与外观
+
+安装到“应用程序”后，可在“设置 → 启动”打开“登录时启动”；如需系统批准，按界面提示处理。此选项默认不启用，临时签名可能导致 macOS 拒绝注册，真实重启后的自动启动尚未验证。
+
+在“设置 → 显示”选择皮肤、皮肤动效和刘海主额度。默认薄荷静态；彩虹颜色只在剩余额度范围内流动，减少动态效果或无可见内容时暂停。
+
+### 4. 保持轻量
 
 展开岛和菜单栏详情底部均有明确的“退出”；右键菜单栏也可退出。设置获得焦点时支持 ⌘Q，不会截获其他应用的快捷键。设置中可以隐藏刘海进度线，保留菜单栏。正常退出会等待本应用启动的账户读取子进程完成清理。
 

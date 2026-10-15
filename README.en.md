@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
   <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip">Download macOS Universal ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.2">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg">Download macOS Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.3">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,30 +12,33 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v0.1.2 visual repair preview is available.** Idle mode is a thin transparent contour about 3pt outside the notch. Hover still opens the full details card; leaving restores the contour. Native 1x/2x offscreen pixel checks passed; physical MacBook appearance still awaits user feedback.
-
-**v0.1.3 candidate is under validation:** a drag-to-Applications DMG, opt-in Launch at Login, and five skins including flowing Rainbow color. See [installation and settings](docs/INSTALLATION.md) for signing and verification limits.
+**v0.1.3 installation and skins preview is available.** A drag-to-Applications DMG, opt-in Launch at Login, and five skins including flowing Rainbow color. One full-U contour fills from the left; the consumed right suffix is pure black. Idle mode stays about 3pt outside the notch; hover opens the full details card. See [installation and settings](docs/INSTALLATION.md).
 
 ## Download
 
-1. Download the [v0.1.2 Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip) (816,024 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.2/CodexNotchMeter-0.1.2-universal.zip.sha256)
-2. Extract **Codex Notch Meter.app** and move it to Applications
-3. Launch it and open the menu-bar item
+1. Download the [v0.1.3 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg) (983,322 bytes) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.dmg.sha256)
+2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
+3. Launch the installed copy from Applications, then eject the DMG
+
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip) (972,989 bytes) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.3/CodexNotchMeter-0.1.3-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
-Universal packages contain Apple Silicon and Intel binaries. This release passed synthetic tests, both architecture builds, packaging, Info.plist and ad-hoc signature verification, three native island regression scenarios, 1x/2x contour pixel and live-update checks, and read-only discovery against the official signed desktop distribution. Each release provides a separate SHA-256 checksum file. Exact tested revisions and verification limits are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. This release passed 82 synthetic tests, dual-architecture packaging and signature checks, four native window/animation scenarios, all five skins at calibrated 1x/2x with live switches, read-only official desktop helper discovery, and mounted-DMG integrity/cleanup checks. DMG and ZIP each have a separate SHA-256 checksum file. Exact tested revisions and limits are recorded in [validation status](docs/VALIDATION.md).
 
 **Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
 ## Features
 
-- Remaining quota shown as `100 − usedPercent`
+- Remaining quota shown as `100 − usedPercent`: one left-anchored full-U prefix, with a pure-black consumed right suffix
+- Select the notch quota window, defaulting to the shortest known duration; all windows remain in the expanded card
+- Mint, Rainbow, Aurora, Sunset and Ice skins; Rainbow has optional 8s/12s color motion and a shared maximum-15fps clock
 - Window labels derived from actual returned duration, with multiple quota groups
 - Real `NSScreen` notch geometry, global coordinates, display changes and a menu-bar fallback
 - Continuous top-attached expansion with hover dwell, exit grace, reversible motion and Reduce Motion support
 - Visible Quit in the expanded island, menu bar and Settings; local `⌘Q` when the app is active
-- Restrained graphite cards, system typography, mint signals, accessible state text and reduced-transparency support
+- Restrained graphite cards, system typography, selectable skins, accessible state text and reduced-transparency support
+- Opt-in Launch at Login with actual macOS status and approval-required guidance
 - Launch/wake/manual refresh, 60-second polling, hover debounce and error backoff
 - Explicit unknown, last-known, stale and reset-pending states; reset time alone never refills the bar
 - No Dock icon, automatic login item, global key hooks, Accessibility or Screen Recording permissions
@@ -49,6 +52,12 @@ Discovery first checks LaunchServices and standard application directories for t
 The child inherits the runtime environment, including existing `CODEX_HOME`. The meter does not mutate Codex configuration. For terminal-only environment variables, launch the app executable from that terminal. Sign in through Codex itself, then refresh.
 
 The current native interface is primarily Simplified Chinese. Right-click the menu-bar item for Refresh, Settings and Quit. Ordinary Quit waits for owned account-reading subprocesses to be cleaned up.
+
+## Startup and appearance
+
+After copying the app into Applications, open Settings to request Launch at Login. macOS may require approval or reject the ad-hoc signature; actual login/reboot behavior remains unverified. No enrollment happens automatically.
+
+Display settings select the skin, motion, speed and primary quota. Mint is static by default. Rainbow changes color inside the true remaining arc and pauses for Reduce Motion, sleep, low power or hidden/disabled surfaces.
 
 ## Quota states
 
