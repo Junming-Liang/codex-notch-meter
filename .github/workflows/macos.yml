@@ -79,6 +79,9 @@ jobs:
       - name: Native close endpoint and tail-pixel gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-collapse.py
+      - name: Native compact refresh and promotion gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-updates.py
       - name: Native display compatibility and lifecycle gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-displays.py
@@ -145,6 +148,7 @@ jobs:
           ## Codex Notch Meter v0.1.6
           MacBook 显示兼容性迭代预览：按实际内建显示能力与系统原始安全区域定位，不按机型硬编码刘海坐标。屏幕布局不变时保留当前面板与动效；模式/缩放/连接变化只替换受影响的面板。睡眠、锁屏会话、隐藏或关闭显示时停止轮廓定时器，恢复时重新读取布局。
           无刘海、外接屏、合盖、镜像或缺失/无效安全区域使用菜单栏。保留默认零偏移逐屏校准、五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、v0.1.5 连续悬停动效、DMG 和可选登录时启动。
+          自动圆弧轮廓统一进度线与黑色主体；详情按内容收紧，刷新时短暂包裹展开，只有可比读数才显示减少的百分点。初次、未知、重置和失败不会伪装成消耗。
           官方机型/面板资料用于覆盖矩阵，运行时不收集型号或使用白名单。需要 macOS 13+，旧机型必须能运行 Apple 支持的相应系统；不声称逐台真机验证或支持所有历史 MacBook。
 
           优先下载 Universal DMG，将 .app 拖到 Applications，再从“应用程序”打开；ZIP 仍可选。两种产物均包含 Apple Silicon / Intel 二进制。
@@ -159,6 +163,7 @@ jobs:
           Raw-edge native pixel-axis and mirrored-corner checks passed for off-center, odd/even/fractional inputs, signed calibration and reset; the recreated old edge-rounding control was rejected. Forced 1x/2x captures are not physical Retina placement tests.
           Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The baseline reproduces the old drawing/layout strategy with the new spring, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
           The production display planner/reconciler passed injected native lifecycle checks: identical snapshots preserve controllers, changed geometry/identity retires only affected panels, fresh bounded retries recover from incomplete topology, and suspension/termination rejects stale callbacks. Family-shaped pure geometry profiles and actual own-view pixel/layout checks are synthetic coverage, not physical model, clamshell, mirroring or Spaces tests.
+          Compact refresh-state native tests passed for intermediate targets, two-second holds, live hover promotion, retired expiry, Reduce Motion and content-fit Quit layout. Automatic circular geometry remains a documented approximation, not measured per-model hardware truth.
           Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
