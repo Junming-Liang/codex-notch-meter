@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.5 developer-preview DMG and ZIP after all checks pass
+        description: Publish v0.1.6 developer-preview DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -76,6 +76,9 @@ jobs:
       - name: Native hover cadence and continuous reversal gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-motion.py
+      - name: Native display compatibility and lifecycle gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-displays.py
       - name: Build and inspect drag-to-Applications installer
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/build-dmg.py
@@ -92,10 +95,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.5-universal.zip
-            dist/CodexNotchMeter-0.1.5-universal.zip.sha256
-            dist/CodexNotchMeter-0.1.5-universal.dmg
-            dist/CodexNotchMeter-0.1.5-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.6-universal.zip
+            dist/CodexNotchMeter-0.1.6-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.6-universal.dmg
+            dist/CodexNotchMeter-0.1.6-universal.dmg.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -122,23 +125,24 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-0.1.5-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-0.1.5-universal.dmg.sha256
+          sha256sum --check CodexNotchMeter-0.1.6-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-0.1.6-universal.dmg.sha256
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.5" --jq '.[] | select(.ref == "refs/tags/v0.1.5") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.5") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.6" --jq '.[] | select(.ref == "refs/tags/v0.1.6") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.6") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.5 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.6 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.5
-          悬停动效迭代预览：macOS 14+ 按显示刷新同步几何更新，macOS 13 保留 60 Hz 定时回退；预先布局不参与尺寸计算的详情内容，减少每帧强制布局，并用连续弹簧保留反向运动速度。收起途中移回鼠标会立即恢复展开，首次悬停仍保留停留判定。
-          保留 v0.1.4 的原始边界对齐与默认零偏移校准、五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、DMG 和可选登录时启动。颜色时钟仍最多 15 fps，与短时几何动画独立。
+          ## Codex Notch Meter v0.1.6
+          MacBook 显示兼容性迭代预览：按实际内建显示能力与系统原始安全区域定位，不按机型硬编码刘海坐标。屏幕布局不变时保留当前面板与动效；模式/缩放/连接变化只替换受影响的面板。睡眠、锁屏会话、隐藏或关闭显示时停止轮廓定时器，恢复时重新读取布局。
+          无刘海、外接屏、合盖、镜像或缺失/无效安全区域使用菜单栏。保留默认零偏移逐屏校准、五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、v0.1.5 连续悬停动效、DMG 和可选登录时启动。
+          官方机型/面板资料用于覆盖矩阵，运行时不收集型号或使用白名单。需要 macOS 13+，旧机型必须能运行 Apple 支持的相应系统；不声称逐台真机验证或支持所有历史 MacBook。
 
           优先下载 Universal DMG，将 .app 拖到 Applications，再从“应用程序”打开；ZIP 仍可选。两种产物均包含 Apple Silicon / Intel 二进制。
           登录时启动默认关闭，仅由用户点击请求启用；macOS 可能要求批准或拒绝临时签名。安装映像与测试不会注册登录项。
@@ -151,19 +155,20 @@ jobs:
           All five skins passed native 1x/2x full-U contour alpha/color/arc/live-selection/phase gates. Remaining fills from the left; the consumed right suffix is pure black. A shared maximum-15fps color scheduler passed synthetic lifecycle pause/resume checks.
           Raw-edge native pixel-axis and mirrored-corner checks passed for off-center, odd/even/fractional inputs, signed calibration and reset; the recreated old edge-rounding control was rejected. Forced 1x/2x captures are not physical Retina placement tests.
           Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The baseline reproduces the old drawing/layout strategy with the new spring, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
+          The production display planner/reconciler passed injected native lifecycle checks: identical snapshots preserve controllers, changed geometry/identity retires only affected panels, fresh bounded retries recover from incomplete topology, and suspension/termination rejects stale callbacks. Family-shaped pure geometry profiles and actual own-view pixel/layout checks are synthetic coverage, not physical model, clamshell, mirroring or Spaces tests.
           Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.5" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.5 \
+            -f ref="refs/tags/v0.1.6" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.6 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.5 · macOS Developer Preview" \
+            --title "v0.1.6 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.5-universal.zip \
-            dist/CodexNotchMeter-0.1.5-universal.zip.sha256 \
-            dist/CodexNotchMeter-0.1.5-universal.dmg \
-            dist/CodexNotchMeter-0.1.5-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.6-universal.zip \
+            dist/CodexNotchMeter-0.1.6-universal.zip.sha256 \
+            dist/CodexNotchMeter-0.1.6-universal.dmg \
+            dist/CodexNotchMeter-0.1.6-universal.dmg.sha256
