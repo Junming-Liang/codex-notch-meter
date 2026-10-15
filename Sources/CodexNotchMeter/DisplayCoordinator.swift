@@ -68,7 +68,7 @@ final class DisplayCoordinator: NSObject {
         if retryIndex < 2 && lastPlan?.shouldRecheck == true { schedule(after: 0.45) }
     }
     private func reconcile() {
-        let plan = DisplayPlan.make(snapshots: snapshots(), activity: activity(), calibrations: model.horizontalCalibrations)
+        let plan = DisplayPlan.make(snapshots: snapshots(), activity: activity(), calibrations: model.horizontalCalibrations, shapes: model.shapeCalibrations, contentHeight: model.compactContentHeight)
         lastPlan = plan; refreshCount += 1; lastRefreshAt = ProcessInfo.processInfo.systemUptime
         model.configureCalibrationDisplays(plan.eligible.compactMap { target in
             target.calibrationID.map { CalibrationDisplay(id: $0, name: target.name,
@@ -77,10 +77,11 @@ final class DisplayCoordinator: NSObject {
         let desired = Dictionary(uniqueKeysWithValues: plan.targets.map { ($0.id, $0) })
         for id in Array(controllers.keys) {
             guard let controller = controllers[id] else { continue }
-            if desired[id]?.geometry != controller.geometry || desired[id]?.calibrationID != identities[id] || !controller.placementIsValid {
+            if desired[id]?.geometry.hasSameAnchor(as: controller.geometry) != true || desired[id]?.calibrationID != identities[id] || !controller.placementIsValid {
                 controller.stop(); controllers.removeValue(forKey: id); identities.removeValue(forKey: id)
             }
         }
+        for target in plan.targets { controllers[target.id]?.updateGeometry(target.geometry) }
         var placementFailed = false
         for target in plan.targets where controllers[target.id] == nil {
             let controller = makeIsland(target.geometry)

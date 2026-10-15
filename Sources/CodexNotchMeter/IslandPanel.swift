@@ -18,34 +18,47 @@ final class IslandHostingView<Content: View>: NSHostingView<Content> {
 @MainActor
 private final class IslandPresentation: ObservableObject {
     @Published var progress: Double = 0
+    @Published var geometry: IslandGeometry
+    @Published var notice: RefreshNotice?
+    @Published var showingDetails = true
+    init(geometry: IslandGeometry) { self.geometry = geometry }
 }
 
 struct IslandSilhouette: Shape {
     let progress: Double
     var drawingRect: CGRect? = nil
+    var cornerAdjustment: Double = 0
+    var referenceDepth: CGFloat = 32
     func path(in viewport: CGRect) -> Path {
-        let rect = drawingRect ?? viewport
-        let shoulder = CGFloat(progress) * 12
-        let radius = min(12 + CGFloat(progress) * 12, rect.height / 2)
-        var path = Path()
-        path.move(to: CGPoint(x: 0, y: 0))
-        path.addQuadCurve(to: CGPoint(x: shoulder, y: shoulder), control: CGPoint(x: shoulder, y: 0))
-        path.addLine(to: CGPoint(x: shoulder, y: rect.height - radius))
-        path.addQuadCurve(to: CGPoint(x: shoulder + radius, y: rect.height), control: CGPoint(x: shoulder, y: rect.height))
-        path.addLine(to: CGPoint(x: rect.width - shoulder - radius, y: rect.height))
-        path.addQuadCurve(to: CGPoint(x: rect.width - shoulder, y: rect.height - radius), control: CGPoint(x: rect.width - shoulder, y: rect.height))
-        path.addLine(to: CGPoint(x: rect.width - shoulder, y: shoulder))
-        path.addQuadCurve(to: CGPoint(x: rect.width, y: 0), control: CGPoint(x: rect.width - shoulder, y: 0))
-        path.closeSubpath()
-        return path.applying(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        contourPath(IslandContour(rect: drawingRect ?? viewport, progress: progress,
+            cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth), inset: 0, closed: true)
     }
+}
+
+func contourPath(_ contour: IslandContour, inset: CGFloat, closed: Bool) -> Path {
+    var path = Path()
+    for command in contour.commands(inset: inset) {
+        switch command {
+        case .move(let point): path.move(to: point)
+        case .line(let point): path.addLine(to: point)
+        case .arc(let center, let radius, let start, let end, let clockwise):
+            path.addArc(center: center, radius: radius, startAngle: .degrees(start), endAngle: .degrees(end), clockwise: clockwise)
+        }
+    }
+    if closed { path.closeSubpath() }
+    return path
+}
+
+private struct IslandRenderObservation: Equatable {
+    let progress: Double
+    let size: CGSize
 }
 
 @MainActor
 private struct IslandRootView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject var presentation: IslandPresentation
-    let geometry: IslandGeometry
+    var geometry: IslandGeometry { presentation.geometry }
     let motionProfile: IslandMotionProfile
     let refresh: () -> Void
     let settings: () -> Void
@@ -55,32 +68,47 @@ private struct IslandRootView: View {
     let rendered: (Double, CGSize) -> Void
     var body: some View {
         let p = presentation.progress
+        let promoting = presentation.notice != nil
+        let detailReveal = promoting ? IslandReveal.smooth((p - geometry.updateProgress) / (1 - geometry.updateProgress)) : IslandReveal.details(p)
         GeometryReader { viewport in
             Color.clear
-                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)).fill(.black.opacity(motionProfile.forcesLayout ? min(1, p * 3) : IslandReveal.surface(p))) }
+                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p), cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height).fill(.black.opacity(motionProfile.forcesLayout ? min(1, p * 3) : IslandReveal.surface(p))) }
                 .overlay(alignment: .topLeading) {
-                    RailView(model: model, drawingRect: geometry.railRect(progress: p), hovered: { _ in })
-                    .frame(width: viewport.size.width, height: geometry.collapsedSize.height)
+                    RailView(model: model, drawingRect: geometry.contourRect(progress: p), progress: p, cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height, hovered: { _ in })
+                    .frame(width: viewport.size.width, height: viewport.size.height)
                     .opacity(motionProfile.forcesLayout ? max(0, 1 - p * 4) : IslandReveal.rail(p))
                     .accessibilityHidden(p > 0.1)
                 }
                 .overlay(alignment: .topLeading) {
                     // Opacity-zero fixed-height content MUST NOT size the collapsed root.
                     if motionProfile.prewarmsDetails || p > 0 {
-                        DetailView(model: model, embedded: true, embeddedHeight: geometry.expandedSize.height - geometry.notch.height - 8, quitFrameChanged: quitFrameChanged, hovered: { _ in }, refresh: refresh, settings: settings, quit: quit)
-                            .frame(width: 340)
-                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 170,
-                                    y: geometry.notch.height + 8 + (motionProfile.forcesLayout ? 0 : (1 - IslandReveal.details(p)) * 6))
-                            .opacity(motionProfile.forcesLayout ? min(1, max(0, (p - 0.35) / 0.5)) : IslandReveal.details(p))
-                            .allowsHitTesting(p == 1)
+                        CompactDetailView(model: model, height: geometry.contentHeight, quitFrameChanged: quitFrameChanged, refresh: refresh, settings: settings, quit: quit)
+                            .frame(width: 304)
+                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 152,
+                                    y: geometry.notch.height + 8 + (motionProfile.forcesLayout ? 0 : (1 - detailReveal) * 6))
+                            .opacity(presentation.showingDetails ? (motionProfile.forcesLayout ? min(1, max(0, (p - 0.35) / 0.5)) : detailReveal) : 0)
+                            .allowsHitTesting(p == 1 && presentation.showingDetails)
                             .accessibilityHidden(p < 1)
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    if let notice = presentation.notice {
+                        RefreshNoticeView(notice: notice)
+                            .frame(width: 304, height: 62)
+                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 152,
+                                    y: geometry.notch.height + 8)
+                            .opacity(IslandReveal.smooth(p / geometry.updateProgress) * (presentation.showingDetails ? 1 - detailReveal : 1))
+                            .allowsHitTesting(false).accessibilityHidden(p == 0)
+                    }
+                }
                 .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)))
+                .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p), cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height))
                 .onAppear { viewportChanged(viewport.size); rendered(p, viewport.size) }
-                .onChange(of: p) { rendered($0, viewport.size) }
-                .onChange(of: viewport.size) { viewportChanged($0); rendered(p, $0) }
+                // A single coherent observation avoids a resize callback overwriting
+                // the new progress with the previous body's captured progress.
+                .onChange(of: IslandRenderObservation(progress: p, size: viewport.size)) { observation in
+                    viewportChanged(observation.size); rendered(observation.progress, observation.size)
+                }
             }
         .ignoresSafeArea(.all)
         // Native panel frame and this shape share one spring; no implicit size animation.
@@ -110,15 +138,20 @@ struct IslandCloseReceipt {
 
 @MainActor
 final class IslandPanelController: NSObject {
-    let geometry: IslandGeometry
+    private let model: MeterModel
+    var geometry: IslandGeometry { presentation.geometry }
     let panel: TopEdgePanel
-    private let presentation = IslandPresentation()
+    private let presentation: IslandPresentation
+    private var pendingGeometry: IslandGeometry?
     private var hover = IslandHoverState()
     private var motion = IslandMotion()
     private var pointerTimer: Timer?
     private var motionFrames: IslandFrameSource?
     private var frameGeneration = 0
     private var motionTargetExpanded = false
+    private var motionTargetValue: Double = 0
+    private var noticeExpiry: Timer?
+    private var noticeTargetActive = false
     private var lastMotionTime = CACurrentMediaTime()
     private let motionProfile: IslandMotionProfile
     private let motionSample: ((IslandMotionSample) -> Void)?
@@ -143,11 +176,12 @@ final class IslandPanelController: NSObject {
          motionProfile: IslandMotionProfile = .adaptive, drainsClosePresentation: Bool = true, motionSample: ((IslandMotionSample) -> Void)? = nil,
          activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
-        let motionDiagnostic = model.demo && (CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--collapse-test"))
+        let motionDiagnostic = model.demo && (CommandLine.arguments.contains("--motion-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")))
         self.motionProfile = motionDiagnostic ? motionProfile : .adaptive
-        self.drainsClosePresentation = model.demo && CommandLine.arguments.contains("--collapse-test") ? drainsClosePresentation : true
+        self.drainsClosePresentation = model.demo && (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) ? drainsClosePresentation : true
         self.motionSample = motionSample
-        self.geometry = geometry; self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
+        self.model = model
+        self.presentation = IslandPresentation(geometry: geometry); self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
         panel = TopEdgePanel(contentRect: geometry.frame(progress: 0), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.isReleasedWhenClosed = false
@@ -157,7 +191,7 @@ final class IslandPanelController: NSObject {
         panel.hidesOnDeactivate = false; panel.isFloatingPanel = true
         panel.animationBehavior = .none; panel.ignoresMouseEvents = true
         let hosting = IslandHostingView(rootView: IslandRootView(model: model, presentation: presentation,
-            geometry: geometry, motionProfile: self.motionProfile, refresh: refresh, settings: settings, quit: quit,
+            motionProfile: self.motionProfile, refresh: refresh, settings: settings, quit: quit,
             quitFrameChanged: { [weak self] in self?.quitFrame = $0 },
             viewportChanged: { [weak self] in self?.renderedViewport = $0 },
             rendered: { [weak self] progress, size in
@@ -177,10 +211,24 @@ final class IslandPanelController: NSObject {
             RunLoop.main.add(timer, forMode: .common); pointerTimer = timer
         }
     }
+    func updateGeometry(_ value: IslandGeometry) {
+        guard !stopped, geometry.hasSameAnchor(as: value) else { return }
+        // Freeze the content-fit endpoint through an open interaction. New data remains
+        // scrollable now; its smaller/larger endpoint is adopted only at the next idle.
+        pendingGeometry = value
+        if motion.progress == 0 && !motionTargetExpanded && !closeDrain.isPending { apply(progress: 0) }
+    }
     private func apply(progress: Double) {
         guard !stopped else { return }
+        if progress == 0, let pendingGeometry {
+            presentation.geometry = pendingGeometry; self.pendingGeometry = nil
+        }
         let hadDetails = displaysColoredDetails
-        presentation.progress = progress
+        if (progress == 0 && !noticeTargetActive) || (progress == 1 && hover.isExpanded) {
+            if presentation.notice != nil { presentation.notice = nil }
+            if !presentation.showingDetails { presentation.showingDetails = true }
+        }
+        if presentation.progress != progress { presentation.progress = progress }
         if hadDetails != displaysColoredDetails { activityChanged() }
         let expected = geometry.frame(progress: progress)
         if panel.frame != expected { panel.setFrame(expected, display: motionProfile.forcesLayout) }
@@ -191,7 +239,7 @@ final class IslandPanelController: NSObject {
         }
     }
     func setContourTestProgress(_ progress: Double) {
-        guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--collapse-test") else { return }
+        guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) else { return }
         apply(progress: progress)
     }
     @objc private func pollPointer(_ timer: Timer) {
@@ -202,9 +250,10 @@ final class IslandPanelController: NSObject {
         guard !stopped else { return }
         let before = hover.isExpanded
         hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
-            resumeExpanded: (motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded)
+            resumeExpanded: (presentation.notice != nil && motion.progress > 0) || ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         if hover.isExpanded != before {
-            if hover.isExpanded { hovered() }
+            if hover.isExpanded { hovered(); noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false; presentation.showingDetails = true }
+            else { noticeTargetActive = false }
             startMotion()
         }
         updateClickRouting(point)
@@ -221,11 +270,12 @@ final class IslandPanelController: NSObject {
         // Consume elapsed time under the previous target before a reversal. A display
         // link may already have projected up to its next frame, so never rewind time.
         if motionFrames != nil, now > lastMotionTime {
-            motion.advance(expanded: motionTargetExpanded, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
+            motion.advance(target: motionTargetValue, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
             lastMotionTime = now
         }
         let integrated = motion
-        motionTargetExpanded = hover.isExpanded
+        motionTargetValue = hover.isExpanded ? 1 : (noticeTargetActive ? geometry.updateProgress : 0)
+        motionTargetExpanded = motionTargetValue > 0
         if motionSample != nil {
             lastRetarget = IslandMotionRetarget(scheduledTime: previousTime, eventTime: now,
                 consumedElapsed: elapsed, before: previousMotion, integrated: integrated,
@@ -233,8 +283,8 @@ final class IslandPanelController: NSObject {
         }
         if reducedMotion {
             stopMotionFrames()
-            motion.advance(expanded: motionTargetExpanded, elapsed: 0, reduceMotion: true)
-            apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation)
+            motion.advance(target: motionTargetValue, elapsed: 0, reduceMotion: true)
+            apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation); scheduleNoticeExpiryIfReady()
             return
         }
         guard motionFrames == nil else { return }
@@ -255,7 +305,7 @@ final class IslandPanelController: NSObject {
         let now = CACurrentMediaTime(), elapsed = max(0, time - lastMotionTime)
         lastMotionTime = max(lastMotionTime, time)
         let previousProgress = motion.progress
-        motion.advance(expanded: motionTargetExpanded, elapsed: elapsed, reduceMotion: reducedMotion)
+        motion.advance(target: motionTargetValue, elapsed: elapsed, reduceMotion: reducedMotion)
         let began = CACurrentMediaTime()
         var startedCloseDrain = false
         if drainsClosePresentation, let generation = closeDrain.begin(previousProgress: previousProgress,
@@ -275,7 +325,8 @@ final class IslandPanelController: NSObject {
             viewport: renderedViewport, visible: panel.isVisible, nonKey: !panel.isKeyWindow && !panel.canBecomeKey,
             source: source.kind))
         // A callback may retarget through a diagnostic observer; never retire its new motion.
-        guard !stopped, motion.isSettled, motion.progress == (motionTargetExpanded ? 1 : 0) else { return }
+        guard !stopped, motion.isSettled(at: motionTargetValue) else { return }
+        scheduleNoticeExpiryIfReady()
         if startedCloseDrain { return } // Never acknowledge within the requesting callback.
         if closeDrain.isPending { observeClosePresentation(at: CACurrentMediaTime()) }
         else { stopMotionFrames() }
@@ -314,13 +365,42 @@ final class IslandPanelController: NSObject {
         frameGeneration += 1
         motionFrames?.stop(); motionFrames = nil
     }
+    var isInteracting: Bool { hover.isExpanded }
+    @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
+        guard !stopped, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
+        noticeExpiry?.invalidate(); noticeExpiry = nil
+        presentation.notice = notice; presentation.showingDetails = false; noticeTargetActive = true
+        startMotion(); panel.ignoresMouseEvents = true
+        return true
+    }
+    func dismissRefreshNotice() {
+        guard presentation.notice != nil else { return }
+        noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false
+        if !hover.isExpanded { startMotion() }
+    }
+    private func scheduleNoticeExpiryIfReady() {
+        guard noticeTargetActive, presentation.notice != nil, !hover.isExpanded, noticeExpiry == nil,
+              motion.isSettled(at: geometry.updateProgress) else { return }
+        let timer = Timer(timeInterval: presentation.notice?.holdDuration ?? 2, target: self, selector: #selector(expireNotice(_:)), userInfo: nil, repeats: false)
+        noticeExpiry = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+    @objc private func expireNotice(_ sender: Timer) {
+        guard !stopped, sender === noticeExpiry else { return }
+        noticeExpiry = nil
+        guard !hover.isExpanded else { return }
+        // Retain the text during the closing fade; a separate flag chooses the idle target.
+        noticeTargetActive = false
+        startMotion()
+    }
     func collapse() {
         guard !stopped else { return }
+        noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false
         hover.reset(); panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
         guard !stopped else { return }
         stopped = true
+        noticeExpiry?.invalidate(); noticeExpiry = nil
         pointerTimer?.invalidate(); pointerTimer = nil
         stopMotionFrames()
         panel.ignoresMouseEvents = true; panel.close()
@@ -333,7 +413,7 @@ final class IslandPanelController: NSObject {
     }
     /// The explicit synthetic harness invokes a real retired source and stopped actions.
     func verifyRetiredMotionIsInert() -> Bool {
-        guard CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--collapse-test") else { return false }
+        guard CommandLine.arguments.contains("--motion-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) else { return false }
         let source = motionFrames
         let sourceSafe = source?.verifyRetiredCallbackIsInert() ?? false
         let before = (motion.progress, motion.velocity, panel.frame)
@@ -379,7 +459,7 @@ final class IslandPanelController: NSObject {
     }
     var closePresentationPending: Bool { closeDrain.isPending }
     func verifyRetiredCloseIsInert() -> Bool {
-        guard CommandLine.arguments.contains("--collapse-test"), closeDrain.isPending,
+        guard (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")), closeDrain.isPending,
               let deadline = closeDeadline, let source = motionFrames else { return false }
         let before = (motion.progress, motion.velocity, panel.frame)
         stop(); closeDeadlineReached(deadline)
@@ -389,6 +469,17 @@ final class IslandPanelController: NSObject {
             && panel.frame == before.2 && motion.progress == before.0 && motion.velocity == before.1
     }
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
+    var smokeNoticeVisible: Bool { presentation.notice != nil }
+    var smokeNoticeID: UUID? { presentation.notice?.id }
+    func verifyRetiredNoticeIsInert() -> Bool {
+        guard CommandLine.arguments.contains("--update-test"), let timer = noticeExpiry else { return false }
+        let before = (motion.progress, motion.velocity, panel.frame, presentation.notice?.id)
+        stop(); expireNotice(timer)
+        return smokeStopped && noticeExpiry == nil && motion.progress == before.0
+            && motion.velocity == before.1 && panel.frame == before.2 && presentation.notice?.id == before.3
+    }
+    var smokeNoticeTargetActive: Bool { noticeTargetActive }
+    var smokeTargetProgress: Double { motionTargetValue }
     var smokeProgress: Double { motion.progress }
     var smokeVelocity: Double { motion.velocity }
     var smokeRetarget: IslandMotionRetarget? { lastRetarget }
@@ -440,9 +531,9 @@ final class IslandPanelController: NSObject {
     func verifyExpandedLayout(includePixels: Bool) -> Bool {
         let contentHeight = geometry.expandedSize.height - geometry.notch.height - 8
         let quitVisible = quitFrame.width > 0 && quitFrame.height >= 20
-            && CGRect(x: 0, y: 0, width: 340, height: contentHeight).contains(quitFrame)
+            && CGRect(x: 0, y: 0, width: 304, height: contentHeight).contains(quitFrame)
         let frame = geometry.frame(progress: 1)
-        let originX = frame.minX + geometry.contourRect(progress: 1).midX - 170
+        let originX = frame.minX + geometry.contourRect(progress: 1).midX - 152
         let contentTop = frame.maxY - geometry.notch.height - 8
         let clickPoints = [
             CGPoint(x: originX + quitFrame.minX + 3, y: contentTop - quitFrame.minY - 3),

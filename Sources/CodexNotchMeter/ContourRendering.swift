@@ -177,18 +177,26 @@ private struct LegacyLayoutFixture: View {
 @MainActor
 private enum ContourPixelGate {
     /// Independent polyline sampling of the design contract, not the production SwiftUI Path.
-    static func arcPoint(_ fraction: Double, size: CGSize) -> CGPoint {
-        var points = [CGPoint(x: 2, y: 0), CGPoint(x: 2, y: size.height - 12)]
-        for step in 1...100 {
-            let t = CGFloat(step) / 100
-            points.append(CGPoint(x: 2 + 10 * t * t, y: size.height - 12 + 20 * t - 10 * t * t))
+    static func arcPoint(_ fraction: Double, hardware: CGRect) -> CGPoint {
+        // Independent circle sampling, from raw input plus the public design policy.
+        let factor = min(2, max(0.5, hardware.height / 32))
+        let upper = min(0.5, max(0, 4 * factor - 3)) + 2
+        let lower = min(8 * factor + 3, (hardware.height + 3) / 2) - 2
+        let left = hardware.minX - 1, right = hardware.maxX + 1, bottom = hardware.maxY + 1
+        var points: [CGPoint] = []
+        func arc(_ center: CGPoint, _ radius: CGFloat, _ start: Double, _ end: Double) {
+            for step in 0...100 {
+                let angle = (start + (end - start) * Double(step) / 100) * .pi / 180
+                points.append(CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle)))
+            }
         }
-        points.append(CGPoint(x: size.width - 12, y: size.height - 2))
-        for step in 1...100 {
-            let t = CGFloat(step) / 100
-            points.append(CGPoint(x: size.width - 12 + 20 * t - 10 * t * t, y: size.height - 2 - 10 * t * t))
-        }
-        points.append(CGPoint(x: size.width - 2, y: 0))
+        arc(CGPoint(x: left - upper, y: upper), upper, -90, 0)
+        points.append(CGPoint(x: left, y: bottom - lower))
+        arc(CGPoint(x: left + lower, y: bottom - lower), lower, 180, 90)
+        points.append(CGPoint(x: right - lower, y: bottom))
+        arc(CGPoint(x: right - lower, y: bottom - lower), lower, 90, 0)
+        points.append(CGPoint(x: right, y: upper))
+        arc(CGPoint(x: right + upper, y: upper), upper, 180, 270)
         let lengths = zip(points, points.dropFirst()).map { pair in hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y) }
         var distance = CGFloat(fraction) * lengths.reduce(0, +)
         for (index, length) in lengths.enumerated() {
@@ -213,12 +221,14 @@ private enum ContourPixelGate {
         }
         let interior = transform(bitmap.pixel(x: bitmap.representation.pixelsWide / 2, y: 8 * bitmap.scale)).a < 0.05
         var nonblackExterior = 0
+        var escapedPaint = 0
         var colors = [0.0, 0.0], track = [0.0, 0.0], light = [0.0, 0.0], lightCount = [0.0, 0.0]
         for y in 0..<bitmap.representation.pixelsHigh {
             for x in 0..<bitmap.representation.pixelsWide {
-                let px = CGFloat(x) / CGFloat(bitmap.scale), py = CGFloat(y) / CGFloat(bitmap.scale)
+                let px = (CGFloat(x) + 0.5) / CGFloat(bitmap.scale), py = (CGFloat(y) + 0.5) / CGFloat(bitmap.scale)
                 guard !hardware.contains(CGPoint(x: px, y: py)) else { continue }
                 let pixel = transform(bitmap.pixel(x: x, y: y)); let side = px < size.width / 2 ? 0 : 1
+                if pixel.a > 0.05 && (px < hardware.minX - 4 || px > hardware.maxX + 4 || py > hardware.maxY + 4) { escapedPaint += 1 }
                 if pixel.chromatic { colors[side] += 1 }
                 if pixel.a > 0.01 && max(pixel.r, max(pixel.g, pixel.b)) > 0.01 { nonblackExterior += 1 }
                 // Identical spatial population, including black and transparent pixels.
@@ -227,13 +237,14 @@ private enum ContourPixelGate {
             }
         }
         var hues = Set<Int>(), signature: [Double] = [], failures: [String] = []
+        if escapedPaint != 0 { failures.append("paint-exceeds-four-point-envelope-\(escapedPaint)") }
         if !transparent { failures.append("opaque-corner") }; if !interior { failures.append("opaque-interior") }
         let fraction = (percent ?? 0) / 100
         // Dense full-U probes prove a left prefix, right consumed suffix and continuous center.
         let probes = stride(from: 0.025, through: 0.975, by: 0.025).map { $0 }
             + [fraction - 0.035, fraction + 0.035].filter { $0 > 0 && $0 < 1 }
         for location in probes where abs(location - fraction) > 0.02 {
-            let point = arcPoint(reversed ? 1 - location : location, size: size)
+            let point = arcPoint(reversed ? 1 - location : location, hardware: hardware)
             var pixels = bitmap.near(point, transform: transform)
             if eraseCenter && abs(location - 0.5) < 0.03 { pixels = [ContourPixel(r: 0, g: 0, b: 0, a: 0)] }
             if graySuffix && location > fraction { pixels = [ContourPixel(r: 0.3, g: 0.3, b: 0.3, a: 1)] }
@@ -251,7 +262,7 @@ private enum ContourPixelGate {
             for pixel in pixels { if let hue = pixel.hueBin { hues.insert(hue) } }
         }
         for location in [0.2, 0.4, 0.6] {
-            let pixels = bitmap.near(arcPoint(location, size: size), transform: transform)
+            let pixels = bitmap.near(arcPoint(location, hardware: hardware), transform: transform)
             let core = pixels.max { $0.light * $0.a < $1.light * $1.a } ?? ContourPixel(r: 0, g: 0, b: 0, a: 0)
             signature += [core.r * core.a, core.g * core.a, core.b * core.a]
         }
@@ -367,7 +378,7 @@ final class ContourRenderHarness: NSObject {
         let hardware = CGRect(x: notch.minX - frame.minX, y: frame.maxY - notch.maxY,
                               width: notch.width, height: notch.height)
         let extensions = [notch.minX - frame.minX, frame.maxX - notch.maxX, notch.minY - frame.minY]
-        let envelopeValid = scene.expanded || (extensions.allSatisfy { $0 >= 3 && $0 <= 4 }
+        let envelopeValid = scene.expanded || (extensions.allSatisfy { $0 >= 3 && $0 <= 4.5 }
             && abs(frame.maxY - island.geometry.screen.maxY) < 0.01)
         passed = passed && envelopeValid
         SmokeDiagnostics.mark("contour hardware scene=\(scene.name) panel=\(frame) localMask=\(hardware) extensions=\(extensions) envelope=\(envelopeValid)")
@@ -475,6 +486,7 @@ final class AlignmentRenderHarness: NSObject {
         let offCenter: CGFloat
         let adjustment: Double
         var roundedControl = false
+        var shape = ContourCalibration()
     }
     private let model: MeterModel
     private let screen: NSScreen
@@ -500,6 +512,14 @@ final class AlignmentRenderHarness: NSObject {
             for adjustment in [0.0, -0.5, 0.5, -8, 8] {
                 fixtures.append(Fixture(name: name, width: width, offCenter: offCenter, adjustment: adjustment))
             }
+        }
+        for (name, shape) in [
+            ("width-negative", ContourCalibration(width: -16)), ("width-positive", ContourCalibration(width: 16)),
+            ("depth-negative", ContourCalibration(depth: -6)), ("depth-positive", ContourCalibration(depth: 6)),
+            ("corner-negative", ContourCalibration(corner: -6)), ("corner-positive", ContourCalibration(corner: 6)),
+            ("combined-minimum", ContourCalibration(width: -16, depth: -6, corner: -6)),
+            ("combined-maximum", ContourCalibration(width: 16, depth: 6, corner: 6))] {
+            fixtures.append(Fixture(name: name, width: 220.5, offCenter: 0.125, adjustment: 0.5, shape: shape))
         }
         fixtures.append(Fixture(name: "reset-after-adjustment", width: 220, offCenter: 0.25, adjustment: 0))
         fixtures.append(Fixture(name: "old-rounded-edges-control", width: 220, offCenter: 0.25, adjustment: 0, roundedControl: true))
@@ -530,6 +550,7 @@ final class AlignmentRenderHarness: NSObject {
                 SmokeDiagnostics.mark("alignment fractional canvas captureScale=\(scale) points=\(fractional.bounds.size) CTM=\(fractional.drawingScale) pixels=\(padded.representation.pixelsWide)x\(padded.representation.pixelsHigh) valid=\(paddedValid)")
             } else { passed = false }
         }
+        let shapeStoredBefore = UserDefaults.standard.dictionary(forKey: "shapeCalibrations") ?? [:]
         let storedBefore = UserDefaults.standard.dictionary(forKey: "horizontalCalibrations") ?? [:]
         model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-a", name: "Demo A"), CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
         model.selectedCalibrationDisplayID = "synthetic-a"; model.setHorizontalAdjustment(2.5)
@@ -552,6 +573,22 @@ final class AlignmentRenderHarness: NSObject {
         let stable = reordered && disconnected && model.selectedHorizontalAdjustment == 0
         let storedAfter = UserDefaults.standard.dictionary(forKey: "horizontalCalibrations") ?? [:]
         let noPersistence = NSDictionary(dictionary: storedBefore).isEqual(to: storedAfter)
+        model.setShapeCalibration(ContourCalibration(width: 16, depth: -6, corner: 6))
+        model.selectedCalibrationDisplayID = "synthetic-b"
+        let shapeIsolated = model.selectedShapeCalibration.isZero
+        model.setShapeCalibration(ContourCalibration(width: -16, depth: 6, corner: -6))
+        model.selectedCalibrationDisplayID = "synthetic-a"
+        let shapeRetained = model.selectedShapeCalibration == ContourCalibration(width: 16, depth: -6, corner: 6)
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-b", name: "Demo B"), CalibrationDisplay(id: "synthetic-a", name: "Demo A", minimum: 0, maximum: 0)])
+        model.selectedCalibrationDisplayID = "synthetic-a"
+        model.resetCalibration()
+        let shapeReset = !model.hasStoredCalibration && model.selectedShapeCalibration.isZero
+            && model.shapeCalibration(for: "synthetic-b") == ContourCalibration(width: -16, depth: 6, corner: -6)
+        let shapeNoPersistence = NSDictionary(dictionary: shapeStoredBefore).isEqual(to: UserDefaults.standard.dictionary(forKey: "shapeCalibrations") ?? [:])
+        passed = passed && shapeIsolated && shapeRetained && shapeReset && shapeNoPersistence
+        model.configureCalibrationDisplays([CalibrationDisplay(id: "synthetic-a", name: "Demo A"), CalibrationDisplay(id: "synthetic-b", name: "Demo B")])
+        SmokeDiagnostics.mark("shape preferences isolated=\(shapeIsolated) retained=\(shapeRetained) resetAll=\(shapeReset) noPersistence=\(shapeNoPersistence)")
         passed = passed && isolated && bounded && retained && clampedStored && reset && stable && noPersistence
         SmokeDiagnostics.mark("alignment synthetic preferences independent=\(isolated) bounded=\(bounded) retained=\(retained) clampedStored=\(clampedStored) reset=\(reset) reordered=\(stable) persistenceDisabled=\(model.demo) storedPreferencesUnchanged=\(noPersistence)")
         setFixture()
@@ -574,7 +611,7 @@ final class AlignmentRenderHarness: NSObject {
         }
         model.setHorizontalAdjustment(fixture.adjustment)
         let geometry = IslandGeometry(notch: notch, screen: frame, backingScale: scale,
-            horizontalAdjustment: model.selectedHorizontalAdjustment)
+            horizontalAdjustment: model.selectedHorizontalAdjustment, shapeCalibration: fixture.shape)
         let controller = IslandPanelController(model: model, geometry: geometry, startPolling: false, reducedMotionOverride: true,
             hovered: {}, refresh: {}, settings: {}, quit: {})
         island = controller
@@ -585,7 +622,7 @@ final class AlignmentRenderHarness: NSObject {
         var total: Double = 0, moment: Double = 0
         for y in 0..<bitmap.representation.pixelsHigh {
             let py = (CGFloat(y) + 0.5) / CGFloat(bitmap.scale)
-            guard py >= 7 && py <= 17 else { continue }
+            guard py >= 3 && py <= 8 else { continue }
             for x in 0..<bitmap.representation.pixelsWide {
                 let px = (CGFloat(x) + 0.5) / CGFloat(bitmap.scale)
                 guard abs(px - expected) <= 3 else { continue }
@@ -621,7 +658,7 @@ final class AlignmentRenderHarness: NSObject {
             stage = .recollapsed
             return // A separate run-loop dwell lets the actual detail subtree leave before recapture.
         }
-        let expectedLeft = rawEdges.0 + fixture.adjustment - 1, expectedRight = rawEdges.1 + fixture.adjustment + 1
+        let expectedLeft = rawEdges.0 + fixture.adjustment - fixture.shape.width / 2 - 1, expectedRight = rawEdges.1 + fixture.adjustment + fixture.shape.width / 2 + 1
         let expectedCenter = (expectedLeft + expectedRight) / 2
         let localLeft = expectedLeft - frame.minX, localRight = expectedRight - frame.minX
         let nativeValid = abs(frame.maxY - screen.frame.maxY) < 0.01 && island.placementIsValid
@@ -641,10 +678,11 @@ final class AlignmentRenderHarness: NSObject {
             let aligned = abs(left - expectedLeft) <= tolerance && abs(right - expectedRight) <= tolerance
                 && abs(center - expectedCenter) <= tolerance
             // Independent oracle: the fixture supplies raw edges and a32pt inset, not production geometry.
-            let rawRect = CGRect(x: rawEdges.0 + fixture.adjustment - 3 - frame.minX, y: 0,
-                width: rawEdges.1 - rawEdges.0 + 6, height: 35)
-            let leftCorner = CGRect(x: rawRect.minX, y: rawRect.maxY - 12, width: 12, height: 12)
-            let rightCorner = CGRect(x: rawRect.maxX - 12, y: rawRect.maxY - 12, width: 12, height: 12)
+            let rawRect = CGRect(x: rawEdges.0 + fixture.adjustment - fixture.shape.width / 2 - 3 - frame.minX, y: 0,
+                width: rawEdges.1 - rawEdges.0 + fixture.shape.width + 6, height: 35 + fixture.shape.depth)
+            let radius = min(11 + fixture.shape.corner, rawRect.height / 2)
+            let leftCorner = CGRect(x: rawRect.minX, y: rawRect.maxY - radius, width: radius, height: radius)
+            let rightCorner = CGRect(x: rawRect.maxX - radius, y: rawRect.maxY - radius, width: radius, height: radius)
             let le = cornerEnergy(bitmap, in: leftCorner), re = cornerEnergy(bitmap, in: rightCorner)
             let symmetric: (Double, Double) -> Bool = { left, right in
                 min(left, right) > 0.5 && abs(left - right) <= max(left, right) * 0.08 + 0.02
@@ -653,11 +691,34 @@ final class AlignmentRenderHarness: NSObject {
             let erasedLeft = cornerEnergy(bitmap, in: leftCorner, erasing: leftCorner)
             let retainedRight = cornerEnergy(bitmap, in: rightCorner, erasing: leftCorner)
             let erasedCornerRejected = !symmetric(erasedLeft, retainedRight)
-            let valid = fixture.roundedControl ? !aligned : aligned && mirrored && erasedCornerRejected
+            // Independent circular point oracle from requested dimensions, not production path commands.
+            var curvesVisible = true
+            for t in [0.2, 0.4, 0.6, 0.8] {
+                let angle = (180 - 90 * t) * Double.pi / 180
+                let dx = radius + (radius - 2) * cos(angle)
+                let py = rawRect.maxY - radius + (radius - 2) * sin(angle)
+                for px in [rawRect.minX + dx, rawRect.maxX - dx] {
+                    curvesVisible = bitmap.near(CGPoint(x: px, y: py)).contains(where: { $0.chromatic && $0.g > $0.r }) && curvesVisible
+                }
+            }
+            let bottom = rawRect.maxY - 2
+            let bottomVisible = bitmap.near(CGPoint(x: rawRect.midX, y: bottom)).contains(where: { $0.chromatic })
+            let interiorClear = bitmap.near(CGPoint(x: rawRect.midX, y: rawRect.midY)).allSatisfy { $0.a < 0.05 }
+            // Raw-input envelope includes the upper circular flare and the full keyline/AA.
+            let allowed = CGRect(x: rawRect.minX - 1, y: 0, width: rawRect.width + 2, height: rawRect.height + 1)
+            var escaped = 0
+            for y in 0..<bitmap.representation.pixelsHigh { for x in 0..<bitmap.representation.pixelsWide {
+                let point = CGPoint(x: (CGFloat(x) + 0.5) / CGFloat(scale), y: (CGFloat(y) + 0.5) / CGFloat(scale))
+                if !allowed.contains(point), bitmap.pixel(x: x, y: y).a > 0.05 { escaped += 1 }
+            }}
+            let topCurves = [rawRect.minX + 0.75, rawRect.maxX - 0.75].allSatisfy { x in
+                bitmap.near(CGPoint(x: x, y: 0.75)).contains { $0.chromatic }
+            }
+            let valid = fixture.roundedControl ? !aligned : aligned && mirrored && erasedCornerRejected && curvesVisible && bottomVisible && interiorClear && topCurves && escaped == 0
             passed = passed && valid; captures += 1
-            SmokeDiagnostics.mark("alignment pixels fixture=\(fixture.name) stage=\(stage) captureScale=\(scale) canvas=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) nativePoints=\(view.bounds.size) expectedAxes=[\(expectedLeft),\(expectedRight)] measuredAxes=[\(left),\(right)] centerErrorPoints=\(center - expectedCenter) cornerEnergy=[\(le),\(re)] mirrored=\(mirrored) erasedCornerRejected=\(erasedCornerRejected) oldRoundingRejected=\(fixture.roundedControl && !aligned) valid=\(valid)")
+            SmokeDiagnostics.mark("alignment pixels fixture=\(fixture.name) stage=\(stage) captureScale=\(scale) canvas=\(bitmap.representation.pixelsWide)x\(bitmap.representation.pixelsHigh) nativePoints=\(view.bounds.size) expectedAxes=[\(expectedLeft),\(expectedRight)] measuredAxes=[\(left),\(right)] centerErrorPoints=\(center - expectedCenter) cornerEnergy=[\(le),\(re)] mirrored=\(mirrored) erasedCornerRejected=\(erasedCornerRejected) oldRoundingRejected=\(fixture.roundedControl && !aligned) shape=\(fixture.shape) curves=\(curvesVisible) topCurves=\(topCurves) escapedPaint=\(escaped) bottom=\(bottomVisible) transparentInterior=\(interiorClear) valid=\(valid)")
         }
-        if stage == .collapsed && !fixture.roundedControl && [0.0, -8, 8].contains(fixture.adjustment) {
+        if stage == .collapsed && !fixture.roundedControl && ([0.0, -8, 8].contains(fixture.adjustment) || !fixture.shape.isZero) {
             island.beginSmokeExpansion()
             stage = .expanded
             return // Real expanded layout and measured Quit bounds are inspected after a bounded dwell.
@@ -665,7 +726,7 @@ final class AlignmentRenderHarness: NSObject {
         index += 1
         if index < fixtures.count { setFixture() }
         else {
-            let expectedExpansions = fixtures.filter { !$0.roundedControl && [0.0, -8, 8].contains($0.adjustment) }.count
+            let expectedExpansions = fixtures.filter { !$0.roundedControl && ([0.0, -8, 8].contains($0.adjustment) || !$0.shape.isZero) }.count
             finish(passed && expandedChecks == expectedExpansions && captures == (fixtures.count + expectedExpansions) * 2)
         }
     }

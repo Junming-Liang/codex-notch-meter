@@ -15,6 +15,10 @@ final class MeterModel: ObservableObject {
     @Published private(set) var snapshot: QuotaSnapshot?
     @Published private(set) var error: MeterError?
     @Published private(set) var refreshing = false
+    @Published private(set) var refreshNotice: RefreshNotice?
+    @Published var refreshNoticesEnabled: Bool { didSet { if !demo { defaults.set(refreshNoticesEnabled, forKey: "refreshNoticesEnabled") } } }
+    private var updateTracker = QuotaUpdateTracker()
+    private var lastResolvedExecutable: URL?
     @Published var displayNotice: String?
     @Published var theme: MeterTheme { didSet { if !demo { defaults.set(theme.rawValue, forKey: "theme") } } }
     @Published var skinMotionEnabled: Bool { didSet { if !demo { defaults.set(skinMotionEnabled, forKey: "skinMotionEnabled") } } }
@@ -25,6 +29,13 @@ final class MeterModel: ObservableObject {
     @Published var selectedCalibrationDisplayID = ""
     @Published private(set) var horizontalCalibrations: [String: Double] = [:] {
         didSet { if !demo { defaults.set(horizontalCalibrations, forKey: "horizontalCalibrations") } }
+    }
+    @Published private(set) var shapeCalibrations: [String: ContourCalibration] = [:] {
+        didSet {
+            if !demo {
+                defaults.set(shapeCalibrations.mapValues { ["width": $0.width, "depth": $0.depth, "corner": $0.corner] }, forKey: "shapeCalibrations")
+            }
+        }
     }
     @Published private(set) var now = Date()
     @Published var overlayEnabled: Bool { didSet { if !demo { defaults.set(overlayEnabled, forKey: "overlayEnabled") } } }
@@ -45,6 +56,7 @@ final class MeterModel: ObservableObject {
 
     init(demo: Bool) {
         self.demo = demo
+        refreshNoticesEnabled = demo ? true : defaults.object(forKey: "refreshNoticesEnabled") as? Bool ?? true
         let fixtureTheme = CommandLine.arguments.first(where: { $0.hasPrefix("--skin=") }).map { String($0.dropFirst(7)) }
         theme = demo ? MeterTheme.restored(fixtureTheme ?? (CommandLine.arguments.contains("--rainbow") ? "rainbow" : nil)) : MeterTheme.restored(defaults.string(forKey: "theme"))
         skinMotionEnabled = demo ? true : defaults.object(forKey: "skinMotionEnabled") as? Bool ?? true
@@ -58,6 +70,13 @@ final class MeterModel: ObservableObject {
                 if !entry.key.isEmpty, entry.key.count <= 64, let value = entry.value as? Double {
                     result[entry.key] = HorizontalCalibration.sanitized(value)
                 }
+            }
+        }
+        if !demo, let saved = defaults.dictionary(forKey: "shapeCalibrations") {
+            shapeCalibrations = saved.reduce(into: [:]) { result, entry in
+                guard !entry.key.isEmpty, entry.key.count <= 64, let values = entry.value as? [String: Double] else { return }
+                let profile = ContourCalibration(width: values["width"] ?? 0, depth: values["depth"] ?? 0, corner: values["corner"] ?? 0)
+                if !profile.isZero { result[entry.key] = profile }
             }
         }
         if demo {
@@ -103,6 +122,29 @@ final class MeterModel: ObservableObject {
         }
         guard horizontalAdjustment(for: key) != value else { return }
         horizontalCalibrations[key] = value
+    }
+    func shapeCalibration(for displayID: String?) -> ContourCalibration {
+        displayID.flatMap { shapeCalibrations[$0] } ?? ContourCalibration()
+    }
+    var selectedShapeCalibration: ContourCalibration { shapeCalibration(for: selectedCalibrationDisplayID) }
+    var hasStoredCalibration: Bool { hasStoredHorizontalAdjustment || shapeCalibrations[selectedCalibrationDisplayID] != nil }
+    func setShapeCalibration(_ value: ContourCalibration) {
+        let key = selectedCalibrationDisplayID
+        guard calibrationDisplays.contains(where: { $0.id == key }) else { return }
+        if value.isZero { shapeCalibrations.removeValue(forKey: key) }
+        else if shapeCalibrations[key] != value { shapeCalibrations[key] = value }
+    }
+    func resetCalibration() {
+        let key = selectedCalibrationDisplayID
+        guard calibrationDisplays.contains(where: { $0.id == key }) else { return }
+        // One synchronous action; queued display reconciliation sees both cleared stores.
+        horizontalCalibrations.removeValue(forKey: key)
+        shapeCalibrations.removeValue(forKey: key)
+    }
+    var compactContentHeight: CGFloat {
+        let rows = snapshot?.buckets.reduce(0) { $0 + max(1, $1.windows.count) } ?? 1
+        let groupLabels = (snapshot?.buckets.count ?? 0) > 1 ? min(4, snapshot?.buckets.count ?? 0) * 18 : 0
+        return CGFloat(min(340, max(132, 76 + min(4, rows) * 52 + groupLabels + (error == nil ? 0 : 28))))
     }
     var bucket: QuotaBucket? { snapshot?.bucket(preferredID: preferredBucket) }
     var primaryWindow: QuotaWindow? { bucket?.primaryWindow(preferredID: preferredQuota) }
@@ -177,13 +219,20 @@ final class MeterModel: ObservableObject {
             do {
                 let executable = try await CodexExecutable.resolveInstalled(override: path)
                 try Task.checkCancellation()
+                guard let self, self.currentTaskID == id else { return }
+                if let previous = self.lastResolvedExecutable, previous != executable { self.updateTracker.invalidateSource() }
+                self.lastResolvedExecutable = executable
                 let result = try await QuotaReader.fetch(executable: executable)
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, self.currentTaskID == id else { return }
+                let update = self.updateTracker.record(result, at: Date())
                 snapshot = result; error = nil; policy.succeeded()
+                refreshNotice = RefreshNotice(id: UUID(), receivedAt: Date(), result: update, bucketID: bucket?.id, window: primaryWindow)
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 let failure = error as? MeterError ?? .disconnected
                 self.error = failure
+                let update = self.updateTracker.recordFailure()
+                self.refreshNotice = RefreshNotice(id: UUID(), receivedAt: Date(), result: update, bucketID: nil, window: nil)
                 // Never show another account's prior numbers after sign-out or account-type change.
                 if [.signedOut, .unsupportedAccount, .noQuota, .codexMissing, .invalidExecutable].contains(failure) { snapshot = nil }
                 policy.failed()
@@ -213,8 +262,13 @@ final class MeterModel: ObservableObject {
     }
     func setExecutable(_ path: String) {
         task?.cancel(); task = nil; refreshing = false
+        updateTracker.invalidateSource(); lastResolvedExecutable = nil; refreshNotice = nil
         executablePath = path; snapshot = nil; error = nil; nextAttempt = .distantPast
         refresh()
+    }
+    func setUpdateFixture(_ value: QuotaSnapshot) {
+        guard demo, CommandLine.arguments.contains("--update-test") else { return }
+        snapshot = value; now = value.fetchedAt; error = nil
     }
     /// Bounded many-row UI load for native timing only. No account reads or preference writes.
     func setMotionFixture(remaining: Double) {

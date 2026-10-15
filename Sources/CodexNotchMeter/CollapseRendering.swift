@@ -25,7 +25,7 @@ final class CollapseRenderHarness: NSObject {
     private var replayPixels: [Int: [[Double]]] = [:]
     private var intercepted = false
     private var captureCount = 0
-    private let progressPoints: [Double] = [0.10, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0]
+    private let progressPoints: [Double] = [0.50, 0.30, 0.10, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0]
     private var themes: [MeterTheme] { MeterTheme.allCases }
     private var isBaseline: Bool { cycle == 0 }
     private var isFallback: Bool { cycle == themes.count + 1 }
@@ -205,7 +205,7 @@ final class CollapseRenderHarness: NSObject {
         controller?.setContourTestProgress(progressPoints[0]); next(20, at: CACurrentMediaTime())
     }
     private var canvas: CGRect {
-        let frame = geometry.frame(progress: 0.1)
+        let frame = geometry.frame(progress: 0.5)
         return CGRect(x: floor(frame.minX) - 2, y: floor(frame.minY) - 2,
             width: ceil(frame.maxX) - floor(frame.minX) + 4,
             height: ceil(frame.maxY) - floor(frame.minY) + 4)
@@ -290,18 +290,41 @@ final class CollapseRenderHarness: NSObject {
             // The tiny terminal spring threshold must not turn into a line-sized jump.
             // Exclude the simulated camera rectangle from the visible-change oracle;
             // alpha inside it is separately checked by the opaque-interior control.
-            let terminalBounds = zip(boxes[6...7], [boxes[8], boxes[8]]).allSatisfy { pair in
+            let last = boxes.count - 1
+            let terminalBounds = zip(boxes[(last - 2)..<last], [boxes[last], boxes[last]]).allSatisfy { pair in
                 guard let first = pair.0, let second = pair.1 else { return false }
                 return abs(first.minX - second.minX) <= 1 / CGFloat(scale)
                     && abs(first.maxX - second.maxX) <= 1 / CGFloat(scale)
                     && abs(first.minY - second.minY) <= 1 / CGFloat(scale)
                     && abs(first.maxY - second.maxY) <= 1 / CGFloat(scale)
             }
-            let monotonicTail = (1..<visibleResiduals.count).allSatisfy {
+            let monotonicTail = (3..<visibleResiduals.count).allSatisfy {
                 visibleResiduals[$0] <= visibleResiduals[$0 - 1] + 0.015
             }
-            let late = monotonicTail && visibleResiduals[6] <= 0.12 && visibleResiduals[7] <= 0.08
-                && visibleResiduals[8] == 0 && terminalBounds
+            let late = monotonicTail && visibleResiduals[last - 2] <= 0.12 && visibleResiduals[last - 1] <= 0.08
+                && visibleResiduals[last] == 0 && terminalBounds
+            // At these middle states the left side has moved well away from the
+            // idle line. Sample outside text content; missing/fixed-idle rails cannot pass.
+            func movingChroma(_ pixels: [Double], progress: Double) -> Double {
+                let native = geometry.frame(progress: progress), rect = geometry.contourRect(progress: progress)
+                let point = CGPoint(x: native.minX + rect.minX + 12 * progress + 2,
+                    y: native.maxY - rect.height / 2)
+                let width = Int(canvas.width * CGFloat(scale)), height = Int(canvas.height * CGFloat(scale))
+                let cx = Int((point.x - canvas.minX) * CGFloat(scale)), cy = Int((canvas.maxY - point.y) * CGFloat(scale))
+                var peak = 0.0
+                for y in max(0, cy - 2 * scale)...min(height - 1, cy + 2 * scale) {
+                    for x in max(0, cx - 2 * scale)...min(width - 1, cx + 2 * scale) {
+                        let i = (y * width + x) * 4
+                        peak = max(peak, max(pixels[i], max(pixels[i + 1], pixels[i + 2])) - min(pixels[i], min(pixels[i + 1], pixels[i + 2])))
+                    }
+                }
+                return peak
+            }
+            let halfChroma = movingChroma(scenes[0], progress: 0.5)
+            let thirdChroma = movingChroma(scenes[1], progress: 0.3)
+            let absentChroma = movingChroma([Double](repeating: 0, count: idle.count), progress: 0.5)
+            let movingRail = halfChroma > 0.02 && thirdChroma > halfChroma * 1.1 && absentChroma == 0
+            SmokeDiagnostics.mark("collapse shared-contour middle theme=\(themes[replayTheme].rawValue) scale=\(scale) p50Chroma=\(halfChroma) p30Chroma=\(thirdChroma) missingRailRejected=\(absentChroma <= 0.02) movingFade=\(movingRail)")
             let missing = [Double](repeating: 0, count: idle.count)
             var rectangle = idle
             let area = canvas, width = Int(area.width * CGFloat(scale)), height = Int(area.height * CGFloat(scale))
@@ -320,7 +343,7 @@ final class CollapseRenderHarness: NSObject {
             let staleViewportDelta = normalizedDifference(outsideHardware(shifted, scale: scale), visibleIdle, reference: visibleIdle)
             let abruptDelta = normalizedDifference(outsideHardware(scenes[0], scale: scale), visibleIdle, reference: visibleIdle)
             let controls = missingDelta > 0.12 && opaqueDelta > 0.12 && staleViewportDelta > 0.12 && abruptDelta > 0.12
-            passed = late && controls && passed
+            passed = late && controls && movingRail && passed
             SmokeDiagnostics.mark("collapse tail gate theme=\(themes[replayTheme].rawValue) scale=\(scale) late=\(late) terminalBounds=\(terminalBounds) monotonicTail=\(monotonicTail) controls=\(controls) missing=\(missingDelta) opaque=\(opaqueDelta) staleViewport=\(staleViewportDelta) abruptReplacement=\(abruptDelta) valid=\(late && controls)")
         }
     }

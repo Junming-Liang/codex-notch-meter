@@ -113,7 +113,18 @@ final class DisplayCompatibilityHarness: NSObject {
             let error = center - expected, tolerance = 0.12 / CGFloat(scale)
             let aligned = abs(l + frame.minX - (left.maxX - 1)) <= tolerance
                 && abs(r + frame.minX - (right.minX + 1)) <= tolerance && abs(error) <= tolerance
-            check(aligned, "matrix axes=\(profiles[index].0) forcedScale=\(scale) centerErrorPoints=\(error)")
+            let lower = min(8 * raw.topInset / 32 + 3, (raw.topInset + 3) / 2) - 2
+            let bottom = CGFloat(raw.topInset) + 1
+            let localLeft = left.maxX - 1 - frame.minX, localRight = right.minX + 1 - frame.minX
+            var curved = true
+            for t in [0.2, 0.4, 0.6, 0.8] {
+                let angle = (180 - 90 * t) * Double.pi / 180
+                let dx = lower + lower * cos(angle), y = bottom - lower + lower * sin(angle)
+                for x in [localLeft + dx, localRight - dx] {
+                    curved = image.near(CGPoint(x: x, y: y)).contains(where: { $0.chromatic }) && curved
+                }
+            }
+            check(aligned && curved, "matrix axes=\(profiles[index].0) forcedScale=\(scale) centerErrorPoints=\(error) depthNormalizedCircle=\(curved) expectedStrokeRadius=\(lower)")
             matrixCaptures += 1
         }
     }

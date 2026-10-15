@@ -23,7 +23,7 @@ private func quotaColor(_ remaining: Double?) -> Color {
     return MeterStyle.mint
 }
 
-private func quotaPaint(_ remaining: Double?, theme: MeterTheme, phase: Double = 0) -> AnyShapeStyle {
+func quotaPaint(_ remaining: Double?, theme: MeterTheme, phase: Double = 0) -> AnyShapeStyle {
     guard let remaining, remaining > 25 else { return AnyShapeStyle(quotaColor(remaining)) }
     let colors: [Color]
     switch theme {
@@ -40,7 +40,7 @@ private func quotaPaint(_ remaining: Double?, theme: MeterTheme, phase: Double =
     return AnyShapeStyle(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
 }
 
-private func windowTitle(_ window: QuotaWindow) -> String {
+func windowTitle(_ window: QuotaWindow) -> String {
     guard let minutes = window.durationMinutes else { return "额度窗口" }
     if minutes % 1440 == 0 { return "\(minutes / 1440) 天" }
     if minutes % 60 == 0 { return "\(minutes / 60) 小时" }
@@ -60,16 +60,12 @@ private func resetSummary(_ window: QuotaWindow, at now: Date) -> String {
 /// One uninterrupted U: upper left → lower left → bottom → lower right → upper right.
 struct NotchRail: Shape {
     var drawingRect: CGRect? = nil
+    var progress: Double = 0
+    var cornerAdjustment: Double = 0
+    var referenceDepth: CGFloat = 32
     func path(in viewport: CGRect) -> Path {
-        let rect = drawingRect ?? viewport
-        var path = Path()
-        path.move(to: CGPoint(x: 2, y: 0))
-        path.addLine(to: CGPoint(x: 2, y: rect.height - 12))
-        path.addQuadCurve(to: CGPoint(x: 12, y: rect.height - 2), control: CGPoint(x: 2, y: rect.height - 2))
-        path.addLine(to: CGPoint(x: rect.width - 12, y: rect.height - 2))
-        path.addQuadCurve(to: CGPoint(x: rect.width - 2, y: rect.height - 12), control: CGPoint(x: rect.width - 2, y: rect.height - 2))
-        path.addLine(to: CGPoint(x: rect.width - 2, y: 0))
-        return path.applying(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        contourPath(IslandContour(rect: drawingRect ?? viewport, progress: progress,
+            cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth), inset: 2, closed: false)
     }
 }
 
@@ -77,6 +73,9 @@ struct NotchRail: Shape {
 struct RailView: View {
     @ObservedObject var model: MeterModel
     var drawingRect: CGRect? = nil
+    var progress: Double = 0
+    var cornerAdjustment: Double = 0
+    var referenceDepth: CGFloat = 32
     let hovered: (Bool) -> Void
     var window: QuotaWindow? { model.primaryWindow }
     var body: some View {
@@ -85,9 +84,9 @@ struct RailView: View {
         let dim = model.degraded || pending
         let paint = quotaPaint(remaining, theme: model.theme, phase: model.skinPhase)
         ZStack {
-            NotchRail(drawingRect: drawingRect).stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+            NotchRail(drawingRect: drawingRect, progress: progress, cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth).stroke(Color.black, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
             if let remaining, remaining > 0 {
-                NotchRail(drawingRect: drawingRect).trim(from: 0, to: remaining / 100)
+                NotchRail(drawingRect: drawingRect, progress: progress, cornerAdjustment: cornerAdjustment, referenceDepth: referenceDepth).trim(from: 0, to: remaining / 100)
                     .stroke(paint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).opacity(dim ? 0.55 : 1)
             }
         }
@@ -288,6 +287,18 @@ struct SettingsView: View {
     @ObservedObject var login: LoginSettingsModel
     let chooseExecutable: () -> Void
     let quit: () -> Void
+    private func shapeAdjustmentRow(_ title: String, value: Double, limit: Double, changed: @escaping (Double) -> Void) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Button("−") { changed(value - 0.5) }.disabled(value <= -limit)
+                .accessibilityLabel(title + "减少 0.5 点")
+            Text(String(format: "%+.1f pt", value)).font(.system(size: 11, design: .monospaced)).frame(width: 64)
+            Button("+") { changed(value + 0.5) }.disabled(value >= limit)
+                .accessibilityLabel(title + "增加 0.5 点")
+            Button("重置") { changed(0) }.disabled(value == 0)
+        }.controlSize(.small).disabled(model.calibrationDisplays.isEmpty)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
@@ -305,6 +316,7 @@ struct SettingsView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("在刘海边缘显示额度进度线", isOn: $model.overlayEnabled)
+                    Toggle("刷新时显示短提示", isOn: $model.refreshNoticesEnabled)
                     Picker("外观皮肤", selection: $model.theme) {
                         ForEach(MeterTheme.allCases) { Text($0.title).tag($0) }
                     }
@@ -333,26 +345,51 @@ struct SettingsView: View {
                     Text("整条轮廓显示一组额度：从左填充，用掉后从右端缩回。展开卡片保留全部额度。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Divider()
-                    if model.calibrationDisplays.count > 1 {
-                        Picker("校准的内建屏幕", selection: $model.selectedCalibrationDisplayID) {
-                            ForEach(model.calibrationDisplays) { Text($0.name).tag($0.id) }
+                    Text("根据当前屏幕避让区域自动匹配位置与圆弧；显示模式改变时自动重新计算。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup("高级：此屏幕轮廓微调") {
+                        if model.calibrationDisplays.count > 1 {
+                            Picker("校准的内建屏幕", selection: $model.selectedCalibrationDisplayID) {
+                                ForEach(model.calibrationDisplays) { Text($0.name).tag($0.id) }
+                            }
                         }
+                        HStack {
+                            Text("水平微调")
+                            Spacer()
+                            Button("−") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment - 0.5) }
+                                .accessibilityLabel("刘海轮廓左移 0.5 点")
+                                .disabled(model.selectedHorizontalAdjustment <= (model.selectedCalibrationDisplay?.minimum ?? -8))
+                            Text(String(format: "%+.1f pt", model.selectedHorizontalAdjustment))
+                                .font(.system(size: 11, design: .monospaced)).frame(width: 64)
+                            Button("+") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment + 0.5) }
+                                .accessibilityLabel("刘海轮廓右移 0.5 点")
+                                .disabled(model.selectedHorizontalAdjustment >= (model.selectedCalibrationDisplay?.maximum ?? 8))
+                            Button("重置") { model.setHorizontalAdjustment(0) }.disabled(!model.hasStoredHorizontalAdjustment)
+                        }.controlSize(.small).disabled(model.calibrationDisplays.isEmpty)
+                        Text(model.calibrationDisplays.isEmpty ? "连接带刘海的内建屏幕后可校准。" : "默认 0；负值向左，正值向右。每次 0.5 pt，最多 ±8 pt，仅在本机记住此屏幕的设置。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        shapeAdjustmentRow("轮廓宽度", value: model.selectedShapeCalibration.width, limit: 16) { value in
+                            let current = model.selectedShapeCalibration
+                            model.setShapeCalibration(ContourCalibration(width: value, depth: current.depth, corner: current.corner))
+                        }
+                        shapeAdjustmentRow("底部位置", value: model.selectedShapeCalibration.depth, limit: 6) { value in
+                            let current = model.selectedShapeCalibration
+                            model.setShapeCalibration(ContourCalibration(width: current.width, depth: value, corner: current.corner))
+                        }
+                        shapeAdjustmentRow("圆角调整", value: model.selectedShapeCalibration.corner, limit: 6) { value in
+                            let current = model.selectedShapeCalibration
+                            model.setShapeCalibration(ContourCalibration(width: current.width, depth: current.depth, corner: value))
+                        }
+                        HStack {
+                            Text("调整会实时显示，仅记住此屏幕。")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("重置此屏幕全部校准") { model.resetCalibration() }
+                                .disabled(!model.hasStoredCalibration).controlSize(.small)
+                        }
+                        Text("宽度是总宽度变化；底部正值向下；圆角正值更圆。默认均为 0。系统只提供避让区域，自动圆弧是依据公开参考的近似曲线，并非硬件测量值。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    HStack {
-                        Text("水平微调")
-                        Spacer()
-                        Button("−") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment - 0.5) }
-                            .accessibilityLabel("刘海轮廓左移 0.5 点")
-                            .disabled(model.selectedHorizontalAdjustment <= (model.selectedCalibrationDisplay?.minimum ?? -8))
-                        Text(String(format: "%+.1f pt", model.selectedHorizontalAdjustment))
-                            .font(.system(size: 11, design: .monospaced)).frame(width: 64)
-                        Button("+") { model.setHorizontalAdjustment(model.selectedHorizontalAdjustment + 0.5) }
-                            .accessibilityLabel("刘海轮廓右移 0.5 点")
-                            .disabled(model.selectedHorizontalAdjustment >= (model.selectedCalibrationDisplay?.maximum ?? 8))
-                        Button("重置") { model.setHorizontalAdjustment(0) }.disabled(!model.hasStoredHorizontalAdjustment)
-                    }.controlSize(.small).disabled(model.calibrationDisplays.isEmpty)
-                    Text(model.calibrationDisplays.isEmpty ? "连接带刘海的内建屏幕后可校准。" : "默认 0；负值向左，正值向右。每次 0.5 pt，最多 ±8 pt，仅在本机记住此屏幕的设置。")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("没有刘海的显示器使用菜单栏。悬停进度线或点击菜单栏图标，即可查看完整额度。")
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)

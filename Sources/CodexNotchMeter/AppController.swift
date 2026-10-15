@@ -8,9 +8,9 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
@@ -20,6 +20,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var motionHarness: NativeMotionHarness?
     private var displayHarness: DisplayCompatibilityHarness?
     private var collapseHarness: CollapseRenderHarness?
+    private var updateHarness: UpdateRenderHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -51,6 +52,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var sessionActive = true
     private var terminating = false
     private var quitRequested = false
+    private var pendingNotice: RefreshNotice?
+    private var menuOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SmokeDiagnostics.mark("didFinishLaunching entered")
@@ -68,7 +71,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(rootView: makeDetailView())
         model.$snapshot.combineLatest(model.$error, model.$preferredBucket).sink { [weak self] _, _, _ in
             DispatchQueue.main.async {
-                self?.updateStatus(); self?.updateSkinActivity()
+                self?.updateStatus(); self?.updateSkinActivity(); self?.rebuildIslands()
                 if let self, self.popover.isShown, let view = self.popover.contentViewController?.view {
                     self.popover.contentSize = NSSize(width: 340, height: min(590, max(280, view.fittingSize.height)))
                 }
@@ -77,11 +80,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         model.$preferredQuota.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateSkinActivity() }
         }.store(in: &cancellables)
-        model.$now.sink { [weak self] _ in self?.updateStatus() }.store(in: &cancellables)
+        model.$now.sink { [weak self] _ in self?.updateStatus(); self?.deliverPendingNotice() }.store(in: &cancellables)
+        model.$refreshNotice.compactMap { $0 }.sink { [weak self] notice in
+            DispatchQueue.main.async {
+                guard let self, !self.smokeMode else { return }
+                self.pendingNotice = notice; self.deliverPendingNotice()
+            }
+        }.store(in: &cancellables)
+        model.$refreshNoticesEnabled.removeDuplicates().sink { [weak self] enabled in
+            DispatchQueue.main.async {
+                guard let self, !enabled else { return }
+                self.pendingNotice = nil; self.islands.forEach { $0.dismissRefreshNotice() }
+            }
+        }.store(in: &cancellables)
         model.$overlayEnabled.removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async { self?.rebuildIslands() }
         }.store(in: &cancellables)
-        model.$horizontalCalibrations.removeDuplicates().sink { [weak self] _ in
+        model.$horizontalCalibrations.combineLatest(model.$shapeCalibrations).sink { [weak self] _, _ in
             // Rebuilding cancels old hit regions and animation timers before moving the contour.
             DispatchQueue.main.async { self?.rebuildIslands() }
         }.store(in: &cancellables)
@@ -135,7 +150,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
+            if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
+            else if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
             else if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
             else if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
             else if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
@@ -168,7 +184,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -211,6 +227,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             settings: { [weak self] in self?.showSettings() },
             quit: { [weak self] in self?.requestQuit() })
     }
+    private func deliverPendingNotice() {
+        guard let notice = pendingNotice else { return }
+        let age = Date().timeIntervalSince(notice.receivedAt)
+        guard model.refreshNoticesEnabled, age >= 0, age <= 10 else { pendingNotice = nil; return }
+        guard !smokeMode, !terminating, displayActivity.permitsOverlay, !menuOpen,
+              !popover.isShown, settingsWindow?.isVisible != true, !islands.contains(where: \.isInteracting) else { return }
+        if let island = islands.first, island.showRefreshNotice(notice) { pendingNotice = nil }
+    }
     private func updateStatus() {
         statusItem?.button?.title = " " + model.compactLabel
         let pending = model.bucket?.windows.contains(where: { $0.resetPending(at: model.now) }) ?? false
@@ -225,6 +249,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         defer { updateSkinActivity() }
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let button = statusItem.button {
             let menu = makeStatusMenu()
+            menuOpen = true; islands.forEach { $0.collapse() }
+            defer { menuOpen = false; deliverPendingNotice() }
             NSMenu.popUpContextMenu(menu, with: event, for: button)
             return
         }
@@ -295,6 +321,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         displayHarness?.start()
+    }
+    private func runUpdateTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        updateHarness = UpdateRenderHarness(model: model, screen: screen) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        updateHarness?.start()
     }
     private func runCollapseTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }
