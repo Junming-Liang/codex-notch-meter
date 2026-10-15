@@ -94,16 +94,27 @@ final class NativeMotionHarness: NSObject {
             next(3, now: now)
         case 3 where island.smokeProgress < 0.9 && island.smokeVelocity < -0.1:
             let before = (island.smokeProgress, island.smokeVelocity)
-            let began = CACurrentMediaTime()
             heldPointer = edgePoint(inside: true)
             if let heldPointer { island.smokePointer(at: heldPointer, now: now) }
-            let delay = CACurrentMediaTime() - began
-            // The old target may advance briefly to event time, but neither state is reset.
-            let continuous = island.smokeTargetExpanded && island.smokeVelocity < 0
-                && abs(island.smokeProgress - before.0) < max(0.015, abs(before.1) * delay + 0.01)
-                && abs(island.smokeVelocity - before.1) < 0.5
+            // Compare states at the SAME event time. Integrating the old target
+            // since its last scheduled frame is normal motion, not a reversal jump.
+            let trace = island.smokeRetarget
+            let continuous = trace.map { event in
+                var expected = event.before
+                expected.advance(expanded: event.previousTarget, elapsed: event.consumedElapsed, reduceMotion: false)
+                return event.before.progress == before.0 && event.before.velocity == before.1
+                    && event.eventTime >= now
+                    && abs(expected.progress - event.integrated.progress) < 1e-12
+                    && abs(expected.velocity - event.integrated.velocity) < 1e-12
+                    && !event.previousTarget && event.nextTarget && island.smokeTargetExpanded
+                    && event.integrated.velocity < 0
+                    && abs(island.smokeProgress - event.integrated.progress) < 1e-12
+                    && abs(island.smokeVelocity - event.integrated.velocity) < 1e-12
+            } ?? false
             passed = continuous && island.verifyNonadvancingFramesAreInert() && passed
-            SmokeDiagnostics.mark("motion reentry profile=\(profiles[profileIndex]) before=[\(before.0),\(before.1)] after=[\(island.smokeProgress),\(island.smokeVelocity)] immediateTarget=\(island.smokeTargetExpanded) continuous=\(continuous)")
+            if let event = trace {
+                SmokeDiagnostics.mark("motion reentry profile=\(profiles[profileIndex]) priorScheduled=\(event.scheduledTime) eventTime=\(event.eventTime) consumedElapsed=\(event.consumedElapsed) before=[\(event.before.progress),\(event.before.velocity)] integrated=[\(event.integrated.progress),\(event.integrated.velocity)] returned=[\(island.smokeProgress),\(island.smokeVelocity)] immediateTarget=\(island.smokeTargetExpanded) continuous=\(continuous)")
+            }
             next(4, now: now)
         case 4 where island.smokeProgress == 1 && !island.smokeMotionRunning:
             heldPointer = nil; next(5, now: now)

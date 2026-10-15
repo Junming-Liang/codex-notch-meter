@@ -88,6 +88,17 @@ private struct IslandRootView: View {
     }
 }
 
+/// Synthetic-only retarget observation; no account data or production logging.
+struct IslandMotionRetarget {
+    let scheduledTime: TimeInterval
+    let eventTime: TimeInterval
+    let consumedElapsed: TimeInterval
+    let before: IslandMotion
+    let integrated: IslandMotion
+    let previousTarget: Bool
+    let nextTarget: Bool
+}
+
 @MainActor
 final class IslandPanelController: NSObject {
     let geometry: IslandGeometry
@@ -102,6 +113,7 @@ final class IslandPanelController: NSObject {
     private var lastMotionTime = CACurrentMediaTime()
     private let motionProfile: IslandMotionProfile
     private let motionSample: ((IslandMotionSample) -> Void)?
+    private var lastRetarget: IslandMotionRetarget?
     private let reducedMotionOverride: Bool?
     private var reducedMotion: Bool { reducedMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     private(set) var placementIsValid = true
@@ -187,13 +199,21 @@ final class IslandPanelController: NSObject {
     private func startMotion() {
         guard !stopped else { return }
         let now = CACurrentMediaTime()
+        let previousTime = lastMotionTime, previousMotion = motion, previousTarget = motionTargetExpanded
+        let elapsed = motionFrames != nil ? max(0, now - lastMotionTime) : 0
         // Consume elapsed time under the previous target before a reversal. A display
         // link may already have projected up to its next frame, so never rewind time.
         if motionFrames != nil, now > lastMotionTime {
             motion.advance(expanded: motionTargetExpanded, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
             lastMotionTime = now
         }
+        let integrated = motion
         motionTargetExpanded = hover.isExpanded
+        if motionSample != nil {
+            lastRetarget = IslandMotionRetarget(scheduledTime: previousTime, eventTime: now,
+                consumedElapsed: elapsed, before: previousMotion, integrated: integrated,
+                previousTarget: previousTarget, nextTarget: motionTargetExpanded)
+        }
         if reducedMotion {
             stopMotionFrames()
             motion.advance(expanded: motionTargetExpanded, elapsed: 0, reduceMotion: true)
@@ -297,6 +317,7 @@ final class IslandPanelController: NSObject {
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
     var smokeProgress: Double { motion.progress }
     var smokeVelocity: Double { motion.velocity }
+    var smokeRetarget: IslandMotionRetarget? { lastRetarget }
     var smokeMotionRunning: Bool { motionFrames != nil }
     var motionProbe: IslandMotionProbe {
         IslandMotionProbe(observed: CACurrentMediaTime(), frame: panel.frame,
