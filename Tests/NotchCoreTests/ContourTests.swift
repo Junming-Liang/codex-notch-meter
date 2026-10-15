@@ -87,6 +87,21 @@ final class ContourTests: XCTestCase {
         XCTAssertFalse(value.interactiveContains(rawCenter))
         XCTAssertTrue(value.hoverContains(CGPoint(x: value.calibratedNotch.midX, y: value.contourFrame.minY + 1), progress: 0))
     }
+    func testSyntheticHoverPointFollowsCorrectedContourAtEveryStage() {
+        for scale in [1.0, 2] { for depth in [-6.0, 0, 6] { for corner in [-6.0, 0, 6] {
+            let value = geometry(width: 219.5, offset: 0.5, scale: scale,
+                profile: .init(width: -16, depth: depth, corner: corner))
+            if depth == -6 {
+                let oldPoint = CGPoint(x: value.notch.midX, y: value.screen.maxY - value.notch.height - 2)
+                XCTAssertFalse(value.hoverContains(oldPoint, progress: 0))
+            }
+            for progress in [0.0, 0.1, 0.5, 1] {
+                let frame = value.frame(progress: progress), contour = value.contourRect(progress: progress)
+                let point = CGPoint(x: frame.minX + contour.midX, y: frame.maxY - contour.maxY + 1)
+                XCTAssertTrue(value.hoverContains(point, progress: progress))
+            }
+        }}}
+    }
     func testNearEdgeCorrectionIncludesCurvedEnvelopeAndBackingGrid() {
         for scale in [CGFloat(1), CGFloat(2)] {
             let screen = CGRect(x: -1024, y: -768, width: 1024, height: 768)
