@@ -186,8 +186,9 @@ private enum ContourPixelGate {
         var points: [CGPoint] = []
         func arc(_ center: CGPoint, _ radius: CGFloat, _ start: Double, _ end: Double) {
             for step in 0...100 {
-                let angle = (start + (end - start) * Double(step) / 100) * .pi / 180
-                points.append(CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle)))
+                let angle: Double = (start + (end - start) * Double(step) / 100) * Double.pi / 180
+                let cosine: Double = cos(angle), sine: Double = sin(angle)
+                points.append(CGPoint(x: center.x + radius * CGFloat(cosine), y: center.y + radius * CGFloat(sine)))
             }
         }
         arc(CGPoint(x: left - upper, y: upper), upper, -90, 0)
@@ -694,9 +695,10 @@ final class AlignmentRenderHarness: NSObject {
             // Independent circular point oracle from requested dimensions, not production path commands.
             var curvesVisible = true
             for t in [0.2, 0.4, 0.6, 0.8] {
-                let angle = (180 - 90 * t) * Double.pi / 180
-                let dx = radius + (radius - 2) * cos(angle)
-                let py = rawRect.maxY - radius + (radius - 2) * sin(angle)
+                let angle: Double = (180 - 90 * t) * Double.pi / 180
+                let cosine: Double = cos(angle), sine: Double = sin(angle)
+                let dx = radius + (radius - 2) * CGFloat(cosine)
+                let py = rawRect.maxY - radius + (radius - 2) * CGFloat(sine)
                 for px in [rawRect.minX + dx, rawRect.maxX - dx] {
                     curvesVisible = bitmap.near(CGPoint(x: px, y: py)).contains(where: { $0.chromatic && $0.g > $0.r }) && curvesVisible
                 }
