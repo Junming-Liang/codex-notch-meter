@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import SwiftUI
+import QuartzCore
 import NotchCore
 
 final class TopEdgePanel: NSPanel {
@@ -45,37 +46,40 @@ private struct IslandRootView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject var presentation: IslandPresentation
     let geometry: IslandGeometry
+    let motionProfile: IslandMotionProfile
     let refresh: () -> Void
     let settings: () -> Void
     let quit: () -> Void
     let quitFrameChanged: (CGRect) -> Void
     let viewportChanged: (CGSize) -> Void
+    let rendered: (Double, CGSize) -> Void
     var body: some View {
         let p = presentation.progress
         GeometryReader { viewport in
             Color.clear
-                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)).fill(.black.opacity(min(1, p * 3))) }
+                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)).fill(.black.opacity(motionProfile.forcesLayout ? min(1, p * 3) : IslandReveal.surface(p))) }
                 .overlay(alignment: .topLeading) {
                     RailView(model: model, drawingRect: geometry.railRect(progress: p), hovered: { _ in })
                     .frame(width: viewport.size.width, height: geometry.collapsedSize.height)
-                    .opacity(max(0, 1 - p * 4))
+                    .opacity(motionProfile.forcesLayout ? max(0, 1 - p * 4) : IslandReveal.rail(p))
                     .accessibilityHidden(p > 0.1)
                 }
                 .overlay(alignment: .topLeading) {
                     // Opacity-zero fixed-height content MUST NOT size the collapsed root.
-                    if p > 0 {
+                    if motionProfile.prewarmsDetails || p > 0 {
                         DetailView(model: model, embedded: true, embeddedHeight: geometry.expandedSize.height - geometry.notch.height - 8, quitFrameChanged: quitFrameChanged, hovered: { _ in }, refresh: refresh, settings: settings, quit: quit)
                             .frame(width: 340)
                             .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 170,
-                                    y: geometry.notch.height + 8)
-                            .opacity(min(1, max(0, (p - 0.35) / 0.5)))
+                                    y: geometry.notch.height + 8 + (motionProfile.forcesLayout ? 0 : (1 - IslandReveal.details(p)) * 6))
+                            .opacity(motionProfile.forcesLayout ? min(1, max(0, (p - 0.35) / 0.5)) : IslandReveal.details(p))
                             .allowsHitTesting(p == 1)
                             .accessibilityHidden(p < 1)
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
                 .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p)))
-                .onAppear { viewportChanged(viewport.size) }
+                .onAppear { viewportChanged(viewport.size); rendered(p, viewport.size) }
+                .onChange(of: p) { rendered($0, viewport.size) }
                 .onChange(of: viewport.size) { viewportChanged($0) }
             }
         .ignoresSafeArea(.all)
@@ -92,20 +96,29 @@ final class IslandPanelController: NSObject {
     private var hover = IslandHoverState()
     private var motion = IslandMotion()
     private var pointerTimer: Timer?
-    private var motionTimer: Timer?
-    private var lastMotionTime = ProcessInfo.processInfo.systemUptime
+    private var motionFrames: IslandFrameSource?
+    private var frameGeneration = 0
+    private var motionTargetExpanded = false
+    private var lastMotionTime = CACurrentMediaTime()
+    private let motionProfile: IslandMotionProfile
+    private let motionSample: ((IslandMotionSample) -> Void)?
     private let reducedMotionOverride: Bool?
     private var reducedMotion: Bool { reducedMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     private(set) var placementIsValid = true
     private var stopped = false
     private var quitFrame: CGRect = .zero
     private(set) var renderedViewport: CGSize = .zero
+    private var renderedProgress: Double = 0
+    private var renderedAt = CACurrentMediaTime()
     private let hovered: () -> Void
     private let activityChanged: () -> Void
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
+         motionProfile: IslandMotionProfile = .adaptive, motionSample: ((IslandMotionSample) -> Void)? = nil,
          activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
+        self.motionProfile = model.demo && CommandLine.arguments.contains("--motion-test") ? motionProfile : .adaptive
+        self.motionSample = motionSample
         self.geometry = geometry; self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
         panel = TopEdgePanel(contentRect: geometry.frame(progress: 0), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
@@ -116,9 +129,12 @@ final class IslandPanelController: NSObject {
         panel.hidesOnDeactivate = false; panel.isFloatingPanel = true
         panel.animationBehavior = .none; panel.ignoresMouseEvents = true
         let hosting = IslandHostingView(rootView: IslandRootView(model: model, presentation: presentation,
-            geometry: geometry, refresh: refresh, settings: settings, quit: quit,
+            geometry: geometry, motionProfile: self.motionProfile, refresh: refresh, settings: settings, quit: quit,
             quitFrameChanged: { [weak self] in self?.quitFrame = $0 },
-            viewportChanged: { [weak self] in self?.renderedViewport = $0 }))
+            viewportChanged: { [weak self] in self?.renderedViewport = $0 },
+            rendered: { [weak self] progress, size in
+                self?.renderedProgress = progress; self?.renderedViewport = size; self?.renderedAt = CACurrentMediaTime()
+            }))
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.sizingOptions = []
@@ -139,8 +155,8 @@ final class IslandPanelController: NSObject {
         presentation.progress = progress
         if hadDetails != displaysColoredDetails { activityChanged() }
         let expected = geometry.frame(progress: progress)
-        panel.setFrame(expected, display: true)
-        panel.contentView?.layoutSubtreeIfNeeded()
+        if panel.frame != expected { panel.setFrame(expected, display: motionProfile.forcesLayout) }
+        if motionProfile.forcesLayout { panel.contentView?.layoutSubtreeIfNeeded() }
         if abs(panel.frame.maxY - geometry.screen.maxY) > 0.5 || abs(panel.frame.width - expected.width) > 0.5 {
             placementIsValid = false
             panel.orderOut(nil)
@@ -151,12 +167,14 @@ final class IslandPanelController: NSObject {
         apply(progress: progress)
     }
     @objc private func pollPointer(_ timer: Timer) {
-        guard !stopped, placementIsValid else { return }
+        guard !stopped, timer === pointerTimer, placementIsValid else { return }
         updatePointer(NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime)
     }
     private func updatePointer(_ point: CGPoint, now: TimeInterval) {
+        guard !stopped else { return }
         let before = hover.isExpanded
-        hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now)
+        hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
+            resumeExpanded: motion.progress > 0 && !motionTargetExpanded)
         if hover.isExpanded != before {
             if hover.isExpanded { hovered() }
             startMotion()
@@ -167,31 +185,78 @@ final class IslandPanelController: NSObject {
         panel.ignoresMouseEvents = !(hover.isExpanded && motion.isSettled && motion.progress == 1 && geometry.interactiveContains(point))
     }
     private func startMotion() {
+        guard !stopped else { return }
+        let now = CACurrentMediaTime()
+        // Consume elapsed time under the previous target before a reversal. A display
+        // link may already have projected up to its next frame, so never rewind time.
+        if motionFrames != nil, now > lastMotionTime {
+            motion.advance(expanded: motionTargetExpanded, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
+            lastMotionTime = now
+        }
+        motionTargetExpanded = hover.isExpanded
         if reducedMotion {
-            motion.advance(expanded: hover.isExpanded, elapsed: 0, reduceMotion: true)
+            stopMotionFrames()
+            motion.advance(expanded: motionTargetExpanded, elapsed: 0, reduceMotion: true)
             apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation)
             return
         }
-        guard motionTimer == nil else { return }
-        lastMotionTime = ProcessInfo.processInfo.systemUptime
-        let timer = Timer(timeInterval: 1.0 / 60, target: self, selector: #selector(animate(_:)), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common); motionTimer = timer
-    }
-    @objc private func animate(_ timer: Timer) {
-        let now = ProcessInfo.processInfo.systemUptime
-        motion.advance(expanded: hover.isExpanded, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
+        guard motionFrames == nil else { return }
         lastMotionTime = now
+        frameGeneration += 1
+        let generation = frameGeneration
+        let callback: (TimeInterval) -> Void = { [weak self] time in
+            guard let self, !self.stopped, self.frameGeneration == generation, self.motionFrames != nil else { return }
+            self.advanceFrame(to: time)
+        }
+        if #available(macOS 14.0, *), motionProfile == .adaptive, let view = panel.contentView {
+            motionFrames = DisplayIslandFrames(view: view, callback: callback)
+        } else { motionFrames = TimerIslandFrames(callback: callback) }
+    }
+    private func advanceFrame(to time: TimeInterval) {
+        guard !stopped, let source = motionFrames, time.isFinite, time > lastMotionTime else { return }
+        let now = CACurrentMediaTime(), elapsed = max(0, time - lastMotionTime)
+        lastMotionTime = max(lastMotionTime, time)
+        motion.advance(expanded: motionTargetExpanded, elapsed: elapsed, reduceMotion: reducedMotion)
+        let began = CACurrentMediaTime()
         apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation)
-        if motion.isSettled { motionTimer?.invalidate(); motionTimer = nil }
+        let duration = CACurrentMediaTime() - began
+        motionSample?(IslandMotionSample(observed: now, scheduled: time, generation: frameGeneration, applyDuration: duration,
+            progress: motion.progress, velocity: motion.velocity, expanded: motionTargetExpanded,
+            frame: panel.frame, contentBounds: panel.contentView?.bounds ?? .zero,
+            viewport: renderedViewport, visible: panel.isVisible, nonKey: !panel.isKeyWindow && !panel.canBecomeKey,
+            source: source.kind))
+        if motion.isSettled && motion.progress == (motionTargetExpanded ? 1 : 0) { stopMotionFrames() }
+    }
+    private func stopMotionFrames() {
+        frameGeneration += 1
+        motionFrames?.stop(); motionFrames = nil
     }
     func collapse() {
+        guard !stopped else { return }
         hover.reset(); panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
+        guard !stopped else { return }
         stopped = true
         pointerTimer?.invalidate(); pointerTimer = nil
-        motionTimer?.invalidate(); motionTimer = nil
+        stopMotionFrames()
         panel.ignoresMouseEvents = true; panel.close()
+    }
+    func verifyNonadvancingFramesAreInert() -> Bool {
+        guard CommandLine.arguments.contains("--motion-test"), motionFrames != nil else { return false }
+        let before = (motion.progress, motion.velocity, panel.frame)
+        advanceFrame(to: lastMotionTime); advanceFrame(to: lastMotionTime - 1)
+        return motionFrames != nil && motion.progress == before.0 && motion.velocity == before.1 && panel.frame == before.2
+    }
+    /// The explicit synthetic harness invokes a real retired source and stopped actions.
+    func verifyRetiredMotionIsInert() -> Bool {
+        guard CommandLine.arguments.contains("--motion-test") else { return false }
+        let source = motionFrames
+        let sourceSafe = source?.verifyRetiredCallbackIsInert() ?? false
+        let before = (motion.progress, motion.velocity, panel.frame)
+        stop(); collapse(); beginSmokeExpansion()
+        return sourceSafe && smokeStopped && motion.progress == before.0 && motion.velocity == before.1
+            && panel.frame == before.2 && panel.ignoresMouseEvents
     }
     /// Real AppKit panel checks with synthetic geometry/data; never a physical-notch claim.
     func verifyNativeGeometry() -> Bool {
@@ -199,6 +264,7 @@ final class IslandPanelController: NSObject {
         var valid = true
         for progress in [0.0, 0.2, 0.65, 1, 0.7, 0.35, 0.8, 1, 0] {
             apply(progress: progress)
+            panel.contentView?.layoutSubtreeIfNeeded()
             panel.contentView?.displayIfNeeded()
             let expected = geometry.frame(progress: progress)
             let top = abs(panel.frame.maxY - geometry.screen.maxY) < 0.5
@@ -219,6 +285,10 @@ final class IslandPanelController: NSObject {
         let point = CGPoint(x: geometry.notch.midX, y: geometry.screen.maxY - geometry.notch.height - 2)
         updatePointer(point, now: 0); updatePointer(point, now: 0.13)
     }
+    func smokePointer(at point: CGPoint, now: TimeInterval) {
+        guard CommandLine.arguments.contains("--motion-test") else { return }
+        updatePointer(point, now: now)
+    }
     func smokePointer(inside: Bool, now: TimeInterval) {
         let point = inside ? CGPoint(x: geometry.notch.midX, y: geometry.screen.maxY - geometry.notch.height - 2)
             : CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
@@ -226,8 +296,18 @@ final class IslandPanelController: NSObject {
     }
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
     var smokeProgress: Double { motion.progress }
+    var smokeVelocity: Double { motion.velocity }
+    var smokeMotionRunning: Bool { motionFrames != nil }
+    var motionProbe: IslandMotionProbe {
+        IslandMotionProbe(observed: CACurrentMediaTime(), frame: panel.frame,
+            contentBounds: panel.contentView?.bounds ?? .zero,
+            layerPresentation: panel.contentView?.layer?.presentation()?.bounds,
+            viewport: renderedViewport, renderedProgress: renderedProgress, renderedAt: renderedAt,
+            requestedProgress: presentation.progress, visible: panel.isVisible,
+            nonKey: !panel.isKeyWindow && !panel.canBecomeKey, running: motionFrames != nil)
+    }
     var smokeTargetExpanded: Bool { hover.isExpanded }
-    var smokeStopped: Bool { stopped && pointerTimer == nil && motionTimer == nil && !panel.isVisible }
+    var smokeStopped: Bool { stopped && pointerTimer == nil && motionFrames == nil && !panel.isVisible }
     func verifySmokeClickRouting() -> Bool {
         let frame = geometry.frame(progress: 1)
         updateClickRouting(CGPoint(x: frame.midX, y: frame.minY + 100))
@@ -250,7 +330,8 @@ final class IslandPanelController: NSObject {
         SmokeDiagnostics.mark(valid ? "native island bitmap edge coverage passed" : "native island bitmap edge coverage failed")
         return valid
     }
-    var smokeExpanded: Bool {
+    var smokeExpanded: Bool { verifyExpandedLayout(includePixels: true) }
+    func verifyExpandedLayout(includePixels: Bool) -> Bool {
         let contentHeight = geometry.expandedSize.height - geometry.notch.height - 8
         let quitVisible = quitFrame.width > 0 && quitFrame.height >= 20
             && CGRect(x: 0, y: 0, width: 340, height: contentHeight).contains(quitFrame)
@@ -263,7 +344,7 @@ final class IslandPanelController: NSObject {
             CGPoint(x: originX + quitFrame.midX, y: contentTop - quitFrame.midY)
         ]
         let clickable = clickPoints.allSatisfy(geometry.interactiveContains)
-        let rendered = verifyRenderedTopEdge()
+        let rendered = !includePixels || verifyRenderedTopEdge()
         SmokeDiagnostics.mark("expanded progress=\(motion.progress) settled=\(motion.isSettled) visible=\(panel.isVisible) quit=\(quitFrame) contentHeight=\(contentHeight) quitVisible=\(quitVisible) clickable=\(clickable)")
         SmokeDiagnostics.mark(quitVisible && clickable ? "visible Quit layout and routing bounds passed" : "visible Quit layout or routing bounds failed")
         return motion.progress == 1 && motion.isSettled && panel.isVisible && quitVisible && clickable && rendered

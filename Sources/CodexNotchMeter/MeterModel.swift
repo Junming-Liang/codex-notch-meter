@@ -113,7 +113,7 @@ final class MeterModel: ObservableObject {
         skinAnimator.set(policy: policy, speed: skinSpeed)
     }
     func setSkinPhaseForTesting(_ phase: Double) {
-        guard demo, CommandLine.arguments.contains("--contour-test"), phase.isFinite else { return }
+        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--motion-test"), phase.isFinite else { return }
         skinPhase = min(0.999999, max(0, phase))
     }
     var stale: Bool { (!demo || CommandLine.arguments.contains("--contour-test")) && (snapshot?.isStale(at: now) ?? false) }
@@ -216,9 +216,22 @@ final class MeterModel: ObservableObject {
         executablePath = path; snapshot = nil; error = nil; nextAttempt = .distantPast
         refresh()
     }
+    /// Bounded many-row UI load for native timing only. No account reads or preference writes.
+    func setMotionFixture(remaining: Double) {
+        guard demo, CommandLine.arguments.contains("--motion-test") else { return }
+        now = Date(); error = nil
+        snapshot = QuotaSnapshot(buckets: (0..<4).map { index in
+            QuotaBucket(id: "synthetic-\(index)", name: "演示额度组 \(index + 1)", windows: [
+                QuotaWindow(id: "\(index)-short", usedPercent: 100 - remaining, durationMinutes: 300,
+                    resetsAt: now.addingTimeInterval(8160)),
+                QuotaWindow(id: "\(index)-long", usedPercent: 62, durationMinutes: 10080,
+                    resetsAt: now.addingTimeInterval(304200))
+            ])
+        }, fetchedAt: now)
+    }
     /// Synthetic rendering fixtures update the SAME live published model; never enable account I/O.
     func setContourFixture(left: Double?, right: Double?, stale: Bool = false, pending: Bool = false) {
-        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") else { return }
+        guard demo, CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") else { return }
         now = Date(); error = nil
         snapshot = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Codex · Demo", windows: [left, right].enumerated().map { index, remaining in
             QuotaWindow(id: "render-\(index)", usedPercent: remaining.map { 100 - $0 },

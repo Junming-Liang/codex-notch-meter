@@ -8,15 +8,16 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
     private var smokeIsland: IslandPanelController?
     private var contourHarness: ContourRenderHarness?
     private var alignmentHarness: AlignmentRenderHarness?
+    private var motionHarness: NativeMotionHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -110,7 +111,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
+            if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
+            else if CommandLine.arguments.contains("--alignment-test") { runAlignmentTest() }
             else if CommandLine.arguments.contains("--contour-test") { runContourTest() }
             else { runSmokeTest() }
         }
@@ -140,7 +142,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -291,6 +293,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         smokePhaseStarted = smokeStarted
         smokeTimer = Timer.scheduledTimer(timeInterval: 0.05, target: self,
             selector: #selector(advanceSmokeTest(_:)), userInfo: nil, repeats: true)
+    }
+    private func runMotionTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        let frame = screen.frame, left = frame.midX - 110 + 0.25, right = left + 220
+        guard let notch = NotchGeometry.calculate(screen: frame, topInset: 32,
+            auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - 32, width: left - frame.minX, height: 32),
+            auxiliaryRight: CGRect(x: right, y: frame.maxY - 32, width: frame.maxX - right, height: 32)) else { requestQuit(); return }
+        motionHarness = NativeMotionHarness(model: model,
+            geometry: IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor, horizontalAdjustment: 2.5)) { [weak self] valid in
+                self?.smokeReady = valid; self?.requestQuit()
+            }
+        motionHarness?.start()
     }
     private func runAlignmentTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }
