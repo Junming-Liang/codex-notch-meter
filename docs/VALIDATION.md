@@ -2,6 +2,28 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v0.1.9 observed notification compatibility results
+
+[Diagnostic run #30](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38864370658) and [release run #31](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38865243130) passed on 2026-10-16. The immutable release tag points to [`4dbfe2e9faa8dfa5283869603326176f7e20cc77`](https://github.com/Junming-Liang/codex-notch-meter/commit/4dbfe2e9faa8dfa5283869603326176f7e20cc77), tree `8fe431a77cdaf3a43060a86513f75fccb8902ef5`.
+
+The prior notice tracker suppressed every change when the optional rate-limits account identity was unavailable. Schema-compatible synthetic responses reproduced quota values updating without a notice. The user's raw account response was not inspected, so this is a verified failure path rather than a proven diagnosis of their exact response.
+
+Fresh, ordered, preexisting matching windows can now produce a generic current-value notice when identity or optional duration/reset metadata is unavailable on both readings. It never claims consumption or a comparison interval. Known identity switches, one-sided optional-field changes, initial/recovery reads, failures, stale/replayed/future data and unchanged values still break or suppress comparison. Fully verified same-account/window/reset continuity retains percentage-point deltas. No discovery, quota request, polling, geometry, stroke or motion change was made.
+
+The parser-to-tracker tests cover absent/null/malformed identity, optional window fields, fractional changes, reset/increase cases, secondary-only changes, mixed-window presentation and source/error boundaries. A synthetic owned-process pipe test also parses an identity/metadata-free response. Native parser-to-notice-to-paint cases passed for both unavailable identity and unavailable window metadata, displaying current remaining `79.875` with `consumptionClaim=false`.
+
+Run #30 detailed evidence passed 213 synthetic tests plus one opt-in skip, a separate official helper test, universal builds/plist/ad-hoc signature, all native smoke/skin/stroke/alignment/motion/close/update/display gates, 21 installer safety simulations and actual read-only DMG inspection. Run #31 repeated the unchanged-source workflow successfully; its update, DMG and release checksum receipts were read directly. Release-run painted 2/4/6-second holds measured 2.252/4.069/6.085 seconds. These are hosted synthetic results, not live-account or physical-device confirmation.
+
+The earlier Run #29 passed the notice and other native gates but correctly rejected an outdated `0.1.8` installer version pin. The strict package check was retained, the active version metadata was synchronized to `0.1.9` / build `10`, and source preflight now rejects missing, duplicate or conflicting active version pins. Both final runs passed the real installer gate.
+
+### Download identity
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg): 1,778,145 bytes; advertised SHA-256 `eabaccc488f8c075d84a11a4eb12f0a9399df47c4a2946637bc69ebd662c8581`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip): 1,753,337 bytes; advertised SHA-256 `a7ead27a1fea321f185318be7c386c5fcc10172541d5a394b660ea334d74725c`
+- Both separate checksum files are 102 bytes. Public asset identity and gated release checks agree; no independent downloaded-byte rehash is claimed.
+
+The preview remains ad-hoc signed and unnotarized. Actual login/reboot, macOS 13 runtime, physical notch behavior and the user's notification outcome remain unverified here. Historical results below apply only to their named versions.
+
 ## v0.1.8 observed notice and shared-paint results
 
 [Release run #28](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38845967956) passed on 2026-10-16. The immutable release tag points to [`2ef62ff647a02683f27f797fd4c421ffcb828e54`](https://github.com/Junming-Liang/codex-notch-meter/commit/2ef62ff647a02683f27f797fd4c421ffcb828e54), tree `c76260321435176ee186514ce904dde55b97f78c`.
@@ -281,7 +303,7 @@ The 1x/2x unit geometry cases are mathematical checks, not physical Retina evide
 
 ## Historical v0.1.0
 
-[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer the current v0.1.7 preview.
+[v0.1.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.0) and its immutable assets remain available for history. Its [run #4](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38536308482) passed 32 synthetic tests and a simpler native startup check, but did not inspect the actual notch panel or desktop-bundle discovery. Users subsequently reported desktop discovery, placement and hover/Quit-usability defects. Prefer the current v0.1.9 preview.
 
 The v0.1.1 diagnostic rounding failure was measured and repaired. It should not be described as a proven explanation of every original physical-device v0.1.0 symptom.
 

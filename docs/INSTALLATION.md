@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.8 开发预览
+## v0.1.9 开发预览
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.8)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)
 
-本版仅在额度数值变化时显示提示，停留可选 2 / 4 / 6 秒，默认 4 秒，从完全展开后开始计时；本体与进度轮廓同帧绘制，路径、位置及 3.5 / 4 pt 描边不变。原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
+本版修复可选账户标识或窗口元数据不可用时，额度已更新却没有变化提示的问题。符合条件的数值变化显示“额度已更新”和当前剩余额度；只有可验证的连续读数才计算消耗百分点。首读、未变化、失败仍保持安静。2 / 4 / 6 秒停留、外形、动效和描边均保持不变。原生与安装包验证已通过；实际登录项注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
 ## 安装
 
@@ -72,7 +72,7 @@ Version 0.1.5 provides default-zero per-built-in-display horizontal calibration 
 
 Version 0.1.5 adds display-linked hover geometry on macOS 14+ and a transition-only main-queue fallback for macOS 13. Mid-collapse reentry preserves position and velocity; prewarmed details remain non-sizing. Reduce Motion snaps to the target. Native timing checks passed on the hosted newer OS; physical smoothness and actual macOS 13 runtime remain unverified. The separate rainbow clock stays capped at 15 fps.
 
-Version 0.1.8 only shows a notice for actual numeric quota changes. Notice Hold offers 2/4/6 seconds, default 4, measured after the expanded paint is ready; hovering holds details open. Unchanged, initial, failed and metadata-only reads stay silent. Body and rail use one drawing pass with reference-informed pacing, preserving the existing shape and stroke widths.
+Version 0.1.9 restores generic current-value notices for fresh matching quota changes when optional account identity or window metadata is unavailable. Consumption deltas still require verified continuity. Initial, unchanged and failed reads remain silent; the 2/4/6-second painted hold, shape and motion are unchanged.
 
 ## 显示兼容性 / Display compatibility
 
