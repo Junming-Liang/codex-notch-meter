@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Codex allowance and Apple Music lyrics, at the top of your Mac.</strong></p>
   <p>Native macOS · Read-only quotas · Optional lyrics</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg">Download Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg">Download Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.1">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,14 +12,17 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v1.0.0 formal release.** Playing opens compact lyrics; pausing closes them. Quota-change notices take temporary priority and then return to current playback. [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) and the quota-focused [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) remain available.
+**v1.0.1 formal release.** Each app session starts closed; fresh playback can show tiny artwork. Move the pointer fully left-to-right across the top band without pressing a button to open lyrics; reverse to close. Pause hides lyrics, and quota notices take priority. Recovery and interaction-delayed quota notices are also repaired. [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) and the quota-focused [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) remain available.
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
 ## Apple Music lyrics
 
-- Fresh playback automatically opens compact lyrics; pause, stop or stale playback information hides music and closes its passive view
-- Quota-change notices take priority for the selected 2/4/6-second hold, then return to music if it is still playing; hover can retain ordinary quota details
+- Each app session starts closed; fresh playback can show tiny artwork and a state indicator; missing artwork uses a neutral placeholder without a network fetch
+- A complete no-button left-to-right crossing of the fixed top band opens matched lyrics; reverse to close. Ordinary hover still shows quotas
+- Left-aligned current text, a subdued actual next cue and a small title; no usable current lyric means no empty expanded card
+- Pause, stop, track changes and stale playback hide old lyrics. Resume restores the selected mode only after fresh usable lyrics return
+- Quota notices take priority for the selected 2/4/6-second hold, then return to the selected eligible mode; hover can retain ordinary quota details
 - Local LRC/text import and separately consented LRCLIB community matching; Music support and online matching both default off
 - Exact lookup followed by bounded candidate search; known film/TV attribution suffixes may normalize, while live/remix/cover/language recording distinctions remain
 - Temporary network failures and confirmed no-match results stay distinct; coverage and streaming compatibility remain limited
@@ -28,11 +31,11 @@ See [Enable lyrics](#enable-lyrics-optional) below and the [lyrics integration c
 
 ## Download
 
-1. Download the [v1.0.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg.sha256)
+1. Download the [v1.0.1 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
@@ -70,9 +73,10 @@ The current native interface is primarily Simplified Chinese. Right-click the me
 
 ## Enable lyrics (optional)
 
-1. Open Music yourself and play a track. Enable automatic Apple Music lyrics in Settings.
-2. Read the explanation and choose whether to grant Music Automation access. The app reads the current song and position; it does not control playback.
+1. Open Music yourself and play a track. Enable “Apple Music 歌词与播放指示” (lyrics and playback indicator) in Settings.
+2. Read the explanation and choose whether to grant Music Automation access. The app reads the current song, position and available artwork; it does not control playback.
 3. Import a local UTF-8 LRC/text file for the current track, or separately enable LRCLIB online matching.
+4. Once a usable lyric is available, cross the top band fully left-to-right without a mouse button; reverse to close. Each app session starts closed. Pause and track changes retain the choice, while old text clears immediately.
 
 Online matching sends title, artist, album and duration to `lrclib.net`, without Apple account data, tokens or quota values. Local imports are not uploaded. Community lyrics are not Apple's official lyrics; text without timestamps is labeled unsynced. Temporary failures follow backoff and retain their status. Not every song has a reliable match.
 
@@ -94,7 +98,9 @@ For a remaining physical offset, use Horizontal Adjustment in the same section: 
 | Reset pending | Reset time passed; awaiting a successful fresh response |
 | Demo badge | Synthetic data; no Codex process is running |
 
-Dates use the Mac's local time zone. Failed automatic checks back off to at most 15 minutes; manual refresh and wake can retry sooner.
+Dates use the Mac's local time zone. Timeouts and disconnections retry after 15/30/60/120/300 seconds; other errors retain conservative backoff. Manual refresh and wake can retry sooner. Retained values show their last-success age. A fresh recovery change in an eligible matching quota window may show a current-value update without claiming verified consumption across the failed interval.
+
+An unchanged refresh does not dismiss or restart an existing notice. While interaction blocks delivery, only the latest change waits, bounded by the original 180-second receipt/read freshness and a reset-not-due check. Initial reads and failures themselves stay quiet.
 
 ## Privacy
 

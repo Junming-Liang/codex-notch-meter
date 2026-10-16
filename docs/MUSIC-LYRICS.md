@@ -1,12 +1,10 @@
 # Apple Music lyrics: setup and safety contract
 
-Released: [v1.0.0](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0). [Release Run #41](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38890633568) passed all required gates on the exact final source. Directly read native Music evidence contains 350 synthetic checks in 80.601 seconds, actual light/dark own-view text, 6.047/4.083/2.087-second priority holds, pause/hover/reversal/lifecycle handling and cleanup. Actual final DMG identity and both checksums also passed. See [validation and archive identity](VALIDATION.md). Beta 1 and v0.1.9 remain available.
+Released: [v1.0.1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.1). [Release Run #46](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38912458921) passed all required gates on the exact final source. Its complete native Music receipt contains 609 synthetic checks in 123.146 seconds, including current/next own-view text, decoded artwork pixels, pointer-only selection, pause/hover/quota priority, lifecycle and cleanup. The preceding same-source diagnostic passed 620 checks in 125.098 seconds; loop-observation counts vary with scheduling. Actual final DMG identity and both checksums passed. See [validation and archive identity](VALIDATION.md). v1.0.0, Beta 1 and v0.1.9 remain available.
 
 The user reported that beta1 displays lyrics in their setup. This is configuration-specific feedback; CI injects Music, permission, provider and file boundaries. A separate anonymous request for LRCLIB's documented public example returned HTTP 200 after a transient 503 and backed-off retry, with matching schema/metadata and synchronized-lyrics presence; no lyric text was retained, and that check did not exercise the shipped Swift transport. Cross-version Music/TCC, streaming compatibility and physical appearance remain unverified.
 
-## v1.0.1 development candidate
-
-Native validation is pending; the published v1.0.0 links and evidence above remain the released baseline.
+## Closed-to-lyrics interaction
 
 The revised default is a closed, hardware-depth music indicator with tiny real artwork or a neutral placeholder. No playback controls or artwork network requests are added. Move the pointer completely across the fixed top band from left to right without pressing a mouse button to select the lyric view; reverse direction to close it. A crossing with no usable current lyric is ignored. Merely hovering, moving vertically, resizing the panel or jittering near an edge does not select a mode.
 
@@ -14,23 +12,23 @@ The selected mode starts off each app session and survives pause, track changes 
 
 The approved lyric hierarchy is a small 10pt title, left-aligned 18pt current cue and subdued 12pt actual adjacent next cue. Current text can use two lines; missing next text reduces the target height through the existing spring. Blank gaps, before-first cues, instrumental/unmatched/error states cannot create empty lyric cards or fabricated next lines. Plain text stays explicitly unsynchronized.
 
-Quota-change delivery also recovers after transient timeouts/disconnections: a fresh changed read can show a current-value update without claiming cross-failure consumption. Ordinary unchanged refreshes no longer dismiss or rearm a pending/visible notice. One latest event may wait through UI interaction for up to the original 180-second freshness limit; failures, account/source boundaries and disable still retire it. The bounded recovery observation expires after 24 hours, while normal numeric consumption comparisons retain their shorter freshness requirement.
+Quota-change delivery also recovers after transient timeouts/disconnections: a fresh eligible matching-window change can show a current-value update without claiming cross-failure consumption. Ordinary unchanged refreshes no longer dismiss or rearm a pending/visible notice. One latest event may wait through UI interaction for up to the original 180-second freshness limit; failures, account/source boundaries and disable still retire it. The bounded recovery observation expires after 24 hours, while normal numeric consumption comparisons retain their shorter freshness requirement.
 
 Artwork uses the existing read-only, PID-scoped public Music Apple Events permission. Its optional raw-data response has a separate 4MiB budget and 150ms event wait, preserving a 1s reserve for the final track-identity read. Only bounded single-frame PNG/JPEG data is considered; source dimensions are inspected before a thumbnail of at most 64×64 pixels is decoded. The same process/track/state bracket applies before publication. Images remain in memory, are never logged, and no alternate network source is used. Installed dictionary and synthetic decoder/own-view checks are required; they do not establish all live Music artwork compatibility.
 
 ## Playback and quota priority
 
-Fresh playing music automatically opens compact lyrics. Pause, stop or stale/error metadata hides music; manual hover may retain ordinary quota details. Quota notices temporarily replace passive music without restarting their painted 2/4/6-second dwell, then return to current playback or idle. Settings/menu/popover suppression also applies to recreated displays.
+Each app session begins with lyric mode off. Only a selected lyric mode with usable current text opens the compact view. Pause, stop or stale/error metadata hides music; manual hover may retain ordinary quota details. Quota notices temporarily replace passive music without restarting their painted 2/4/6-second dwell, then return to the selected eligible mode or idle. Settings/menu/popover suppression also applies to recreated displays.
 
 The existing shape, calibration, 3.5/4pt strokes and spring remain. The black body stays visible while its global contour is displaced from idle, then smoothly fades within the final four points using the same Canvas/progress as the rail. Native coverage and old-fade negative controls passed; fixture pixels do not establish physical hand-feel. Displayed island captions use “当前额度” and “主额度”.
 
 ## Setup / 使用
 
-1. 自行打开 Music 并播放歌曲。在本应用“设置 → Apple Music 歌词”中开启“播放时自动展开 Apple Music 歌词”；阅读说明后按意愿批准自动化访问。若需要重试，使用“请求 Music 授权…”。
+1. 自行打开 Music 并播放歌曲。在本应用“设置 → Apple Music 歌词”中开启“Apple Music 歌词与播放指示”；阅读说明后按意愿批准自动化访问。若需要重试，使用“请求 Music 授权…”。
 2. 可为当前歌曲导入 UTF-8 LRC / 文本。也可单独开启 LRCLIB 在线匹配：它会接收歌名、歌手、专辑和时长，返回社区歌词。该选项默认关闭，社区歌词不是 Apple 官方歌词。
-3. 播放时自动显示紧凑歌词，暂停后隐藏音乐内容并收起。额度变化提示结束后，仍在播放就返回歌词，否则回到静止状态；悬停可保留普通额度详情。没有匹配歌词时显示歌曲和对应状态，信息失效则停止显示旧内容。
+3. 每次启动默认收起，播放时可显示小封面。有可用歌词时，不按鼠标键从顶部左侧完整划到右侧打开歌词，反向关闭；普通悬停查看额度。暂停、切歌或信息失效立即隐藏旧内容，保留本次会话所选模式，等新鲜可用歌词再恢复。无匹配时保持收起。额度提示结束后返回所选且可用的模式。
 
-Open Music yourself and play a track. Enable the lyrics setting and choose whether to grant Automation. Import a local UTF-8 LRC/text file for that track, or separately consent to sending its title, artist, album and duration to LRCLIB. Fresh playing opens compact lyrics automatically; pause hides music, and an active quota notice finishes before returning to music or idle. Hover can retain ordinary quota details. Missing lyrics, unavailable metadata and denied permission remain explicit states. Builds remain ad-hoc signed and unnotarized; authorization and streaming behavior vary by setup.
+Open Music yourself and play a track. Enable the lyrics setting and choose whether to grant Automation. Import a local UTF-8 LRC/text file for that track, or separately consent to sending its title, artist, album and duration to LRCLIB. Each app session starts closed. A complete left-to-right pointer crossing without a button selects usable lyrics; reverse to close. Pause hides music while retaining the session selection. An active quota notice finishes before returning to the selected eligible mode or idle. Hover can retain ordinary quota details. Missing lyrics, unavailable metadata and denied permission remain explicit states. Builds remain ad-hoc signed and unnotarized; authorization and streaming behavior vary by setup.
 
 ## Product boundary
 
@@ -38,7 +36,7 @@ Open Music yourself and play a track. Enable the lyrics setting and choose wheth
 - Preserve the approved contour, calibration, stroke widths, spring and quota-refresh behavior. The body visibility staging now follows geometric distance from idle during both opening and closing.
 - Show line-synced lyrics only when actual line timestamps are available. Plain text is explicitly unsynced; instrumental, no match, offline, permission denied and unavailable playback metadata are distinct states.
 - Do not call community or imported text “Apple's official lyrics.” Public MusicKit exposes `hasLyrics`, not the lyric text or synchronization payload.
-- The same existing island automatically opens its compact content while fresh playback is playing. Paused lyrics are hidden even inside manually hovered details; local import and provider consent remain separate controls.
+- The same existing island opens compact lyrics only when the session mode is selected and fresh usable current text exists. Paused lyrics are hidden even inside manually hovered details; local import and provider consent remain separate controls.
 
 ## Implemented module boundaries
 

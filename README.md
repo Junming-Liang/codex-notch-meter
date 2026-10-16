@@ -4,9 +4,9 @@
   <p><strong>Codex 额度与 Apple Music 歌词，融入 Mac 顶边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 可选歌词</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg">下载 Universal DMG</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip">ZIP 备用下载</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg">下载 Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.1">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -24,14 +24,17 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v1.0.0 正式版。** 播放时自动展示紧凑歌词，暂停时收起；额度变化提示保持优先，结束后返回当前播放状态。保留 [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 与仅需额度功能时可用的 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
+> **v1.0.1 正式版。** 每次启动默认收起，播放时可显示小封面；不按鼠标键，从左向右划过顶部打开歌词，反向划过关闭。暂停收起，额度变化提示优先；同时修复短暂读取失败后漏提醒及交互期间的提醒丢失。保留 [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 与仅需额度功能时可用的 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
 
 显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
 ## Apple Music 歌词
 
-- 播放时自动展开紧凑歌词；暂停、停止或播放信息过期时隐藏音乐内容并收起
-- 额度变化提示临时优先，按所选 2 / 4 / 6 秒停留后返回仍在播放的歌词；悬停可保持普通额度详情
+- 每次启动默认收起，播放时可显示小封面与状态指示；缺少可用封面时使用中性占位，不联网补图
+- 不按鼠标键，在固定顶部区域完整左→右划过打开匹配歌词，右→左关闭；普通悬停仍查看额度
+- 左对齐当前句、较弱的真实下一句与小歌名；没有可用当前歌词就不展开空卡片
+- 暂停、停止、切歌或播放信息过期时隐藏旧歌词；恢复后仅在已选择歌词模式且新歌词可用时重新显示
+- 额度变化提示临时优先，按所选 2 / 4 / 6 秒停留后返回当前所选且可用的模式；悬停可保持普通额度详情
 - 支持本地 LRC / 文本，以及单独授权的 LRCLIB 社区歌词匹配；歌词功能与在线匹配默认关闭
 - 先精确匹配，再进行有界候选查询；规整已知影视出处等展示后缀，保留现场、混音、翻唱和语言版本区别
 - 临时网络错误与真正无匹配分别显示；歌词覆盖率和不同系统的流媒体兼容性仍有限
@@ -52,11 +55,11 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v1.0.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg.sha256)
+1. 下载 [v1.0.1 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg.sha256)
 2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
 3. 从“应用程序”打开已安装的副本，再推出 DMG
 
-也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
@@ -112,9 +115,10 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。发布工作流要求合
 
 ### 4. 启用歌词（可选）
 
-1. 自行打开 Music 并播放歌曲，在“设置 → Apple Music 歌词”开启“播放时自动展开 Apple Music 歌词”
-2. 阅读说明后自行选择是否允许 Music 自动化访问；应用只读取当前歌曲与播放位置，不控制播放
+1. 自行打开 Music 并播放歌曲，在“设置 → Apple Music 歌词”开启“Apple Music 歌词与播放指示”
+2. 阅读说明后自行选择是否允许 Music 自动化访问；应用只读取当前歌曲、播放位置与可用封面，不控制播放
 3. 为当前歌曲导入本地 UTF-8 LRC / 文本，或单独开启“使用 LRCLIB 在线匹配歌词”
+4. 有可用歌词后，不按鼠标键从顶部左侧完整划到右侧；反向划过关闭。每次启动默认收起，暂停或换歌保留选择，但不会保留旧句
 
 在线匹配会向 `lrclib.net` 发送歌名、歌手、专辑和时长，不发送 Apple 账户、令牌或额度。本地导入不上传；社区歌词不是 Apple 官方歌词，没有时间戳的文本会标为未同步。若服务暂不可用，应用遵守退避并显示对应状态，不能保证每首歌都有匹配结果。
 
@@ -132,7 +136,9 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。发布工作流要求合
 | “等待确认” | 重置时间已到，等待接口返回新数据；不会自动补满进度 |
 | “演示数据” | 离线合成数据，没有启动 Codex 进程 |
 
-重置日期使用 Mac 的本地时区。网络失败后，自动读取间隔逐步增加，最长 15 分钟；手动刷新和唤醒可主动重试。
+重置日期使用 Mac 的本地时区。超时或断线后按 15 / 30 / 60 / 120 / 300 秒退避重试，其他错误仍使用保守退避；手动刷新和唤醒可主动重试。暂存读数标明上次成功读取的年龄。恢复后若满足账户与窗口连续性条件的新鲜读数确实变化，会显示当前值更新，不把跨失败间隔当作已验证的消耗量。
+
+普通未变化刷新不会撤销或重启已有提醒。交互期间只保留最新的一条变化，在原始读数与接收时间均未超过 180 秒、重置未到期时交付；首读和失败本身保持安静。
 
 ## 隐私与连接方式
 

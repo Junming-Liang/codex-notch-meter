@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v1.0.0 正式版
+## v1.0.1 正式版
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.1/CodexNotchMeter-1.0.1-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.1)
 
-播放 Apple Music 时自动展开紧凑歌词，暂停或播放信息失效时收起；额度变化提示保持优先，结束后返回当前播放状态。歌词与在线匹配默认关闭，开启步骤和数据传输说明见[歌词设置](MUSIC-LYRICS.md)。保留五款皮肤、2 / 4 / 6 秒额度提示、原有轮廓与描边，并改进黑色主体的连续收起。完整原生发布门槛已通过，详见[验证说明](VALIDATION.md)。[Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 和 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) 仍保留。
+每次启动默认收起，播放 Apple Music 时可显示小封面；不按鼠标键，完整左→右划过顶部打开匹配歌词，反向关闭。暂停或信息失效时收起，恢复后按所选模式与新鲜歌词决定是否展开。额度变化提示优先，结束后恢复所选且可用的模式。歌词与在线匹配默认关闭，开启步骤和数据传输说明见[歌词设置](MUSIC-LYRICS.md)。保留五款皮肤、2 / 4 / 6 秒额度提示、原有轮廓与描边，并修复短暂读取失败后的变化提醒及交互期间的提醒丢失。完整原生发布门槛已通过，详见[验证说明](VALIDATION.md)。[Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 和 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) 仍保留。
 
 ## 安装
 
@@ -72,7 +72,7 @@ Version 0.1.5 provides default-zero per-built-in-display horizontal calibration 
 
 Version 0.1.5 adds display-linked hover geometry on macOS 14+ and a transition-only main-queue fallback for macOS 13. Mid-collapse reentry preserves position and velocity; prewarmed details remain non-sizing. Reduce Motion snaps to the target. Native timing checks passed on the hosted newer OS; physical smoothness and actual macOS 13 runtime remain unverified. The separate rainbow clock stays capped at 15 fps.
 
-Version 0.1.9 restores generic current-value notices for fresh matching quota changes when optional account identity or window metadata is unavailable. Consumption deltas still require verified continuity. Initial, unchanged and failed reads remain silent; the 2/4/6-second painted hold, shape and motion are unchanged.
+Version 1.0.1 starts each app session closed; fresh playback can show tiny artwork. A complete pointer-only left-to-right crossing opens usable lyrics; reverse to close. Pause hides lyrics and retains the selection for fresh eligible playback. Quota notices keep priority. Fresh eligible matching-window changes after transport recovery may show a generic current-value notice; unchanged reads no longer dismiss or restart pending/active notices. Consumption deltas still require verified continuity. Initial and failed reads remain silent, and the 2/4/6-second painted hold remains.
 
 ## 显示兼容性 / Display compatibility
 
