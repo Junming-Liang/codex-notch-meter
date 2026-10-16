@@ -89,12 +89,15 @@ final class QuotaUpdateTests: XCTestCase {
         XCTAssertNil(event.previousFetchedAt)
     }
 
-    func testInitialAndRepeatedMissingIdentityAreIncomparable() {
+    func testInitialMissingIdentityIsSilentAndLaterChangeIsGeneric() {
         var tracker = QuotaUpdateTracker()
-        XCTAssertEqual(tracker.record(snapshot(at: 100, identity: nil), at: date(100)).windows.first?.change,
-                       .updated(reason: .identityUnavailable))
-        XCTAssertEqual(tracker.record(snapshot(at: 110, identity: nil, windows: [window(used: 40)]), at: date(110)).windows.first?.change,
-                       .updated(reason: .identityUnavailable))
+        let first = tracker.record(snapshot(at: 100, identity: nil), at: date(100))
+        XCTAssertEqual(first.windows.first?.change, .updated(reason: .identityUnavailable))
+        assertSilent(first)
+        let next = tracker.record(snapshot(at: 110, identity: nil, windows: [window(used: 40)]), at: date(110))
+        XCTAssertEqual(next.windows.first?.change, .updated(reason: .identityUnavailable))
+        XCTAssertTrue(next.windows.first?.hasNumericChange == true)
+        XCTAssertNil(next.previousFetchedAt)
     }
 
     func testMissingIdentityCannotBridgeAnIdentifiedPair() {
@@ -208,7 +211,6 @@ final class QuotaUpdateTests: XCTestCase {
         let cases: [(QuotaSnapshot, QuotaSnapshot, Double)] = [
             (first, snapshot(at: 110, identity: nil, windows: changed), 110),
             (snapshot(at: 100, identity: nil), snapshot(at: 110, windows: changed), 110),
-            (snapshot(at: 100, identity: nil), snapshot(at: 110, identity: nil, windows: changed), 110),
             (first, snapshot(at: 110, identity: "synthetic-account-b", windows: changed), 110),
             (first, snapshot(at: 110, bucketID: "other", windows: changed), 110),
             (first, snapshot(at: 110, windows: [window(id: "codex:secondary", used: 40)]), 110),
@@ -497,7 +499,8 @@ final class QuotaUpdateTests: XCTestCase {
         let first = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Demo", windows: [window()])], fetchedAt: date(100))
         let next = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Demo", windows: [window(used: 40)])], fetchedAt: date(110))
         XCTAssertEqual(change(first, next), .updated(reason: .identityUnavailable))
-        assertSilent(update(first, next))
+        XCTAssertTrue(update(first, next).windows.first?.hasNumericChange == true)
+        XCTAssertNil(update(first, next).previousFetchedAt)
     }
 
     func testParserAcceptsOptionalCamelCaseIdentityForExistingResponse() throws {
@@ -508,14 +511,16 @@ final class QuotaUpdateTests: XCTestCase {
         XCTAssertEqual(change(first, other), .updated(reason: .accountChanged))
     }
 
-    func testParserMissingEmptyAndMalformedIdentityStillReadsQuota() throws {
+    func testParserUnavailableIdentityAllowsGenericChangeButNeverConsumption() throws {
         let invalid: [String?] = [nil, "null", "false", "42", "[]", "{}", #""""#, #""   ""#, #""bad\nidentity""#]
         for identity in invalid {
             let first = try parsed(identityJSON: identity, at: 100)
             let next = try parsed(identityJSON: identity, at: 110, used: 40)
             XCTAssertEqual(next.bucket()?.windows.first?.remainingPercent, 60)
-            XCTAssertEqual(change(first, next), .updated(reason: .identityUnavailable))
-            assertSilent(update(first, next))
+            let event = update(first, next)
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .identityUnavailable))
+            XCTAssertTrue(event.windows.first?.hasNumericChange == true)
+            XCTAssertNil(event.previousFetchedAt)
         }
     }
 
@@ -536,6 +541,135 @@ final class QuotaUpdateTests: XCTestCase {
         XCTAssertEqual(event.windows.count, 2)
         XCTAssertEqual(event.window(bucketID: "codex", windowID: "codex:primary")?.change, .decreased(percentagePoints: 5))
         XCTAssertEqual(event.window(bucketID: "other", windowID: "other:secondary")?.change, .unchanged)
+    }
+
+
+    func testIdentityFreeParserSequenceInitialUnchangedDecreaseAndIncrease() throws {
+        var tracker = QuotaUpdateTracker()
+        for (index, used) in [20.0, 20.0, 20.125, 10.0, 10.0].enumerated() {
+            let current = try parsed(identityJSON: nil, at: 100 + Double(index) * 60, used: used)
+            let event = tracker.record(current, at: current.fetchedAt)
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .identityUnavailable))
+            XCTAssertEqual(event.windows.first?.hasNumericChange, index == 2 || index == 3)
+            XCTAssertNil(event.previousFetchedAt)
+        }
+    }
+
+    func testIdentityFreeSubHundredthChangeIsNotRoundedAway() throws {
+        let event = update(try parsed(identityJSON: nil, at: 100, used: 20.001),
+                           try parsed(identityJSON: nil, at: 110, used: 20.002))
+        XCTAssertTrue(event.changedWindow()?.hasNumericChange == true)
+        XCTAssertEqual(event.changedWindow()?.change, .updated(reason: .identityUnavailable))
+        XCTAssertNil(event.previousFetchedAt)
+    }
+
+    func testIdentityFreeMapSelectsChangedSecondaryAcrossReorderAndPreferenceSwitch() throws {
+        let firstJSON = #"{"rateLimitsByLimitId":{"other":{"primary":{"usedPercent":15}},"codex":{"primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":1000},"secondary":{"usedPercent":30,"windowDurationMins":10080,"resetsAt":2000}}}}"#
+        let nextJSON = #"{"rateLimitsByLimitId":{"codex":{"secondary":{"usedPercent":30.25,"windowDurationMins":10080,"resetsAt":2000},"primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":1000}},"other":{"primary":{"usedPercent":15}}}}"#
+        let first = try QuotaParser.parse(Data(firstJSON.utf8), fetchedAt: date(100))
+        let next = try QuotaParser.parse(Data(nextJSON.utf8), fetchedAt: date(160))
+        let event = update(first, next)
+        for preference in ["codex:primary", "codex:secondary", "missing"] {
+            XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: preference)?.windowID, "codex:secondary")
+        }
+        XCTAssertNil(event.previousFetchedAt)
+        assertSilent(update(next, try QuotaParser.parse(Data(nextJSON.utf8), fetchedAt: date(170))))
+    }
+
+    func testStableAbsentOrNullOptionalMetadataAllowsOnlyGenericCurrentValues() throws {
+        for identity in [nil, #""synthetic-parser-account""#] as [String?] {
+            for fields in ["", #", "windowDurationMins":null, "resetsAt":null"#,
+                           #", "windowDurationMins":300"#, #", "resetsAt":1000"#] {
+                let identityField = identity.map { ",\"accountId\":\($0)" } ?? ""
+                func response(_ used: Double, _ time: Double) throws -> QuotaSnapshot {
+                    let json = "{\"rateLimits\":{\"primary\":{\"usedPercent\":\(used)\(fields)}}\(identityField)}"
+                    return try QuotaParser.parse(Data(json.utf8), fetchedAt: date(time))
+                }
+                let first = try response(20, 100), next = try response(40, 160)
+                let event = update(first, next)
+                XCTAssertEqual(event.changedWindow()?.change, .updated(reason: identity == nil ? .identityUnavailable : .dataUnavailable))
+                XCTAssertNil(event.previousFetchedAt)
+                assertSilent(update(next, try response(40, 170)))
+            }
+        }
+    }
+
+    func testMetadataFreeChangedWindowDoesNotInheritAnotherWindowsConsumptionClaim() {
+        let first = snapshot(at: 100, windows: [window(minutes: nil, reset: nil),
+            window(id: "codex:secondary", used: 30)])
+        let next = snapshot(at: 160, windows: [window(used: 40, minutes: nil, reset: nil),
+            window(id: "codex:secondary", used: 30)])
+        let event = update(first, next)
+        // The aggregate interval belongs to the comparable unchanged secondary.
+        // A selected generic primary still has no decreased/unchanged classification.
+        XCTAssertEqual(event.previousFetchedAt, date(100))
+        XCTAssertEqual(event.changedWindow()?.windowID, "codex:primary")
+        XCTAssertEqual(event.changedWindow()?.change, .updated(reason: .dataUnavailable))
+        XCTAssertEqual(event.window(bucketID: "codex", windowID: "codex:secondary")?.change, .unchanged)
+    }
+
+    func testGenericFallbackRejectsOneSidedMetadataAndChangedDuration() {
+        for identity in [nil, account] {
+            let pairs: [(QuotaWindow, QuotaWindow)] = [
+                (window(minutes: nil), window(used: 40)),
+                (window(), window(used: 40, minutes: nil)),
+                (window(reset: nil), window(used: 40)),
+                (window(), window(used: 40, reset: nil)),
+                (window(minutes: 300, reset: nil), window(used: 40, minutes: 60, reset: nil))
+            ]
+            for (old, new) in pairs {
+                assertSilent(update(snapshot(at: 100, identity: identity, windows: [old]),
+                                    snapshot(at: 160, identity: identity, windows: [new])))
+            }
+        }
+    }
+
+    func testIdentityFreeResetChangeNeedsNumericDifferenceAndFutureReset() {
+        let first = snapshot(at: 100, identity: nil, windows: [window(reset: 105)])
+        for used in [0.0, 40.0] {
+            let event = update(first, snapshot(at: 160, identity: nil, windows: [window(used: used, reset: 2000)]))
+            XCTAssertEqual(event.changedWindow()?.change, .updated(reason: .identityUnavailable))
+            XCTAssertNil(event.previousFetchedAt)
+        }
+        for (used, reset) in [(20.0, 2000.0), (40.0, 105.0), (40.0, 160.0)] {
+            assertSilent(update(first, snapshot(at: 160, identity: nil, windows: [window(used: used, reset: reset)])))
+        }
+    }
+
+    func testIdentityFreeFallbackNeverAcceptsStaleReplayedOrFutureReads() {
+        for identity in [nil, account] {
+            let first = snapshot(at: 100, identity: identity, windows: [window(minutes: nil, reset: nil)])
+            for (fetched, now) in [(99.0, 110.0), (100.0, 110.0), (120.0, 110.0),
+                                   (281.0, 281.0), (160.0, 281.0), (Double.nan, 160.0),
+                                   (Double.infinity, 160.0), (160.0, Double.nan)] {
+                let next = snapshot(at: fetched, identity: identity, windows: [window(used: 40, minutes: nil, reset: nil)])
+                assertSilent(update(first, next, now: now))
+            }
+        }
+    }
+
+    func testIdentityFreeFailureAndSourceChangeRebaselineBeforeNotification() {
+        for invalidateSource in [false, true] {
+            var tracker = QuotaUpdateTracker()
+            _ = tracker.record(snapshot(at: 100, identity: nil), at: date(100))
+            if invalidateSource { tracker.invalidateSource() }
+            else { assertSilent(tracker.recordFailure(at: date(120))) }
+            assertSilent(tracker.record(snapshot(at: 160, identity: nil, windows: [window(used: 40)]), at: date(160)))
+            let next = tracker.record(snapshot(at: 170, identity: nil, windows: [window(used: 41)]), at: date(170))
+            XCTAssertEqual(next.changedWindow()?.change, .updated(reason: .identityUnavailable))
+            XCTAssertNil(next.previousFetchedAt)
+        }
+    }
+
+    func testIdentityFreeUnknownValuesAndAmbiguousWindowsStaySilent() {
+        for unknown in [nil, -1, 101, Double.nan, Double.infinity] as [Double?] {
+            let old = snapshot(at: 100, identity: nil, windows: [window(used: unknown)])
+            let new = snapshot(at: 160, identity: nil, windows: [window(used: 40)])
+            assertSilent(update(old, new)); assertSilent(update(new, snapshot(at: 170, identity: nil, windows: [window(used: unknown)])))
+        }
+        let duplicated = snapshot(at: 160, identity: nil, windows: [window(used: 40), window(used: 41)])
+        assertSilent(update(snapshot(at: 100, identity: nil), duplicated))
+        assertSilent(update(duplicated, snapshot(at: 170, identity: nil, windows: [window(used: 42)])))
     }
 
     func testEventsAndAccidentalDiagnosticsDoNotExposePrivateContinuityIdentity() throws {

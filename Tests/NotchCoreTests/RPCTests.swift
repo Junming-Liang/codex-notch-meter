@@ -69,6 +69,44 @@ final class RPCTests: XCTestCase {
         let quotas = try await connection.request(.rateLimits)
         XCTAssertEqual(try QuotaParser.parse(quotas).bucket()?.windows.first?.remainingPercent, 75)
     }
+    func testIdentityFreePipeResponsesProduceGenericNumericChange() async throws {
+        // The documented optional accountId/duration/reset fields are absent.
+        // Only a local synthetic child is started; no Codex/account is accessed.
+        let script = #"""
+        count=0
+        while IFS= read -r line; do
+            case "$line" in
+                *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{"userAgent":"synthetic"}}';;
+                *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"}}}';;
+                *'"method":"account/rateLimits/read"'*)
+                    count=$((count + 1))
+                    if [ "$count" -eq 1 ]; then
+                        printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25}}}}'
+                    else
+                        printf '%s\n' '{"id":4,"result":{"rateLimits":{"primary":{"usedPercent":25.25}}}}'
+                    fi;;
+            esac
+        done
+        """#
+        let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], timeout: 2)
+        defer { connection.close() }
+        try await connection.start()
+        _ = try await connection.request(.initialize)
+        try await connection.initialized()
+        let account = try await connection.request(.account)
+        XCTAssertEqual(try QuotaParser.account(account), .chatGPT)
+        var tracker = QuotaUpdateTracker()
+        for (index, seconds) in [100.0, 160.0].enumerated() {
+            let response = try await connection.request(.rateLimits)
+            let snapshot = try QuotaParser.parse(response, fetchedAt: Date(timeIntervalSince1970: seconds))
+            let event = tracker.record(snapshot, at: snapshot.fetchedAt)
+            XCTAssertEqual(snapshot.bucket()?.windows.first?.remainingPercent, index == 0 ? 75 : 74.75)
+            XCTAssertEqual(event.windows.first?.hasNumericChange, index == 1)
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .identityUnavailable))
+            XCTAssertNil(event.previousFetchedAt)
+        }
+    }
+
     func testTimeoutFailsPendingRequest() async throws {
         let connection = RPCConnection(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "while IFS= read -r line; do :; done"], timeout: 0.05)
         defer { connection.close() }

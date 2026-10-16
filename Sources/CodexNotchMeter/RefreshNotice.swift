@@ -29,7 +29,7 @@ struct RefreshNotice: Identifiable, Equatable {
     var holdDuration: TimeInterval { duration.seconds }
     var title: String {
         if result.kind == .readFailed { return "额度读取未完成" }
-        if case .decreased = change { return "额度已更新" }
+        if isEligible { return "额度已更新" }
         if case .unchanged = change { return "额度未变化" }
         return "额度已刷新"
     }
@@ -45,7 +45,8 @@ struct RefreshNotice: Identifiable, Equatable {
             case .increased: return "剩余额度已回升"
             case .initial: return "首次读取，不计算消耗"
             case .stale, .nonMonotonic: return "读取间隔不可比，不计算消耗"
-            case .dataUnavailable: return "部分数据暂不可用"
+            case .identityUnavailable, .dataUnavailable:
+                return isEligible ? "当前剩余额度已更新，未计算消耗差值" : "部分数据暂不可用"
             default: return "本次已更新，未计算跨状态差值"
             }
         case nil: return "本次读取完成"

@@ -58,8 +58,13 @@ def main() -> int:
     rejected = re.findall(r'^UPDATE_REJECT_OK: kind=(initial|unchanged|readFailed)$', stdout, re.MULTILINE)
     rejection_ok = len(rejected) == 3 and set(rejected) == {'initial', 'unchanged', 'readFailed'}
     secondary_ok = any(line.startswith('UPDATE_SECONDARY_OK:') for line in stdout.splitlines())
+    generic = re.findall(
+        r'^UPDATE_GENERIC_OK: kind=(identityFreeChange|metadataFreeChange) currentRemaining=79\.875 consumptionClaim=false$',
+        stdout, re.MULTILINE,
+    )
+    generic_ok = len(generic) == 2 and set(generic) == {'identityFreeChange', 'metadataFreeChange'}
     settings_ok = any(line.startswith('UPDATE_SETTINGS_OK:') for line in stdout.splitlines())
-    if process.returncode != 0 or not all((update_ok, shutdown_ok, dwell_ok, rejection_ok, secondary_ok, settings_ok)) or failure:
+    if process.returncode != 0 or not all((update_ok, shutdown_ok, dwell_ok, rejection_ok, secondary_ok, generic_ok, settings_ok)) or failure:
         print('Native update-pill or orderly-shutdown contract failed.', file=sys.stderr)
         return 1
     return 0
