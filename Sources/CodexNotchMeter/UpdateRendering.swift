@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Combine
 import QuartzCore
 import NotchCore
 
@@ -10,7 +11,7 @@ import NotchCore
 final class UpdateRenderHarness: NSObject {
     private enum Scenario: String, CaseIterable {
         case initial, unchanged, readFailed, shortDwell, standardDwell, longDwell, secondaryChanged
-        case identityFreeChange, metadataFreeChange
+        case identityFreeChange, metadataFreeChange, recoveryDwell
         case movingPromotion, coalescing, armedPromotion, reducedMotion, retiredTimer
 
         var fixtureIndex: Int {
@@ -74,6 +75,16 @@ final class UpdateRenderHarness: NSObject {
     private var completedDwells: Set<NoticeDuration> = []
     private var secondaryVerified = false
     private var genericVerified: Set<String> = []
+    private var deliveryQueue = NoticeDeliveryQueue<RefreshNotice>()
+    private var noticeSubscription: AnyCancellable?
+    private var settingSubscription: AnyCancellable?
+    private var noticePublications = 0
+    private var nilPublications = 0
+    private var deliveryChecks: Set<String> = []
+    private var recoveryReadAt: Date?
+    private var recoveryResetAt: Date?
+    private var unchangedActiveVerified = false
+    private var recoveryPaintVerified = false
     private var targetVerified = false
     private var oldDeadlineVerified = false
     private var retainsNoticeWhileClosing = false
@@ -116,6 +127,9 @@ final class UpdateRenderHarness: NSObject {
         for duration in NoticeDuration.allCases { model.noticeDuration = duration }
         model.noticeDuration = .standard
         check(preferencesUnchanged, "demo notice and duration settings never persist")
+        observeNoticePipeline()
+        do { try verifyNoticePipeline() }
+        catch { check(false, "model delivery fixture failed error=\(error)") }
         guard passed else { finish(false); return }
         startScenario()
         let timer = Timer(timeInterval: 0.02, target: self, selector: #selector(tick(_:)), userInfo: nil, repeats: true)
@@ -222,6 +236,186 @@ final class UpdateRenderHarness: NSObject {
         RefreshNotice(id: UUID(), receivedAt: fixture.result.observedAt, result: fixture.result,
             bucketID: fixture.snapshot.buckets.first?.id, window: fixture.snapshot.buckets.first?.windows.first,
             duration: duration)
+    }
+
+    /// Subscribe to actual model events, including nil invalidation, and use the
+    /// production queue. Only its clock/blocker input is synthetic; no account I/O.
+    private func observeNoticePipeline() {
+        noticeSubscription = model.$refreshNotice.dropFirst().sink { [weak self] notice in
+            guard let self else { return }
+            self.noticePublications += 1
+            guard let notice else {
+                self.nilPublications += 1
+                self.deliveryQueue.invalidate()
+                self.controller?.dismissRefreshNotice()
+                return
+            }
+            guard notice.isEligible, let fetchedAt = notice.result.fetchedAt else {
+                self.check(false, "model published ineligible notice id=\(notice.id) eligible=\(notice.isEligible) fetchedAt=\(String(describing: notice.result.fetchedAt))")
+                self.deliveryQueue.invalidate()
+                return
+            }
+            self.deliveryQueue.enqueue(notice, receivedAt: notice.receivedAt,
+                fetchedAt: fetchedAt, resetsAt: notice.window?.resetsAt)
+        }
+        settingSubscription = model.$refreshNoticesEnabled.dropFirst().removeDuplicates().sink { [weak self] enabled in
+            guard let self, !enabled else { return }
+            self.deliveryQueue.invalidate()
+            self.controller?.dismissRefreshNotice()
+        }
+    }
+
+    private func readNoticeFixture(remaining: Double, at date: Date, reset: Date,
+        identity: String = "synthetic-native-delivery") throws {
+        let json = "{\"accountId\":\"\(identity)\",\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":\(100 - remaining),\"windowDurationMins\":300,\"resetsAt\":\(reset.timeIntervalSince1970)}}}"
+        let snapshot = try QuotaParser.parse(Data(json.utf8), fetchedAt: date)
+        model.setNoticeReadFixture(snapshot, at: date)
+    }
+
+    private func seedNoticeFixture(at date: Date, reset: Date) throws {
+        model.setNoticeFailureFixture(.signedOut, at: date.addingTimeInterval(-1))
+        try readNoticeFixture(remaining: 60, at: date, reset: reset)
+        check(model.refreshNotice == nil && !deliveryQueue.isPending,
+            "model initial fixture stays silent after explicit continuity invalidation publications=\(noticePublications) nilPublications=\(nilPublications)")
+    }
+
+    private func verifyNoticePipeline() throws {
+        let base = Date().addingTimeInterval(-30), reset = base.addingTimeInterval(3600)
+        // The same queue blocker represents hover, an open menu and Settings.
+        // Advance the clock eleven seconds, never sleep eleven seconds per case.
+        for blocker in ["hover", "menu", "settings"] {
+            try seedNoticeFixture(at: base, reset: reset)
+            try readNoticeFixture(remaining: 55, at: base.addingTimeInterval(1), reset: reset)
+            guard let notice = model.refreshNotice else { check(false, "\(blocker) missing published change"); return }
+            let deliveredAt = base.addingTimeInterval(12), before = noticePublications
+            let blocked = deliveryQueue.candidate(at: deliveredAt, blocked: true)
+            check(blocked == nil && deliveryQueue.isPending,
+                "\(blocker) preserves pending event after eleven seconds id=\(notice.id) pending=\(deliveryQueue.isPending)")
+            try readNoticeFixture(remaining: 55, at: deliveredAt, reset: reset)
+            let deliverable = deliveryQueue.candidate(at: deliveredAt, blocked: false)
+            check(noticePublications == before && model.refreshNotice?.id == notice.id && deliverable?.id == notice.id,
+                "\(blocker) unchanged read preserves pending event publications=\(noticePublications-before) expectedID=\(notice.id) actualID=\(String(describing: deliverable?.id))")
+            deliveryQueue.didDeliver()
+            let repeated = deliveryQueue.candidate(at: deliveredAt, blocked: false)
+            check(repeated == nil && !deliveryQueue.isPending, "\(blocker) successful delivery consumes queue once")
+            deliveryChecks.insert(blocker)
+            print("UPDATE_DELIVERY_OK: blocker=\(blocker) blockedSeconds=11 latest=true deliveries=1 unchangedPublications=0")
+        }
+        try seedNoticeFixture(at: base, reset: reset)
+        try readNoticeFixture(remaining: 55, at: base.addingTimeInterval(1), reset: reset)
+        let olderID = model.refreshNotice?.id
+        try readNoticeFixture(remaining: 50, at: base.addingTimeInterval(2), reset: reset)
+        guard let newest = model.refreshNotice, let newestFetchedAt = newest.result.fetchedAt else {
+            check(false, "newest replacement missing model event or fetched timestamp"); return
+        }
+        let newestCandidate = deliveryQueue.candidate(at: base.addingTimeInterval(13), blocked: false)
+        check(olderID != newest.id && newestCandidate?.id == newest.id && newestCandidate?.window?.remainingPercent == 50,
+            "newest pending numeric event replaces older id old=\(String(describing: olderID)) new=\(newest.id) actual=\(String(describing: newestCandidate?.id))")
+        deliveryQueue.didDeliver()
+        deliveryQueue.enqueue(newest, receivedAt: newest.receivedAt,
+            fetchedAt: newestFetchedAt, resetsAt: newest.window?.resetsAt)
+        check(deliveryQueue.candidate(at: base.addingTimeInterval(13), blocked: false) == nil,
+            "newest replacement delivers only once even if its publication is replayed")
+        deliveryChecks.insert("newest")
+        print("UPDATE_REPLACEMENT_OK: newest=true currentRemaining=50 deliveries=1")
+
+        for boundary in ["accountSwitch", "failure", "disabled"] {
+            try seedNoticeFixture(at: base, reset: reset)
+            try readNoticeFixture(remaining: 55, at: base.addingTimeInterval(1), reset: reset)
+            check(deliveryQueue.isPending, "\(boundary) begins with a pending model event")
+            let before = nilPublications
+            switch boundary {
+            case "accountSwitch":
+                try readNoticeFixture(remaining: 50, at: base.addingTimeInterval(2), reset: reset,
+                    identity: "synthetic-native-other-account")
+            case "failure": model.setNoticeFailureFixture(.timedOut, at: base.addingTimeInterval(2))
+            default: model.refreshNoticesEnabled = false
+            }
+            check(!deliveryQueue.isPending && deliveryQueue.candidate(at: base.addingTimeInterval(12), blocked: false) == nil
+                && (boundary == "disabled" || (model.refreshNotice == nil && nilPublications > before)),
+                "\(boundary) invalidates queued notice pending=\(deliveryQueue.isPending) nilPublications=\(nilPublications-before) modelID=\(String(describing: model.refreshNotice?.id))")
+            model.refreshNoticesEnabled = true
+            deliveryChecks.insert(boundary)
+            print("UPDATE_INVALIDATION_OK: kind=\(boundary) pending=false")
+        }
+
+        // Check both timestamps independently and prune invalid entries even when
+        // ordinary interaction prevents delivery. Equality at 180 s remains valid.
+        let now = base.addingTimeInterval(1000)
+        for reason in ["receivedExpired", "fetchedExpired", "resetDue", "receivedFuture", "fetchedFuture"] {
+            deliveryQueue = NoticeDeliveryQueue<RefreshNotice>()
+            let receivedAt = reason == "receivedExpired" ? now.addingTimeInterval(-180.001)
+                : reason == "receivedFuture" ? now.addingTimeInterval(1) : now
+            let fetchedAt = reason == "fetchedExpired" ? now.addingTimeInterval(-180.001)
+                : reason == "fetchedFuture" ? now.addingTimeInterval(1) : now
+            deliveryQueue.enqueue(newest, receivedAt: receivedAt, fetchedAt: fetchedAt,
+                resetsAt: reason == "resetDue" ? now : reset)
+            check(deliveryQueue.isPending, "\(reason) begins with an actual queued entry")
+            let candidate = deliveryQueue.candidate(at: now, blocked: true)
+            check(candidate == nil && !deliveryQueue.isPending,
+                "queue invalidates \(reason) while blocked receivedAge=\(now.timeIntervalSince(receivedAt)) fetchedAge=\(now.timeIntervalSince(fetchedAt)) resetDue=\(reason == "resetDue") pending=\(deliveryQueue.isPending)")
+            deliveryChecks.insert(reason)
+            print("UPDATE_QUEUE_GUARD_OK: kind=\(reason) blocked=true pending=false")
+        }
+        deliveryQueue = NoticeDeliveryQueue<RefreshNotice>()
+        deliveryQueue.enqueue(newest, receivedAt: now.addingTimeInterval(-180),
+            fetchedAt: now.addingTimeInterval(-180), resetsAt: reset)
+        check(deliveryQueue.candidate(at: now, blocked: false)?.id == newest.id,
+            "queue retains eligible event at inclusive 180-second boundary")
+        deliveryQueue.invalidate()
+        check(!deliveryQueue.isPending, "explicit queue invalidation clears inclusive-boundary candidate")
+        deliveryChecks.insert("ageBoundary")
+        print("UPDATE_QUEUE_BOUNDARY_OK: seconds=180 eligible=true invalidated=true")
+
+        for kind in ["timedOut", "disconnected", "longGap"] {
+            try seedNoticeFixture(at: base, reset: reset)
+            if kind != "longGap" {
+                model.setNoticeFailureFixture(kind == "timedOut" ? .timedOut : .disconnected,
+                    at: base.addingTimeInterval(1))
+            }
+            let readAt = base.addingTimeInterval(kind == "longGap" ? 181 : 2)
+            try readNoticeFixture(remaining: 50, at: readAt, reset: reset)
+            let notice = model.refreshNotice
+            let reason: QuotaUpdateReason = kind == "longGap" ? .stale : .previousReadFailed
+            check(notice?.isEligible == true && notice?.change == .updated(reason: reason)
+                && notice?.window?.remainingPercent == 50 && notice?.result.previousFetchedAt == nil
+                && deliveryQueue.candidate(at: readAt, blocked: false)?.id == notice?.id,
+                "\(kind) recovery publishes honest current value eligible=\(notice?.isEligible == true) change=\(String(describing: notice?.change)) current=\(String(describing: notice?.window?.remainingPercent)) previous=\(String(describing: notice?.result.previousFetchedAt))")
+            deliveryQueue.didDeliver()
+            deliveryChecks.insert(kind)
+            print("UPDATE_RECOVERY_MODEL_OK: kind=\(kind) currentRemaining=50 consumptionClaim=false")
+        }
+    }
+
+    private func prepareRecoveryNotice() throws -> RefreshNotice? {
+        let base = Date().addingTimeInterval(-30), reset = base.addingTimeInterval(3600)
+        try seedNoticeFixture(at: base, reset: reset)
+        try readNoticeFixture(remaining: 55, at: base.addingTimeInterval(1), reset: reset)
+        model.setNoticeFailureFixture(.disconnected, at: base.addingTimeInterval(2))
+        check(model.refreshNotice == nil && !deliveryQueue.isPending, "transport failure clears pending model notice")
+        let readAt = base.addingTimeInterval(3)
+        try readNoticeFixture(remaining: 50, at: readAt, reset: reset)
+        let deliverAt = readAt.addingTimeInterval(11)
+        check(deliveryQueue.candidate(at: deliverAt, blocked: true) == nil && deliveryQueue.isPending,
+            "recovery model event survives eleven seconds of ordinary suppression")
+        recoveryReadAt = deliverAt.addingTimeInterval(1); recoveryResetAt = reset
+        return deliveryQueue.candidate(at: deliverAt, blocked: false)
+    }
+
+    private func verifyUnchangedActive(_ island: IslandPanelController) {
+        guard let readAt = recoveryReadAt, let reset = recoveryResetAt, let activeNotice,
+            let armed = island.smokeNoticeArmedAt, let painted = island.smokeNoticePaintReadyAt else {
+            check(false, "unchanged active test lacks recovery/paint operands"); return
+        }
+        let before = noticePublications, deadline = armed + activeNotice.holdDuration
+        do { try readNoticeFixture(remaining: 50, at: readAt, reset: reset) }
+        catch { check(false, "unchanged active model fixture failed error=\(error)"); return }
+        check(noticePublications == before && model.refreshNotice?.id == activeNotice.id
+            && island.smokeNoticeID == activeNotice.id && island.smokeNoticeTargetActive
+            && island.smokeNoticeArmedAt == armed && island.smokeNoticePaintReadyAt == painted
+            && island.paintReceipt?.frame.noticeID == activeNotice.id && !deliveryQueue.isPending,
+            "unchanged active publication preserves ID/paint/expiry publications=\(noticePublications-before) expectedID=\(activeNotice.id) actualID=\(String(describing: island.smokeNoticeID)) armedBefore=\(armed) armedAfter=\(String(describing: island.smokeNoticeArmedAt)) paintBefore=\(painted) paintAfter=\(String(describing: island.smokeNoticePaintReadyAt)) deadline=\(deadline)")
+        originalNoticeDeadline = deadline; unchangedActiveVerified = passed
     }
 
     private func startScenario() {
@@ -334,6 +528,17 @@ final class UpdateRenderHarness: NSObject {
             model.setUpdateFixture(fixture.snapshot)
             if scenario.rejectsNotice {
                 rejectNotice(for: fixture, island: island, at: now)
+            } else if scenario == .recoveryDwell {
+                do {
+                    guard let notice = try prepareRecoveryNotice() else {
+                        check(false, "recovery queue must return an eligible model event"); return
+                    }
+                    show(notice, at: now)
+                    guard passed else { finish(false); return }
+                    deliveryQueue.didDeliver()
+                    check(!deliveryQueue.isPending && deliveryQueue.candidate(at: recoveryReadAt ?? Date(), blocked: false) == nil,
+                        "painted recovery consumes shared queue exactly once")
+                } catch { check(false, "painted recovery model fixture failed error=\(error)") }
             } else if let notice = makeNotice(for: fixture, duration: model.noticeDuration) {
                 show(notice, at: now)
             } else { check(false, "changed numeric fixture must produce a factory notice") }
@@ -377,6 +582,7 @@ final class UpdateRenderHarness: NSObject {
                     "normal-run-loop intermediate viewport retains notice and passive routing")
                 if !reduced { check(lastSampleCount >= 3, "real spring callbacks reached intermediate target") }
                 if scenario == .standardDwell { rejectIneligibleWhileActive(island) }
+                if scenario == .recoveryDwell { verifyUnchangedActive(island) }
                 targetVerified = true
             }
             if scenario == .coalescing, targetVerified, held >= 0.65 {
@@ -416,6 +622,17 @@ final class UpdateRenderHarness: NSObject {
                         "generic changed-value notice completed actual painted dwell without consumption claim")
                     genericVerified.insert(scenario.rawValue)
                     print("UPDATE_GENERIC_OK: kind=\(scenario.rawValue) currentRemaining=79.875 consumptionClaim=false")
+                }
+                if scenario == .recoveryDwell {
+                    check(unchangedActiveVerified && originalNoticeDeadline == armed + hold
+                        && activeNotice.isEligible && activeNotice.change == .updated(reason: .previousReadFailed)
+                        && activeNotice.window?.remainingPercent == 50 && activeNotice.result.previousFetchedAt == nil
+                        && activeNotice.title == "额度已更新" && activeNotice.detail.contains("未计算")
+                        && !activeNotice.detail.contains("减少") && !deliveryQueue.isPending,
+                        "generic recovery completes real painted dwell at its unchanged original deadline expected=\(String(describing: originalNoticeDeadline)) actual=\(armed+hold) current=\(String(describing: activeNotice.window?.remainingPercent)) detail=\(activeNotice.detail)")
+                    recoveryPaintVerified = passed
+                    print("UPDATE_RECOVERY_PAINT_OK: reason=previousReadFailed currentRemaining=50 consumptionClaim=false blockedSeconds=11 armedHeld=\(held) paintHeld=\(paintedFor)")
+                    print("UPDATE_UNCHANGED_ACTIVE_OK: publications=0 sameID=true samePaint=true sameDeadline=true armedHeld=\(held) paintHeld=\(paintedFor)")
                 }
                 // Expiry can snap and paint before this inspection callback runs.
                 // Require freshness after the actual scheduled deadline, not after
@@ -624,6 +841,7 @@ final class UpdateRenderHarness: NSObject {
     private func check(_ value: Bool, _ label: String) {
         passed = value && passed
         SmokeDiagnostics.mark("update \(label) valid=\(value)")
+        if !value { print("UPDATE_ASSERT_FAILED: \(label)") }
     }
     private func next(_ phase: Phase, at now: TimeInterval) { self.phase = phase; phaseStarted = now }
     private func advanceScenario() {
@@ -632,7 +850,11 @@ final class UpdateRenderHarness: NSObject {
         else {
             finish(passed && totalSamples >= 20 && nativeProbes >= 20 && expandedChecks == 3
                 && rejectedChecks == 3 && completedDwells == Set(NoticeDuration.allCases) && secondaryVerified
-                && genericVerified == Set(["identityFreeChange", "metadataFreeChange"]))
+                && genericVerified == Set(["identityFreeChange", "metadataFreeChange"])
+                && unchangedActiveVerified && recoveryPaintVerified
+                && deliveryChecks == Set(["hover", "menu", "settings", "newest", "accountSwitch", "failure", "disabled",
+                    "receivedExpired", "fetchedExpired", "resetDue", "receivedFuture", "fetchedFuture", "ageBoundary",
+                    "timedOut", "disconnected", "longGap"]))
         }
     }
 
@@ -652,11 +874,14 @@ final class UpdateRenderHarness: NSObject {
         finished = true; stop()
         let result = valid && passed
         SmokeDiagnostics.mark("update samples=\(totalSamples) nativeProbes=\(nativeProbes) expandedQuitChecks=\(expandedChecks) elapsed=\(CACurrentMediaTime()-startedAt) scanout=false physicalFeelUnverified=true")
-        print(result ? "UPDATE_OK: numeric-only eligibility, actual 2/4/6-second painted dwell, settings safety, native hover promotion, coalescing, reduced motion, content fit and retired callbacks passed" : "UPDATE_FAILED: native update-pill contract failed")
+        print(result ? "UPDATE_OK: numeric-only eligibility, actual 2/4/6-second painted dwell, shared queue/model delivery, generic recovery, unchanged active dwell, settings safety, native hover promotion, coalescing, reduced motion, content fit and retired callbacks passed" : "UPDATE_FAILED: native update-pill contract failed")
         completion(result)
     }
     func stop() {
         timer?.invalidate(); timer = nil; controller?.stop()
+        noticeSubscription?.cancel(); noticeSubscription = nil
+        settingSubscription?.cancel(); settingSubscription = nil
+        deliveryQueue.invalidate()
         if let originalNoticeSetting, let originalDurationSetting {
             model.refreshNoticesEnabled = originalNoticeSetting; model.noticeDuration = originalDurationSetting
             let restored = model.refreshNoticesEnabled == originalNoticeSetting

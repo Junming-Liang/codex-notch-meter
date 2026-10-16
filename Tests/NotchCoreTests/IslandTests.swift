@@ -399,9 +399,12 @@ final class IslandTests: XCTestCase {
                     XCTAssertTrue(screen.contains(frame))
                 }
                 if scale == 1 && origin == .zero {
-                    // Compact endpoint remains explicitly quantized at the same regression progress values.
-                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 341, y: 612, width: 342, height: 156))
-                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 341, y: 585, width: 342, height: 183))
+                    // Independent approved-design oracle: idle height 35, full 220,
+                    // compact 360 through height 138, then smoothstep toward 400.
+                    // At p=.65/.8 the unrounded widths are 364.565696/382.917543;
+                    // add the .5*(1-p) top flare and outward-round each edge.
+                    XCTAssertEqual(island.frame(progress: 0.65), CGRect(x: 329, y: 612, width: 366, height: 156))
+                    XCTAssertEqual(island.frame(progress: 0.8), CGRect(x: 320, y: 585, width: 384, height: 183))
                 }
             }
         }
@@ -523,7 +526,8 @@ final class IslandTests: XCTestCase {
         for scale in [CGFloat(1), CGFloat(2)] {
             let screen = CGRect(x: -1024, y: 768, width: 1024, height: 768)
             for leftSide in [true, false] {
-                let center = leftSide ? screen.minX + 184.25 : screen.maxX - 184.25
+                // Centered 400pt card +12pt screen margin +2.25pt correction room.
+                let center = leftSide ? screen.minX + 214.25 : screen.maxX - 214.25
                 let notch = try makeNotch(screen: screen, center: center, width: 220.5)
                 let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: scale,
                     horizontalAdjustment: leftSide ? -8 : 8)
@@ -547,26 +551,32 @@ final class IslandTests: XCTestCase {
     }
     func testNearEdgeExceptionKeepsFullCardAndRawCollapsedAnchor() throws {
         let screen = CGRect(x: -1024, y: -768, width: 1024, height: 768)
-        for leftSide in [true, false] {
-            let center = leftSide ? screen.minX + 116.25 : screen.maxX - 116.25
-            let notch = try makeNotch(screen: screen, center: center, width: 220)
-            let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 2,
-                horizontalAdjustment: leftSide ? -8 : 8)
-            // The bounded curved top envelope leaves 2.75pt before half-point quantization.
-            XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -2.5 : 2.5)
-            XCTAssertEqual(geometry.notch, notch.notch)
-            XCTAssertEqual(geometry.contourFrame.midX, center + geometry.horizontalAdjustment)
-            let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
-            XCTAssertEqual(expanded.width, 400)
-            XCTAssertNotEqual(expanded.midX, geometry.calibratedNotch.midX)
-            XCTAssertEqual(leftSide ? expanded.minX : expanded.maxX,
-                leftSide ? screen.minX + 12 : screen.maxX - 12)
-            for step in 0...20 {
-                let progress = Double(step) / 20
-                XCTAssertTrue(screen.contains(geometry.frame(progress: progress)))
-                XCTAssertEqual(globalRect(geometry.railRect(progress: progress), in: geometry.frame(progress: progress)), geometry.contourFrame)
+        // 184.25pt centered the former 340pt card, but is legitimately an inward
+        // full-card exception at the approved 400pt width. Keep it explicitly.
+        for distance in [CGFloat(116.25), CGFloat(184.25)] {
+            for leftSide in [true, false] {
+                let center = leftSide ? screen.minX + distance : screen.maxX - distance
+                let notch = try makeNotch(screen: screen, center: center, width: 220)
+                let geometry = IslandGeometry(notch: notch, screen: screen, backingScale: 2,
+                    horizontalAdjustment: leftSide ? -8 : 8)
+                // The closest curved envelope allows 2.5pt after quantization;
+                // the old card-margin position has the full 8pt idle allowance.
+                let maximumAdjustment: Double = distance == 116.25 ? 2.5 : 8
+                XCTAssertEqual(geometry.horizontalAdjustment, leftSide ? -maximumAdjustment : maximumAdjustment)
+                XCTAssertEqual(geometry.notch, notch.notch)
+                XCTAssertEqual(geometry.contourFrame.midX, center + geometry.horizontalAdjustment)
+                let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
+                XCTAssertEqual(expanded.width, 400)
+                XCTAssertNotEqual(expanded.midX, geometry.calibratedNotch.midX)
+                XCTAssertEqual(leftSide ? expanded.minX : expanded.maxX,
+                    leftSide ? screen.minX + 12 : screen.maxX - 12)
+                for step in 0...20 {
+                    let progress = Double(step) / 20
+                    XCTAssertTrue(screen.contains(geometry.frame(progress: progress)), "distance=\(distance), p=\(progress)")
+                    XCTAssertEqual(globalRect(geometry.railRect(progress: progress), in: geometry.frame(progress: progress)), geometry.contourFrame)
+                }
+                XCTAssertTrue(geometry.interactiveContains(CGPoint(x: expanded.midX, y: expanded.midY)))
             }
-            XCTAssertTrue(geometry.interactiveContains(CGPoint(x: expanded.midX, y: expanded.midY)))
         }
     }
     func testInvalidProgressAndBackingScaleUseDefaultGeometry() throws {

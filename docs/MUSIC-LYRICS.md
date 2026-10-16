@@ -14,6 +14,8 @@ The selected mode starts off each app session and survives pause, track changes 
 
 The approved lyric hierarchy is a small 10pt title, left-aligned 18pt current cue and subdued 12pt actual adjacent next cue. Current text can use two lines; missing next text reduces the target height through the existing spring. Blank gaps, before-first cues, instrumental/unmatched/error states cannot create empty lyric cards or fabricated next lines. Plain text stays explicitly unsynchronized.
 
+Quota-change delivery also recovers after transient timeouts/disconnections: a fresh changed read can show a current-value update without claiming cross-failure consumption. Ordinary unchanged refreshes no longer dismiss or rearm a pending/visible notice. One latest event may wait through UI interaction for up to the original 180-second freshness limit; failures, account/source boundaries and disable still retire it. The bounded recovery observation expires after 24 hours, while normal numeric consumption comparisons retain their shorter freshness requirement.
+
 Artwork uses the existing read-only, PID-scoped public Music Apple Events permission. Its optional raw-data response has a separate 4MiB budget and 150ms event wait, preserving a 1s reserve for the final track-identity read. Only bounded single-frame PNG/JPEG data is considered; source dimensions are inspected before a thumbnail of at most 64×64 pixels is decoded. The same process/track/state bracket applies before publication. Images remain in memory, are never logged, and no alternate network source is used. Installed dictionary and synthetic decoder/own-view checks are required; they do not establish all live Music artwork compatibility.
 
 ## Playback and quota priority

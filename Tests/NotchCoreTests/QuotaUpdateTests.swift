@@ -214,8 +214,6 @@ final class QuotaUpdateTests: XCTestCase {
             (first, snapshot(at: 110, identity: "synthetic-account-b", windows: changed), 110),
             (first, snapshot(at: 110, bucketID: "other", windows: changed), 110),
             (first, snapshot(at: 110, windows: [window(id: "codex:secondary", used: 40)]), 110),
-            (first, snapshot(at: 281, windows: changed), 281),
-            (first, snapshot(at: 200, windows: changed), 281),
             (first, snapshot(at: 110, windows: changed), 291),
             (first, snapshot(at: 99, windows: changed), 110),
             (first, snapshot(at: 100, windows: changed), 110),
@@ -245,7 +243,7 @@ final class QuotaUpdateTests: XCTestCase {
         }
     }
 
-    func testLongGapAndStaleEitherSampleAreNonnumeric() {
+    func testLongGapUsesGenericReasonAndStaleCurrentRemainsSilent() {
         XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 281, windows: [window(used: 40)])),
                        .updated(reason: .stale))
         XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 200, windows: [window(used: 40)]), now: 281),
@@ -640,7 +638,7 @@ final class QuotaUpdateTests: XCTestCase {
         for identity in [nil, account] {
             let first = snapshot(at: 100, identity: identity, windows: [window(minutes: nil, reset: nil)])
             for (fetched, now) in [(99.0, 110.0), (100.0, 110.0), (120.0, 110.0),
-                                   (281.0, 281.0), (160.0, 281.0), (Double.nan, 160.0),
+                                   (160.0, 341.0), (Double.nan, 160.0),
                                    (Double.infinity, 160.0), (160.0, Double.nan)] {
                 let next = snapshot(at: fetched, identity: identity, windows: [window(used: 40, minutes: nil, reset: nil)])
                 assertSilent(update(first, next, now: now))

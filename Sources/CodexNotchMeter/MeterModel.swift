@@ -16,7 +16,10 @@ final class MeterModel: ObservableObject {
     @Published private(set) var error: MeterError?
     @Published private(set) var refreshing = false
     @Published private(set) var refreshNotice: RefreshNotice?
-    @Published var refreshNoticesEnabled: Bool { didSet { if !demo { defaults.set(refreshNoticesEnabled, forKey: "refreshNoticesEnabled") } } }
+    @Published var refreshNoticesEnabled: Bool { didSet {
+        if !refreshNoticesEnabled { refreshNotice = nil }
+        if !demo { defaults.set(refreshNoticesEnabled, forKey: "refreshNoticesEnabled") }
+    } }
     @Published var noticeDuration: NoticeDuration { didSet { if !demo { defaults.set(noticeDuration.rawValue, forKey: "noticeDuration") } } }
     private var updateTracker = QuotaUpdateTracker()
     private var lastResolvedExecutable: URL?
@@ -237,15 +240,12 @@ final class MeterModel: ObservableObject {
                 self.lastResolvedExecutable = executable
                 let result = try await QuotaReader.fetch(executable: executable)
                 guard !Task.isCancelled, self.currentTaskID == id else { return }
-                let update = self.updateTracker.record(result, at: Date())
-                snapshot = result; error = nil; policy.succeeded()
-                refreshNotice = RefreshNotice.make(result: update, snapshot: result, preferredBucketID: bucket?.id,
-                    preferredWindowID: primaryWindow?.id, duration: noticeDuration)
+                self.receiveQuotaSnapshot(result, at: Date())
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 let failure = error as? MeterError ?? .disconnected
                 self.error = failure
-                _ = self.updateTracker.recordFailure()
+                _ = self.updateTracker.recordFailure(failure)
                 self.refreshNotice = nil
                 // Never show another account's prior numbers after sign-out or account-type change.
                 if [.signedOut, .unsupportedAccount, .noQuota, .codexMissing, .invalidExecutable].contains(failure) { snapshot = nil }
@@ -258,10 +258,11 @@ final class MeterModel: ObservableObject {
         outstandingTasks[id] = newTask
     }
     func sleep() {
-        sleeping = true; task?.cancel(); task = nil; refreshing = false
+        sleeping = true; task?.cancel(); task = nil; refreshing = false; refreshNotice = nil
     }
     func wake() { sleeping = false; refresh() }
     func stop() {
+        refreshNotice = nil
         music.stop()
         timer?.invalidate(); timer = nil
         skinAnimator.stop()
@@ -284,6 +285,27 @@ final class MeterModel: ObservableObject {
     func setUpdateFixture(_ value: QuotaSnapshot) {
         guard demo, CommandLine.arguments.contains("--update-test") || CommandLine.arguments.contains("--music-test") else { return }
         snapshot = value; now = value.fetchedAt; error = nil
+    }
+    private func receiveQuotaSnapshot(_ result: QuotaSnapshot, at observedAt: Date) {
+        let update = updateTracker.record(result, at: observedAt)
+        snapshot = result; error = nil; policy.succeeded()
+        // Nil from the factory can mean an ordinary unchanged read. Only the
+        // tracker's explicit boundary retires a queued/visible earlier change.
+        if update.invalidatesPreviousNotices { refreshNotice = nil }
+        if refreshNoticesEnabled, let notice = RefreshNotice.make(result: update, snapshot: result,
+            preferredBucketID: bucket?.id, preferredWindowID: primaryWindow?.id,
+            duration: noticeDuration, receivedAt: observedAt) {
+            refreshNotice = notice
+        }
+    }
+    func setNoticeReadFixture(_ value: QuotaSnapshot, at observedAt: Date) {
+        guard demo, CommandLine.arguments.contains("--update-test") else { return }
+        receiveQuotaSnapshot(value, at: observedAt); now = observedAt
+    }
+    func setNoticeFailureFixture(_ failure: MeterError, at observedAt: Date) {
+        guard demo, CommandLine.arguments.contains("--update-test") else { return }
+        _ = updateTracker.recordFailure(failure, at: observedAt)
+        error = failure; refreshNotice = nil; now = observedAt
     }
     /// Bounded many-row UI load for native timing only. No account reads or preference writes.
     func setMotionFixture(remaining: Double) {

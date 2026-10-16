@@ -35,6 +35,9 @@ public struct QuotaUpdate: Equatable, Sendable {
     /// Present only when at least one window is comparable. The selected window's
     /// change must still be checked before presenting an interval or numeric delta.
     public let previousFetchedAt: Date?
+    /// Explicit delivery boundary, distinct from "no new numeric event". UI must
+    /// drop older pending/visible notices here, then may show this result's notice.
+    public let invalidatesPreviousNotices: Bool
 
     public func window(bucketID: String, windowID: String) -> QuotaWindowUpdate? {
         windows.first { $0.bucketID == bucketID && $0.windowID == windowID }
@@ -58,6 +61,9 @@ public struct QuotaUpdate: Equatable, Sendable {
 /// persistence, timers, requests or logs. Call once for each completed refresh.
 public struct QuotaUpdateTracker: Sendable {
     public static let freshnessInterval: TimeInterval = 180
+    /// One in-memory observation may support a current-value notice for at most
+    /// a day. This never extends the 180-second consumption-comparison interval.
+    public static let observationInterval: TimeInterval = 86_400
     private var baseline: QuotaSnapshot?
     private var nextReason: QuotaUpdateReason = .initial
 
@@ -70,11 +76,16 @@ public struct QuotaUpdateTracker: Sendable {
         nextReason = .sourceChanged
     }
 
-    /// Every failed read breaks continuity, even if the UI still displays cached values.
-    public mutating func recordFailure(at now: Date = Date()) -> QuotaUpdate {
-        baseline = nil
+    /// Transport failures retain one bounded last-success observation, not a
+    /// consumption interval. Authentication, source and unclassified failures
+    /// still invalidate it because account continuity cannot be established.
+    public mutating func recordFailure(_ error: MeterError? = nil, at now: Date = Date()) -> QuotaUpdate {
+        let transient = error == .timedOut || error == .disconnected
+        if !transient || baseline.map({ !Self.isRecentObservation($0.fetchedAt, at: now) }) != false {
+            baseline = nil
+        }
         nextReason = .previousReadFailed
-        return QuotaUpdate(kind: .readFailed, windows: [], observedAt: now, fetchedAt: nil, previousFetchedAt: nil)
+        return QuotaUpdate(kind: .readFailed, windows: [], observedAt: now, fetchedAt: nil, previousFetchedAt: nil, invalidatesPreviousNotices: true)
     }
 
     public mutating func record(_ snapshot: QuotaSnapshot, at now: Date) -> QuotaUpdate {
@@ -95,7 +106,11 @@ public struct QuotaUpdateTracker: Sendable {
                     hasNumericChange = false
                 } else if let oldWindow = previousIndex?.windows[key] {
                     let comparison: (change: QuotaWindowUpdate.Change, hasNumericChange: Bool)
-                    if snapshot.continuityIdentity == nil {
+                    if nextReason == .previousReadFailed {
+                        comparison = Self.compareObservedValues(oldWindow, window, at: now, reason: .previousReadFailed)
+                    } else if let previous, !Self.isFresh(previous.fetchedAt, at: now) {
+                        comparison = Self.compareObservedValues(oldWindow, window, at: now, reason: .stale)
+                    } else if snapshot.continuityIdentity == nil {
                         comparison = Self.compareObservedValues(oldWindow, window, at: now, reason: .identityUnavailable)
                     } else if (oldWindow.durationMinutes == nil && window.durationMinutes == nil)
                         || (oldWindow.resetsAt == nil && window.resetsAt == nil) {
@@ -124,6 +139,15 @@ public struct QuotaUpdateTracker: Sendable {
             nextReason = .initial
         }
         let sameWindowSet = previousIndex.map { $0.keys == currentIndex.keys } ?? false
+        let windowBoundary = currentIndex.windows.contains { key, current in
+            guard currentIndex.isUnambiguous(key), previousIndex?.isAmbiguous(key) != true,
+                  let old = previousIndex?.windows[key] else { return true }
+            return old.remainingPercent == nil || current.remainingPercent == nil
+                || old.durationMinutes != current.durationMinutes || old.resetsAt != current.resetsAt
+                || current.resetPending(at: now)
+                || current.resetsAt.map { !$0.timeIntervalSince1970.isFinite } == true
+        }
+        let invalidatesNotices = commonReason != nil || !sameWindowSet || windowBoundary
         let unchanged = !updates.isEmpty && sameWindowSet && updates.allSatisfy { $0.change == .unchanged }
         let hasComparableWindow = updates.contains { update in
             switch update.change {
@@ -133,7 +157,8 @@ public struct QuotaUpdateTracker: Sendable {
         }
         return QuotaUpdate(kind: unchanged ? .unchanged : .updated, windows: updates,
                            observedAt: now, fetchedAt: snapshot.fetchedAt,
-                           previousFetchedAt: hasComparableWindow ? previous?.fetchedAt : nil)
+                           previousFetchedAt: hasComparableWindow ? previous?.fetchedAt : nil,
+                           invalidatesPreviousNotices: invalidatesNotices)
     }
 
     private func comparisonReason(previous: QuotaSnapshot?, current: QuotaSnapshot, now: Date) -> QuotaUpdateReason? {
@@ -141,19 +166,26 @@ public struct QuotaUpdateTracker: Sendable {
         guard let previous else { return current.continuityIdentity == nil ? .identityUnavailable : nextReason }
         let elapsed = current.fetchedAt.timeIntervalSince(previous.fetchedAt)
         guard elapsed.isFinite, elapsed > 0 else { return .nonMonotonic }
-        guard elapsed <= Self.freshnessInterval, Self.isFresh(previous.fetchedAt, at: now) else { return .stale }
+        guard Self.isRecentObservation(previous.fetchedAt, at: now) else { return .stale }
         switch (previous.continuityIdentity, current.continuityIdentity) {
         case (nil, nil):
             // Older backends legitimately omit accountId; the parser also treats
             // malformed optional identity as unavailable. Numeric observation is
             // still useful, but compareObservedValues cannot claim consumption.
-            return nil
+            break
         case (.some(let old), .some(let new)):
-            return old == new ? nil : .accountChanged
+            if old != new { return .accountChanged }
         default:
             // Identity appearing/disappearing is a baseline boundary, not a delta.
             return .identityUnavailable
         }
+        return nil
+    }
+
+    private static func isRecentObservation(_ fetchedAt: Date, at now: Date) -> Bool {
+        let age = now.timeIntervalSince(fetchedAt)
+        return now.timeIntervalSince1970.isFinite && fetchedAt.timeIntervalSince1970.isFinite
+            && age.isFinite && age >= 0 && age <= observationInterval
     }
 
     private static func isFresh(_ fetchedAt: Date, at now: Date) -> Bool {

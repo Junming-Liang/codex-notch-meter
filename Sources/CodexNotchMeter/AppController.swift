@@ -53,7 +53,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var sessionActive = true
     private var terminating = false
     private var quitRequested = false
-    private var pendingNotice: RefreshNotice?
+    private var noticeQueue = NoticeDeliveryQueue<RefreshNotice>()
     private var menuOpen = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -85,15 +85,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         model.$refreshNotice.sink { [weak self] notice in
             DispatchQueue.main.async {
                 guard let self, !self.smokeMode else { return }
-                self.pendingNotice = notice
-                if notice == nil { self.islands.forEach { $0.dismissRefreshNotice() } }
+                if let notice, notice.isEligible, let fetchedAt = notice.result.fetchedAt {
+                    self.noticeQueue.enqueue(notice, receivedAt: notice.receivedAt,
+                        fetchedAt: fetchedAt, resetsAt: notice.window?.resetsAt)
+                } else {
+                    self.noticeQueue.invalidate()
+                    self.islands.forEach { $0.dismissRefreshNotice() }
+                }
                 self.deliverPendingNotice()
             }
         }.store(in: &cancellables)
         model.$refreshNoticesEnabled.removeDuplicates().sink { [weak self] enabled in
             DispatchQueue.main.async {
                 guard let self, !enabled else { return }
-                self.pendingNotice = nil; self.islands.forEach { $0.dismissRefreshNotice() }
+                self.noticeQueue.invalidate(); self.islands.forEach { $0.dismissRefreshNotice() }
             }
         }.store(in: &cancellables)
         model.$overlayEnabled.removeDuplicates().sink { [weak self] _ in
@@ -186,6 +191,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         SmokeDiagnostics.mark("applicationShouldTerminate entered")
         guard !terminating else { return .terminateLater }
         terminating = true
+        noticeQueue.invalidate()
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
         contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); animationHarness?.stop()
@@ -238,12 +244,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayActivity.permitsOverlay && !menuOpen && !popover.isShown && settingsWindow?.isVisible != true
     }
     private func deliverPendingNotice() {
-        guard let notice = pendingNotice else { return }
-        let age = Date().timeIntervalSince(notice.receivedAt)
-        guard notice.isEligible, model.refreshNoticesEnabled, age >= 0, age <= 10 else { pendingNotice = nil; return }
-        guard !smokeMode, !terminating, displayActivity.permitsOverlay, !menuOpen,
-              !popover.isShown, settingsWindow?.isVisible != true, !islands.contains(where: \.isInteracting) else { return }
-        if let island = islands.first, island.showRefreshNotice(notice) { pendingNotice = nil }
+        guard model.refreshNoticesEnabled, !terminating else { noticeQueue.invalidate(); return }
+        let blocked = smokeMode || !displayActivity.permitsOverlay || menuOpen
+            || popover.isShown || settingsWindow?.isVisible == true || islands.contains(where: \.isInteracting)
+        guard let notice = noticeQueue.candidate(at: Date(), blocked: blocked) else { return }
+        if let island = islands.first, island.showRefreshNotice(notice) { noticeQueue.didDeliver() }
     }
     private func updateStatus() {
         statusItem?.button?.title = " " + model.compactLabel
