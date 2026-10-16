@@ -135,6 +135,11 @@ final class MusicLyricsController: ObservableObject {
 
     var importSelectionToken: UUID? { canImport ? trackRevision : nil }
 
+    // Read-only native-fixture receipts. Real playback never exposes these
+    // probes; they neither publish changes nor alter asynchronous completion.
+    var syntheticPlaybackSnapshot: MusicPlaybackSnapshot? { synthetic ? current : nil }
+    var syntheticLyricsDocument: LyricsDocument? { synthetic ? document : nil }
+
     func importLyrics(from userSelectedURL: URL, for selectionToken: UUID) {
         guard canImport, selectionToken == trackRevision, let track = current?.track else { return }
         importTask?.cancel()

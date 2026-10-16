@@ -544,6 +544,11 @@ final class MusicRenderHarness: NSObject {
         let recoveredAt = CACurrentMediaTime()
         try await release(fixture, expiredRead, position: 1)
         try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        // An identical visible line must still await this new import's exact
+        // document receipt, rather than accepting the previous local state.
+        try require(fixture.controller.line == Self.firstLine, "same-line import control starts with its expected cue already visible")
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        print("MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true")
         try await waitMusic(panel, after: recoveredAt)
         try await dwell(0.10)
         let songPixels = try await compactOCR(panel)
@@ -1025,22 +1030,57 @@ final class MusicRenderHarness: NSObject {
     }
     private func release(_ value: MusicFixture, _ request: MusicFixtureCall<Bool>, track: String = "HARBOR A",
                          position: TimeInterval, state: MusicPlaybackState = .playing, observedAt: TimeInterval? = nil) async throws {
-        try require(await value.reader.release(request.id, snapshot(track: track, position: position, state: state, observedAt: observedAt)),
+        let result = snapshot(track: track, position: position, state: state, observedAt: observedAt)
+        guard case .snapshot(let expected) = result else { throw Failure(label: "invalid synthetic read fixture") }
+        try require(await value.reader.release(request.id, result),
                     "release actual pending synthetic Music request")
-        try await until("fresh synthetic track reaches controller") { value.controller.trackTitle == track && value.controller.canImport }
+        do {
+            try await until("exact synthetic read reaches controller") {
+                let returned = await value.reader.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticPlaybackSnapshot == expected
+                    && value.controller.trackTitle == track && value.controller.canImport
+            }
+        } catch {
+            let returned = await value.reader.returnedIDs().contains(request.id)
+            print("MUSIC_READ_DIAGNOSTIC: request=\(request.id) returned=\(returned) expected=\(String(reflecting: expected)) actual=\(String(reflecting: value.controller.syntheticPlaybackSnapshot)) status=\(String(reflecting: value.controller.statusText))")
+            throw error
+        }
     }
     private func beginImport(_ controller: MusicLyricsController, path: String) throws {
         guard let token = controller.importSelectionToken else { throw Failure(label: "no fresh track for synthetic file selection") }
         controller.importLyrics(from: URL(fileURLWithPath: path), for: token)
     }
     private func importDocument(_ value: MusicFixture, text: String) async throws {
-        let result = try document(text)
+        // The parser retains this original metadata, while rendering ignores it.
+        // It identifies application of this operation even if its visible cue is
+        // identical to the previous document. No file is opened by this fixture.
+        let operation = UUID().uuidString
+        let result = try document("[by:fixture-operation-\(operation)]\n\(text)")
+        let expectedLine: String
+        switch result.content {
+        case .synchronized(let cues): expectedLine = cues.first?.text ?? ""
+        case .plain(let lines): expectedLine = lines.first ?? ""
+        default: throw Failure(label: "import helper requires an original visible fixture cue")
+        }
+        let samePriorLine = value.controller.line == expectedLine
         try beginImport(value.controller, path: "/synthetic-only.lrc")
         let request = try await imported(value)
+        try require(value.controller.syntheticLyricsDocument != result,
+                    "previous local document cannot satisfy the new import operation")
         try require(await value.importer.release(request.id, result), "complete injected in-memory import")
-        try await until("local import reaches controller") { value.controller.hasLocalLyrics && value.controller.sourceLabel == "本地歌词" }
-        // Wait for the importing task, not only a previous hasLocalLyrics value.
-        try await until("selected local import completes") { value.controller.statusText != "正在读取所选歌词文件…" }
+        do {
+            try await until("exact local import and expected cue reach controller") {
+                let returned = await value.importer.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticLyricsDocument == result
+                    && value.controller.hasLocalLyrics && value.controller.sourceLabel == "本地歌词"
+                    && value.controller.line == expectedLine
+            }
+        } catch {
+            let returned = await value.importer.returnedIDs().contains(request.id)
+            print("MUSIC_IMPORT_DIAGNOSTIC: request=\(request.id) operation=\(operation) returned=\(returned) documentMatches=\(value.controller.syntheticLyricsDocument == result) samePriorLine=\(samePriorLine) expectedLine=\(String(reflecting: expectedLine)) actualLine=\(String(reflecting: value.controller.line)) status=\(String(reflecting: value.controller.statusText)) playback=\(String(reflecting: value.controller.syntheticPlaybackSnapshot))")
+            throw error
+        }
+        print("MUSIC_IMPORT_RECEIPT: request=\(request.id) operation=\(operation) returned=true documentMatches=true expectedLine=true samePriorLine=\(samePriorLine)")
     }
     private func skipExistingReads(_ value: MusicFixture) async {
         value.readCursor = await value.reader.calls().last?.id ?? value.readCursor
