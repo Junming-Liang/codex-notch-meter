@@ -16,6 +16,7 @@ final class NativeMotionHarness: NSObject {
     private var timer: Timer?
     private var samples: [IslandMotionSample] = []
     private var probes: [IslandMotionProbe] = []
+    private var paints: [(receipt: IslandPaintReceipt, active: Bool)] = []
     private var summaries: [(String, Double, Double)] = []
     private var phase = 0
     private var phaseStarted = CACurrentMediaTime()
@@ -24,6 +25,16 @@ final class NativeMotionHarness: NSObject {
     private var loadCount = 0
     private var passed = true
     private var heldPointer: CGPoint?
+    private struct Pacing {
+        let name: String
+        let began: TimeInterval
+        let origin: Double
+        let target: Double
+        var at95: TimeInterval?
+        var at99: TimeInterval?
+    }
+    private var pacing: Pacing?
+    private var pacingResults: [Pacing] = []
     private weak var initialKey: NSWindow?
     init(model: MeterModel, geometry: IslandGeometry, completion: @escaping (Bool) -> Void) {
         self.model = model; self.geometry = geometry; self.completion = completion
@@ -41,7 +52,7 @@ final class NativeMotionHarness: NSObject {
         self.timer = timer; RunLoop.main.add(timer, forMode: .common)
     }
     private func startProfile() {
-        controller?.stop(); samples = []; probes = []; phase = 0; phaseStarted = CACurrentMediaTime(); loadCount = 0; heldPointer = nil
+        controller?.stop(); samples = []; probes = []; paints = []; phase = 0; phaseStarted = CACurrentMediaTime(); loadCount = 0; heldPointer = nil; pacing = nil; pacingResults = []
         let profile = profiles[profileIndex]
         model.setMotionFixture(remaining: 72)
         lastLoad = CACurrentMediaTime(); lastColorLoad = lastLoad
@@ -49,8 +60,9 @@ final class NativeMotionHarness: NSObject {
             motionProfile: profile, motionSample: { [weak self] sample in
                 guard let self else { return }
                 if self.samples.count < 1500 { self.samples.append(sample) } else { self.passed = false }
+                self.observePacing(sample)
             }, hovered: {}, refresh: {}, settings: {}, quit: {})
-        SmokeDiagnostics.mark("motion profile=\(profile.rawValue) baselineScope=old-drawing-layout-strategy/shared-new-spring buckets=4 windows=8 actualBacking=\(controller?.panel.backingScaleFactor ?? 0)")
+        SmokeDiagnostics.mark("motion profile=\(profile.rawValue) baselineScope=old-synchronous-layout-timer/shared-current-spring-canvas buckets=4 windows=8 actualBacking=\(controller?.panel.backingScaleFactor ?? 0)")
     }
     private func next(_ phase: Int, now: TimeInterval) { self.phase = phase; phaseStarted = now }
     @objc private func check(_ sender: Timer) {
@@ -68,6 +80,9 @@ final class NativeMotionHarness: NSObject {
         }
         if phase == 4, let heldPointer { island.smokePointer(at: heldPointer, now: now) }
         let probe = island.motionProbe
+        if let paint = island.paintReceipt, paints.last?.receipt.sequence != paint.sequence {
+            paints.append((paint, probe.running))
+        }
         if probes.count < 2000 { probes.append(probe) } else { passed = false }
         let manyData = model.snapshot?.buckets.count == 4 && model.snapshot?.buckets.allSatisfy { $0.windows.count == 2 } == true
         let native = manyData && probe.visible && probe.nonKey && NSApp.keyWindow === initialKey
@@ -127,6 +142,7 @@ final class NativeMotionHarness: NSObject {
                 passed = geometry.hoverContains(heldPointer, progress: island.smokeProgress) && passed
                 island.smokePointer(at: heldPointer, now: now)
             }
+            beginPacing("reversal", island: island)
             next(4, now: now)
         case 4 where island.smokeProgress == 1 && !island.smokeMotionRunning:
             heldPointer = nil; next(5, now: now)
@@ -135,7 +151,8 @@ final class NativeMotionHarness: NSObject {
             let viewUpdated = probe.viewport == probe.frame.size && probe.renderedProgress == 1
             passed = expanded && viewUpdated && passed
             SmokeDiagnostics.mark("motion expanded view-update profile=\(profiles[profileIndex]) viewport=\(probe.viewport) content=\(probe.contentBounds) presentation=\(String(describing: probe.layerPresentation)) viewUpdated=\(viewUpdated) quit=\(expanded)")
-            island.collapse(); passed = island.verifyNonadvancingFramesAreInert() && passed
+            island.collapse(); beginPacing("close", island: island)
+            passed = island.verifyNonadvancingFramesAreInert() && passed
             next(6, now: now)
         case 6 where island.smokeProgress == 0 && !island.smokeMotionRunning:
             next(7, now: now)
@@ -143,7 +160,7 @@ final class NativeMotionHarness: NSObject {
             let viewUpdated = probe.viewport == geometry.frame(progress: 0).size && probe.renderedProgress == 0
             passed = viewUpdated && passed
             SmokeDiagnostics.mark("motion recollapse view-update profile=\(profiles[profileIndex]) viewUpdated=\(viewUpdated) frame=\(probe.frame) viewport=\(probe.viewport)")
-            island.beginSmokeExpansion(); next(8, now: now)
+            island.beginSmokeExpansion(); beginPacing("open", island: island); next(8, now: now)
         case 8 where island.smokeProgress == 1 && !island.smokeMotionRunning:
             next(9, now: now)
         case 9 where elapsed >= 0.10:
@@ -162,6 +179,19 @@ final class NativeMotionHarness: NSObject {
             }
         default: break
         }
+    }
+    private func beginPacing(_ name: String, island: IslandPanelController) {
+        if let pacing { pacingResults.append(pacing) }
+        guard let trace = island.smokeRetarget else { passed = false; return }
+        pacing = Pacing(name: name, began: trace.eventTime, origin: trace.integrated.progress,
+            target: trace.nextTarget ? 1 : 0)
+    }
+    private func observePacing(_ sample: IslandMotionSample) {
+        guard var value = pacing, abs(value.target - value.origin) > 0.001 else { return }
+        let residual = abs(value.target - sample.progress) / abs(value.target - value.origin)
+        if residual <= 0.05 && value.at95 == nil { value.at95 = sample.observed - value.began }
+        if residual <= 0.01 && value.at99 == nil { value.at99 = sample.observed - value.began }
+        pacing = value
     }
     private func edgePoint(inside: Bool) -> CGPoint? {
         guard let island = controller else { return nil }
@@ -213,6 +243,14 @@ final class NativeMotionHarness: NSObject {
     }
     private func summarize() {
         let profile = profiles[profileIndex]
+        if let pacing { pacingResults.append(pacing); self.pacing = nil }
+        var pacingValid = pacingResults.count == 3
+        for value in pacingResults {
+            let valid = value.at95.map { $0 > 0.05 && $0 < 1.2 } == true
+                && value.at99.map { $0 >= (value.at95 ?? .infinity) && $0 < 1.4 } == true
+            pacingValid = pacingValid && valid
+            SmokeDiagnostics.mark("motion reference-paced profile=\(profile) phase=\(value.name) at95Seconds=\(String(describing: value.at95)) at99Seconds=\(String(describing: value.at99)) valid=\(valid) nominalReferenceSeconds=0.4 exactReferenceSpring=false")
+        }
         let durations = samples.map(\.applyDuration)
         let gaps = zip(samples, samples.dropFirst()).compactMap { a, b -> Double? in
             a.generation == b.generation ? b.observed - a.observed : nil
@@ -248,7 +286,24 @@ final class NativeMotionHarness: NSObject {
         // Baseline is observational. The new path and13 fallback must meet bounded
         // callback and view-update limits under the same synthetic load.
         let cadence = maxGap <= 0.12 && p95Gap <= 0.05 && p95Apply <= 0.02 && maxRenderLag <= 0.12
-        let valid = samples.count >= 30 && probes.count >= 30 && presentationProbes.count >= 20 && activePresentationCount >= 20
+        let activePaints = paints.filter { $0.active }
+        let paintMatches = paints.allSatisfy { entry in
+            let receipt = entry.receipt, p = receipt.frame.progress
+            let expected = IslandContour(rect: geometry.contourRect(progress: p), progress: p,
+                cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
+            return receipt.actualViewport == receipt.frame.viewport
+                && receipt.frame.viewport == geometry.frame(progress: p).size
+                && receipt.bodyBounds == contourPath(expected, inset: 0, closed: true).boundingRect
+                && receipt.railBounds == contourPath(expected, inset: 2, closed: false).boundingRect
+        }
+        // A real callback writes both paths together. Distinct active samples must
+        // cover opening and closing, rather than reusing a settled idle receipt.
+        let progressDeltas = zip(activePaints, activePaints.dropFirst()).map { $1.receipt.frame.progress - $0.receipt.frame.progress }
+        let openingPaints = progressDeltas.filter { $0 > 0.0001 }.count
+        let closingPaints = progressDeltas.filter { $0 < -0.0001 }.count
+        let coherentPaint = activePaints.count >= 20 && openingPaints >= 5 && closingPaints >= 5 && paintMatches
+        SmokeDiagnostics.mark("motion synchronous-paint profile=\(profile) callbacks=\(paints.count) active=\(activePaints.count) opening=\(openingPaints) closing=\(closingPaints) sameFramePaths=\(paintMatches) valid=\(coherentPaint) scanout=false")
+        let valid = pacingValid && coherentPaint && samples.count >= 30 && probes.count >= 30 && presentationProbes.count >= 20 && activePresentationCount >= 20
             && presentationsValid && native && source == expectedSource
             && (profile == .synchronousBaseline || cadence)
         passed = valid && passed

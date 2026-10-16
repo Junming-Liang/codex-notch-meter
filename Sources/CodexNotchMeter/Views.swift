@@ -317,7 +317,14 @@ struct SettingsView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("在刘海边缘显示额度进度线", isOn: $model.overlayEnabled)
-                    Toggle("刷新时显示短提示", isOn: $model.refreshNoticesEnabled)
+                    Toggle("额度变化时显示提示", isOn: $model.refreshNoticesEnabled)
+                    Picker("提示停留时长", selection: $model.noticeDuration) {
+                        ForEach(NoticeDuration.allCases) { duration in
+                            Text("\(duration.title) · \(Int(duration.seconds)) 秒").tag(duration)
+                        }
+                    }.disabled(!model.refreshNoticesEnabled)
+                    Text("完全展开后开始计时；鼠标停留时保持展开。未变化的刷新不弹出提示。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Picker("外观皮肤", selection: $model.theme) {
                         ForEach(MeterTheme.allCases) { Text($0.title).tag($0) }
                     }

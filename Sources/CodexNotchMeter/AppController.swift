@@ -81,10 +81,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             DispatchQueue.main.async { self?.updateSkinActivity() }
         }.store(in: &cancellables)
         model.$now.sink { [weak self] _ in self?.updateStatus(); self?.deliverPendingNotice() }.store(in: &cancellables)
-        model.$refreshNotice.compactMap { $0 }.sink { [weak self] notice in
+        model.$refreshNotice.sink { [weak self] notice in
             DispatchQueue.main.async {
                 guard let self, !self.smokeMode else { return }
-                self.pendingNotice = notice; self.deliverPendingNotice()
+                self.pendingNotice = notice
+                if notice == nil { self.islands.forEach { $0.dismissRefreshNotice() } }
+                self.deliverPendingNotice()
             }
         }.store(in: &cancellables)
         model.$refreshNoticesEnabled.removeDuplicates().sink { [weak self] enabled in
@@ -230,7 +232,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func deliverPendingNotice() {
         guard let notice = pendingNotice else { return }
         let age = Date().timeIntervalSince(notice.receivedAt)
-        guard model.refreshNoticesEnabled, age >= 0, age <= 10 else { pendingNotice = nil; return }
+        guard notice.isEligible, model.refreshNoticesEnabled, age >= 0, age <= 10 else { pendingNotice = nil; return }
         guard !smokeMode, !terminating, displayActivity.permitsOverlay, !menuOpen,
               !popover.isShown, settingsWindow?.isVisible != true, !islands.contains(where: \.isInteracting) else { return }
         if let island = islands.first, island.showRefreshNotice(notice) { pendingNotice = nil }

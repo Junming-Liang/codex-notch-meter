@@ -121,7 +121,9 @@ final class CollapseRenderHarness: NSObject {
                 guard !isInterruption else { finish(false); return }
                 let receipt = island.closeReceipt
                 let ready = receipt.map { event in
-                    event.outcome == .ready && (event.acknowledgedAt ?? .infinity) > event.requestedAt
+                    event.outcome == .ready && (event.paintedAt ?? 0) >= event.requestedAt
+                        && (event.renderedAt ?? 0) >= event.requestedAt
+                        && (event.acknowledgedAt ?? .infinity) > event.requestedAt
                         && (event.acknowledgedAt ?? .infinity) - event.requestedAt < 0.12
                         && (event.renderedAt ?? 0) >= event.requestedAt
                         && (event.completedAt ?? 0) >= (event.acknowledgedAt ?? .infinity)
@@ -129,7 +131,7 @@ final class CollapseRenderHarness: NSObject {
                 } ?? false
                 let valid = tailSamples >= 4 && (isBaseline || ready)
                 passed = (isBaseline || valid) && passed
-                SmokeDiagnostics.mark("collapse retirement cycle=\(label) tailCallbacks=\(tailSamples) requestedAt=\(String(describing: receipt?.requestedAt)) acknowledgedAt=\(String(describing: receipt?.acknowledgedAt)) retiredAt=\(String(describing: receipt?.completedAt)) finalDisplaySeconds=\(String(describing: receipt?.finalDisplayDuration)) viewUpdatedAt=\(String(describing: receipt?.renderedAt)) outcome=\(String(describing: receipt?.outcome)) valid=\(valid)")
+                SmokeDiagnostics.mark("collapse retirement cycle=\(label) tailCallbacks=\(tailSamples) requestedAt=\(String(describing: receipt?.requestedAt)) acknowledgedAt=\(String(describing: receipt?.acknowledgedAt)) retiredAt=\(String(describing: receipt?.completedAt)) finalDisplaySeconds=\(String(describing: receipt?.finalDisplayDuration)) viewUpdatedAt=\(String(describing: receipt?.renderedAt)) paintedAt=\(String(describing: receipt?.paintedAt)) outcome=\(String(describing: receipt?.outcome)) valid=\(valid)")
                 next(4, at: now)
             }
         case 4:
@@ -216,6 +218,10 @@ final class CollapseRenderHarness: NSObject {
         for scale in [1, 2] {
             guard let topFirst = rowOrientation[scale],
                   let bitmap = NativeContourBitmap.capture(view, scale: scale, topRowFirst: topFirst, padToWholePixels: true) else { continue }
+            if phase == 20 && replayIndex < 2 {
+                passed = IslandPaintParity.check(current: bitmap, model: model, geometry: geometry,
+                    progress: progressPoints[replayIndex]) && passed
+            }
             let expectedWidth = Int(ceil(view.bounds.width * CGFloat(scale)))
             let expectedHeight = Int(ceil(view.bounds.height * CGFloat(scale)))
             guard bitmap.representation.pixelsWide == expectedWidth, bitmap.representation.pixelsHigh == expectedHeight else { continue }
@@ -290,6 +296,39 @@ final class CollapseRenderHarness: NSObject {
         }
         return weight > 1 ? weightedX / weight : nil
     }
+    /// Independent point-space side probes bind visible body and color to the same
+    /// progress. The text lies farther inward; the right used tail is intentionally black.
+    private func pairedSide(_ pixels: [Double], scale: Int, progress: Double) -> (body: Double, rail: Double)? {
+        let native = geometry.frame(progress: progress), rect = geometry.contourRect(progress: progress)
+        let side = native.minX + rect.minX + CGFloat(12 * progress)
+        let depth = rect.height / 2
+        let width = Int(canvas.width * CGFloat(scale)), height = Int(canvas.height * CGFloat(scale))
+        guard pixels.count == width * height * 4 else { return nil }
+        var bodyEdges: [Double] = [], colorWeight = 0.0, colorX = 0.0
+        for y in 0..<height {
+            let globalY = canvas.maxY - (CGFloat(y) + 0.5) / CGFloat(scale)
+            guard abs(native.maxY - globalY - depth) <= 3 else { continue }
+            var first: Double?
+            for x in 0..<width {
+                let gx = canvas.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
+                guard gx >= side - 3, gx <= side + 6 else { continue }
+                let index = (y * width + x) * 4
+                if first == nil, pixels[index + 3] > IslandReveal.surface(progress) * 0.5 { first = Double(gx) }
+                let chroma = max(pixels[index], max(pixels[index + 1], pixels[index + 2]))
+                    - min(pixels[index], min(pixels[index + 1], pixels[index + 2]))
+                colorWeight += chroma; colorX += Double(gx) * chroma
+            }
+            if let first { bodyEdges.append(first) }
+        }
+        guard !bodyEdges.isEmpty, colorWeight > 0.1 else { return nil }
+        return (bodyEdges.reduce(0, +) / Double(bodyEdges.count) - Double(side),
+            colorX / colorWeight - Double(side + 2))
+    }
+    private func coherentSide(_ measurement: (body: Double, rail: Double)?, scale: Int) -> Bool {
+        guard let measurement else { return false }
+        return abs(measurement.body) <= 1 / Double(scale)
+            && abs(measurement.rail) <= 0.6 / Double(scale)
+    }
     private func inspectReplay() {
         for scale in [1, 2] {
             guard let scenes = replayPixels[scale], scenes.count == progressPoints.count, let idle = scenes.last else { passed = false; continue }
@@ -342,6 +381,26 @@ final class CollapseRenderHarness: NSObject {
             let thirdChroma = movingChroma(scenes[1], progress: 0.3)
             let absentChroma = movingChroma([Double](repeating: 0, count: idle.count), progress: 0.5)
             let movingRail = halfChroma > 0.02 && thirdChroma > halfChroma * 1.1 && absentChroma == 0
+            var paired = true
+            for index in 0...1 {
+                let measurement = pairedSide(scenes[index], scale: scale, progress: progressPoints[index])
+                // Shift RGB by three points while leaving the body's alpha unchanged:
+                // this recreates a rail/body phase disagreement in the same detector.
+                var fault = scenes[index]
+                let width = Int(canvas.width * CGFloat(scale)), height = Int(canvas.height * CGFloat(scale))
+                for y in 0..<height { for x in 0..<width {
+                    let destination = (y * width + x) * 4
+                    for channel in 0..<3 {
+                        fault[destination + channel] = x >= 3 * scale
+                            ? scenes[index][(y * width + x - 3 * scale) * 4 + channel] : 0
+                    }
+                } }
+                let faultMeasurement = pairedSide(fault, scale: scale, progress: progressPoints[index])
+                let valid = coherentSide(measurement, scale: scale)
+                    && !coherentSide(faultMeasurement, scale: scale)
+                paired = paired && valid
+                SmokeDiagnostics.mark("collapse paired-body-rail theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progressPoints[index]) bodyRailErrors=\(String(describing: measurement)) shiftedRailErrors=\(String(describing: faultMeasurement)) valid=\(valid) replayNotScanout=true")
+            }
             SmokeDiagnostics.mark("collapse shared-contour middle theme=\(themes[replayTheme].rawValue) scale=\(scale) p50Chroma=\(halfChroma) p30Chroma=\(thirdChroma) missingRailRejected=\(absentChroma <= 0.02) movingFade=\(movingRail)")
             let missing = [Double](repeating: 0, count: idle.count)
             var rectangle = idle
@@ -376,7 +435,7 @@ final class CollapseRenderHarness: NSObject {
                 SmokeDiagnostics.mark("collapse side-axis theme=\(themes[replayTheme].rawValue) scale=\(scale) expectedBand=\(axis) terminalDeltas=\(deltas) onePointFaultDelta=\(displacement) stable=\(stable) shiftedRejected=\(rejected)")
             }
             let controls = missingDelta > 0.12 && opaqueDelta > 0.12 && shiftedAxesRejected && abruptDelta > 0.12
-            passed = late && terminalAxes && controls && movingRail && passed
+            passed = late && terminalAxes && controls && movingRail && paired && passed
             SmokeDiagnostics.mark("collapse tail gate theme=\(themes[replayTheme].rawValue) scale=\(scale) late=\(late) terminalBounds=\(terminalBounds) terminalAxes=\(terminalAxes) monotonicTail=\(monotonicTail) controls=\(controls) missing=\(missingDelta) opaque=\(opaqueDelta) staleViewport=\(staleViewportDelta) abruptReplacement=\(abruptDelta) valid=\(late && terminalAxes && controls)")
         }
     }

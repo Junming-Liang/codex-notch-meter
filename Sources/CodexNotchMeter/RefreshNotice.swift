@@ -9,11 +9,24 @@ struct RefreshNotice: Identifiable, Equatable {
     let result: QuotaUpdate
     let bucketID: String?
     let window: QuotaWindow?
+    var duration: NoticeDuration = .standard
+    var isEligible: Bool {
+        guard let bucketID, let window else { return false }
+        return result.window(bucketID: bucketID, windowID: window.id)?.hasNumericChange == true
+    }
+
+    static func make(result: QuotaUpdate, snapshot: QuotaSnapshot, preferredBucketID: String?,
+                     preferredWindowID: String?, duration: NoticeDuration, receivedAt: Date = Date()) -> RefreshNotice? {
+        guard let changed = result.changedWindow(preferredBucketID: preferredBucketID, preferredWindowID: preferredWindowID),
+              let bucket = snapshot.buckets.first(where: { $0.id == changed.bucketID }),
+              let window = bucket.windows.first(where: { $0.id == changed.windowID }) else { return nil }
+        return RefreshNotice(id: UUID(), receivedAt: receivedAt, result: result, bucketID: bucket.id, window: window, duration: duration)
+    }
     var change: QuotaWindowUpdate.Change? {
         guard let bucketID, let window else { return nil }
         return result.window(bucketID: bucketID, windowID: window.id)?.change
     }
-    var holdDuration: TimeInterval { change == .unchanged ? 0.8 : 2 }
+    var holdDuration: TimeInterval { duration.seconds }
     var title: String {
         if result.kind == .readFailed { return "额度读取未完成" }
         if case .decreased = change { return "额度已更新" }

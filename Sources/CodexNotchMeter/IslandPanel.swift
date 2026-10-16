@@ -52,6 +52,7 @@ func contourPath(_ contour: IslandContour, inset: CGFloat, closed: Bool) -> Path
 private struct IslandRenderObservation: Equatable {
     let progress: Double
     let size: CGSize
+    let noticeID: UUID?
 }
 
 @MainActor
@@ -66,19 +67,23 @@ private struct IslandRootView: View {
     let quitFrameChanged: (CGRect) -> Void
     let viewportChanged: (CGSize) -> Void
     let rendered: (Double, CGSize) -> Void
+    let paintStore: IslandPaintStore
     var body: some View {
         let p = presentation.progress
         let promoting = presentation.notice != nil
         let detailReveal = promoting ? IslandReveal.smooth((p - geometry.updateProgress) / (1 - geometry.updateProgress)) : IslandReveal.details(p)
         GeometryReader { viewport in
-            Color.clear
-                .overlay { IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p), cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height).fill(.black.opacity(motionProfile.forcesLayout ? min(1, p * 3) : IslandReveal.surface(p))) }
-                .overlay(alignment: .topLeading) {
-                    RailView(model: model, drawingRect: geometry.contourRect(progress: p), progress: p, cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height, hovered: { _ in })
-                    .frame(width: viewport.size.width, height: viewport.size.height)
-                    .opacity(motionProfile.forcesLayout ? max(0, 1 - p * 4) : IslandReveal.rail(p))
-                    .accessibilityHidden(p > 0.1)
-                }
+            let visual = IslandVisualFrame(geometry: geometry, progress: p, viewport: viewport.size,
+                noticeID: presentation.notice?.id, baseline: motionProfile.forcesLayout)
+            let window = model.primaryWindow
+            let remaining = window?.remainingPercent
+            let pending = window?.resetPending(at: model.now) ?? false
+            IslandPaintView(frame: visual, remaining: remaining, theme: model.theme,
+                colorPhase: model.skinPhase, dimmed: model.degraded || pending, store: paintStore)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(window.map { "刘海主额度 · " + windowTitle($0) } ?? "额度不可用")
+                .accessibilityValue((remaining.map { "剩余 \(Int($0.rounded()))%" } ?? "未知") + (model.degraded ? "，上次读取" : "") + (pending ? "，等待刷新确认" : ""))
+                .accessibilityHidden(p > 0.1)
                 .overlay(alignment: .topLeading) {
                     // Opacity-zero fixed-height content MUST NOT size the collapsed root.
                     if motionProfile.prewarmsDetails || p > 0 {
@@ -102,11 +107,11 @@ private struct IslandRootView: View {
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                .clipShape(IslandSilhouette(progress: p, drawingRect: geometry.contourRect(progress: p), cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height))
+                .clipShape(visual.bodyPath)
                 .onAppear { viewportChanged(viewport.size); rendered(p, viewport.size) }
                 // A single coherent observation avoids a resize callback overwriting
                 // the new progress with the previous body's captured progress.
-                .onChange(of: IslandRenderObservation(progress: p, size: viewport.size)) { observation in
+                .onChange(of: IslandRenderObservation(progress: p, size: viewport.size, noticeID: presentation.notice?.id)) { observation in
                     viewportChanged(observation.size); rendered(observation.progress, observation.size)
                 }
             }
@@ -133,6 +138,7 @@ struct IslandCloseReceipt {
     let completedAt: TimeInterval?
     let finalDisplayDuration: TimeInterval
     let renderedAt: TimeInterval?
+    let paintedAt: TimeInterval?
     let outcome: ClosePresentationDrain.Outcome
 }
 
@@ -142,6 +148,7 @@ final class IslandPanelController: NSObject {
     var geometry: IslandGeometry { presentation.geometry }
     let panel: TopEdgePanel
     private let presentation: IslandPresentation
+    private let paintStore = IslandPaintStore()
     private var pendingGeometry: IslandGeometry?
     private var hover = IslandHoverState()
     private var motion = IslandMotion()
@@ -151,6 +158,11 @@ final class IslandPanelController: NSObject {
     private var motionTargetExpanded = false
     private var motionTargetValue: Double = 0
     private var noticeExpiry: Timer?
+    private var noticeReadiness: Timer?
+    private var noticeReadyWaitStarted: TimeInterval?
+    private var noticePaintRequiredAfter: TimeInterval = 0
+    private(set) var smokeNoticeArmedAt: TimeInterval?
+    private(set) var smokeNoticePaintReadyAt: TimeInterval?
     private var noticeTargetActive = false
     private var lastMotionTime = CACurrentMediaTime()
     private let motionProfile: IslandMotionProfile
@@ -196,7 +208,7 @@ final class IslandPanelController: NSObject {
             viewportChanged: { [weak self] in self?.renderedViewport = $0 },
             rendered: { [weak self] progress, size in
                 self?.renderedProgress = progress; self?.renderedViewport = size; self?.renderedAt = CACurrentMediaTime()
-            }))
+            }, paintStore: paintStore))
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.sizingOptions = []
@@ -252,7 +264,7 @@ final class IslandPanelController: NSObject {
         hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
             resumeExpanded: (presentation.notice != nil && motion.progress > 0) || ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         if hover.isExpanded != before {
-            if hover.isExpanded { hovered(); noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false; presentation.showingDetails = true }
+            if hover.isExpanded { hovered(); cancelNoticeTimers(); noticeTargetActive = false; presentation.showingDetails = true }
             else { noticeTargetActive = false }
             startMotion()
         }
@@ -312,7 +324,7 @@ final class IslandPanelController: NSObject {
             progress: motion.progress, expanded: motionTargetExpanded, reduceMotion: reducedMotion, now: began) {
             startedCloseDrain = true
             closeGeneration = generation
-            closeReceipt = IslandCloseReceipt(requestedAt: began, acknowledgedAt: nil, completedAt: nil, finalDisplayDuration: 0, renderedAt: nil, outcome: .pending)
+            closeReceipt = IslandCloseReceipt(requestedAt: began, acknowledgedAt: nil, completedAt: nil, finalDisplayDuration: 0, renderedAt: nil, paintedAt: nil, outcome: .pending)
             let deadline = Timer(timeInterval: closeDrain.timeout, target: self,
                 selector: #selector(closeDeadlineReached(_:)), userInfo: generation, repeats: false)
             closeDeadline = deadline; RunLoop.main.add(deadline, forMode: .common)
@@ -334,9 +346,14 @@ final class IslandPanelController: NSObject {
     private func observeClosePresentation(at time: TimeInterval) {
         guard !stopped, !motionTargetExpanded, let generation = closeGeneration else { return }
         let expected = geometry.frame(progress: 0)
+        let paint = paintStore.latest(), requestedAt = closeReceipt?.requestedAt ?? .infinity
+        let freshPaint = paint.map { $0.observed >= requestedAt && $0.frame.progress == 0
+            && $0.frame.viewport == expected.size && $0.actualViewport == expected.size } ?? false
         let matches = panel.frame == expected && renderedViewport == expected.size
             && panel.contentView?.bounds == CGRect(origin: .zero, size: expected.size)
-        let outcome = closeDrain.poll(generation: generation, now: time, renderedAt: renderedAt,
+            && freshPaint && renderedProgress == 0 && renderedAt >= requestedAt
+        let acknowledgedAt = matches ? max(renderedAt, paint?.observed ?? -1) : -1
+        let outcome = closeDrain.poll(generation: generation, now: time, renderedAt: acknowledgedAt,
             renderedProgress: renderedProgress, viewportMatches: matches)
         guard outcome == .ready || outcome == .timedOut else { return }
         let request = closeReceipt?.requestedAt, acknowledgedRender = renderedAt
@@ -349,7 +366,7 @@ final class IslandPanelController: NSObject {
         if let request {
             closeReceipt = IslandCloseReceipt(requestedAt: request,
                 acknowledgedAt: outcome == .ready ? time : nil, completedAt: CACurrentMediaTime(),
-                finalDisplayDuration: displayDuration, renderedAt: acknowledgedRender, outcome: outcome)
+                finalDisplayDuration: displayDuration, renderedAt: acknowledgedRender, paintedAt: paint?.observed, outcome: outcome)
         }
     }
     @objc private func closeDeadlineReached(_ sender: Timer) {
@@ -367,22 +384,58 @@ final class IslandPanelController: NSObject {
     }
     var isInteracting: Bool { hover.isExpanded }
     @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
-        guard !stopped, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
-        noticeExpiry?.invalidate(); noticeExpiry = nil
+        guard !stopped, notice.isEligible, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
+        if presentation.notice?.id == notice.id && noticeTargetActive { return true }
+        cancelNoticeTimers()
+        // Every new notice, including replacement, acknowledges its own paint revision.
+        noticePaintRequiredAfter = CACurrentMediaTime()
         presentation.notice = notice; presentation.showingDetails = false; noticeTargetActive = true
         startMotion(); panel.ignoresMouseEvents = true
         return true
     }
     func dismissRefreshNotice() {
         guard presentation.notice != nil else { return }
-        noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false
+        cancelNoticeTimers(); noticeTargetActive = false
         if !hover.isExpanded { startMotion() }
     }
+    private func cancelNoticeTimers() {
+        noticeExpiry?.invalidate(); noticeExpiry = nil
+        noticeReadiness?.invalidate(); noticeReadiness = nil
+        noticeReadyWaitStarted = nil; smokeNoticeArmedAt = nil; smokeNoticePaintReadyAt = nil
+    }
     private func scheduleNoticeExpiryIfReady() {
-        guard noticeTargetActive, presentation.notice != nil, !hover.isExpanded, noticeExpiry == nil,
-              motion.isSettled(at: geometry.updateProgress) else { return }
-        let timer = Timer(timeInterval: presentation.notice?.holdDuration ?? 2, target: self, selector: #selector(expireNotice(_:)), userInfo: nil, repeats: false)
-        noticeExpiry = timer; RunLoop.main.add(timer, forMode: .common)
+        guard !stopped, noticeTargetActive, let notice = presentation.notice, !hover.isExpanded,
+              noticeExpiry == nil, motion.isSettled(at: geometry.updateProgress) else { return }
+        let now = CACurrentMediaTime(), expected = geometry.frame(progress: geometry.updateProgress)
+        if let paint = paintStore.latest(), paint.observed >= noticePaintRequiredAfter,
+           paint.frame.noticeID == notice.id, paint.frame.progress == geometry.updateProgress,
+           paint.frame.viewport == expected.size, paint.actualViewport == expected.size,
+           noticeReadyWaitStarted.map({ paint.observed <= $0 + 0.25 }) ?? true,
+           panel.frame == expected, renderedViewport == expected.size,
+           renderedProgress == geometry.updateProgress, renderedAt >= noticePaintRequiredAfter {
+            noticeReadiness?.invalidate(); noticeReadiness = nil; noticeReadyWaitStarted = nil
+            smokeNoticePaintReadyAt = paint.observed; smokeNoticeArmedAt = now
+            let timer = Timer(timeInterval: notice.holdDuration, target: self,
+                selector: #selector(expireNotice(_:)), userInfo: nil, repeats: false)
+            noticeExpiry = timer; RunLoop.main.add(timer, forMode: .common)
+        } else if noticeReadiness == nil {
+            noticeReadyWaitStarted = now
+            let timer = Timer(timeInterval: 0.02, target: self,
+                selector: #selector(checkNoticeReadiness(_:)), userInfo: nil, repeats: true)
+            noticeReadiness = timer; RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    @objc private func checkNoticeReadiness(_ sender: Timer) {
+        guard !stopped, sender === noticeReadiness else { return }
+        guard noticeTargetActive, !hover.isExpanded, presentation.notice != nil else { cancelNoticeTimers(); return }
+        // Bounded render-stage readiness, independent of the user's 2/4/6-second hold.
+        // A blocked main loop services this deadline on its next callback.
+        scheduleNoticeExpiryIfReady()
+        guard sender === noticeReadiness else { return }
+        if let began = noticeReadyWaitStarted, CACurrentMediaTime() - began > 0.25 {
+            SmokeDiagnostics.mark("notice paint readiness deadline exceeded")
+            dismissRefreshNotice(); return
+        }
     }
     @objc private func expireNotice(_ sender: Timer) {
         guard !stopped, sender === noticeExpiry else { return }
@@ -394,13 +447,13 @@ final class IslandPanelController: NSObject {
     }
     func collapse() {
         guard !stopped else { return }
-        noticeExpiry?.invalidate(); noticeExpiry = nil; noticeTargetActive = false
+        cancelNoticeTimers(); noticeTargetActive = false
         hover.reset(); panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
         guard !stopped else { return }
         stopped = true
-        noticeExpiry?.invalidate(); noticeExpiry = nil
+        cancelNoticeTimers()
         pointerTimer?.invalidate(); pointerTimer = nil
         stopMotionFrames()
         panel.ignoresMouseEvents = true; panel.close()
@@ -481,6 +534,7 @@ final class IslandPanelController: NSObject {
             && panel.frame == before.2 && motion.progress == before.0 && motion.velocity == before.1
     }
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
+    var paintReceipt: IslandPaintReceipt? { paintStore.latest() }
     var smokeNoticeVisible: Bool { presentation.notice != nil }
     var smokeNoticeID: UUID? { presentation.notice?.id }
     func verifyRetiredNoticeIsInert() -> Bool {

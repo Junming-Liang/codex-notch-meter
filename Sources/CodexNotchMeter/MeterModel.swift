@@ -17,6 +17,7 @@ final class MeterModel: ObservableObject {
     @Published private(set) var refreshing = false
     @Published private(set) var refreshNotice: RefreshNotice?
     @Published var refreshNoticesEnabled: Bool { didSet { if !demo { defaults.set(refreshNoticesEnabled, forKey: "refreshNoticesEnabled") } } }
+    @Published var noticeDuration: NoticeDuration { didSet { if !demo { defaults.set(noticeDuration.rawValue, forKey: "noticeDuration") } } }
     private var updateTracker = QuotaUpdateTracker()
     private var lastResolvedExecutable: URL?
     @Published var displayNotice: String?
@@ -57,6 +58,7 @@ final class MeterModel: ObservableObject {
     init(demo: Bool) {
         self.demo = demo
         refreshNoticesEnabled = demo ? true : defaults.object(forKey: "refreshNoticesEnabled") as? Bool ?? true
+        noticeDuration = demo ? .standard : NoticeDuration.restored(defaults.string(forKey: "noticeDuration"))
         let fixtureTheme = CommandLine.arguments.first(where: { $0.hasPrefix("--skin=") }).map { String($0.dropFirst(7)) }
         theme = demo ? MeterTheme.restored(fixtureTheme ?? (CommandLine.arguments.contains("--rainbow") ? "rainbow" : nil)) : MeterTheme.restored(defaults.string(forKey: "theme"))
         skinMotionEnabled = demo ? true : defaults.object(forKey: "skinMotionEnabled") as? Bool ?? true
@@ -220,19 +222,22 @@ final class MeterModel: ObservableObject {
                 let executable = try await CodexExecutable.resolveInstalled(override: path)
                 try Task.checkCancellation()
                 guard let self, self.currentTaskID == id else { return }
-                if let previous = self.lastResolvedExecutable, previous != executable { self.updateTracker.invalidateSource() }
+                if let previous = self.lastResolvedExecutable, previous != executable {
+                    self.updateTracker.invalidateSource(); self.refreshNotice = nil
+                }
                 self.lastResolvedExecutable = executable
                 let result = try await QuotaReader.fetch(executable: executable)
                 guard !Task.isCancelled, self.currentTaskID == id else { return }
                 let update = self.updateTracker.record(result, at: Date())
                 snapshot = result; error = nil; policy.succeeded()
-                refreshNotice = RefreshNotice(id: UUID(), receivedAt: Date(), result: update, bucketID: bucket?.id, window: primaryWindow)
+                refreshNotice = RefreshNotice.make(result: update, snapshot: result, preferredBucketID: bucket?.id,
+                    preferredWindowID: primaryWindow?.id, duration: noticeDuration)
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 let failure = error as? MeterError ?? .disconnected
                 self.error = failure
-                let update = self.updateTracker.recordFailure()
-                self.refreshNotice = RefreshNotice(id: UUID(), receivedAt: Date(), result: update, bucketID: nil, window: nil)
+                _ = self.updateTracker.recordFailure()
+                self.refreshNotice = nil
                 // Never show another account's prior numbers after sign-out or account-type change.
                 if [.signedOut, .unsupportedAccount, .noQuota, .codexMissing, .invalidExecutable].contains(failure) { snapshot = nil }
                 policy.failed()
