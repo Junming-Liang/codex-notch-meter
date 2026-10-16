@@ -16,9 +16,9 @@ The meter reads the official Codex CLI's account interface. It sends no model pr
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
-## v1.0.0 development branch
+## v1.0.0-beta.1 test candidate
 
-The current source is validating optional Apple Music lyrics inside the existing expanded details. It is off by default, supports local LRC, and requires separate consent before sending track metadata to LRCLIB. Downloads above still point to released v0.1.9. Actual Music authorization, streaming compatibility and the new native tests remain unverified; see the [integration contract](docs/MUSIC-LYRICS.md).
+Optional Apple Music lyrics appear inside the existing expanded details. The feature is off by default, supports local LRC, and requires separate consent before sending track metadata to LRCLIB for community lyrics. The feature source passed hosted native synthetic checks; the final beta metadata still requires the complete release gates. Actual Music authorization and streaming reads remain unverified. Downloads above still point to released v0.1.9; see the [setup and integration contract](docs/MUSIC-LYRICS.md).
 
 ## Download
 
