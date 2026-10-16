@@ -39,6 +39,7 @@ final class MusicRenderHarness: NSObject {
     private var expandedChecks = 0
     private var lastOCRLines: [MusicOCRLine] = []
     private var lastOCRImage: CGImage?
+    private var nativeExpectations: [ObjectIdentifier: (progress: Double, after: TimeInterval)] = [:]
 
     init(screen: NSScreen, completion: @escaping (Bool) -> Void) {
         self.screen = screen; self.completion = completion
@@ -277,8 +278,17 @@ final class MusicRenderHarness: NSObject {
         self.island = island
         // Select lyrics through the real crossing recognizer before isolating
         // manual-details geometry from the passive ownership path below.
+        let selectedAt = CACurrentMediaTime()
         try openLyrics(island)
+        try await waitMusic(island, after: selectedAt)
+        // Require a completed passive-to-idle transition before beginning this
+        // distinct manual expansion. A repeated already-expanded request cannot
+        // manufacture the fresh viewport acknowledgement required below.
+        let suppressedAt = CACurrentMediaTime()
         island.setMusicPresentationAllowed(false)
+        try await waitIdle(island, after: suppressedAt)
+        try require(island.smokeExpansionOwner == .idle && !island.isInteracting,
+                    "manual expansion starts from the measured suppressed idle owner")
         let openedAt = CACurrentMediaTime()
         try require(island.beginSmokeExpansion(), "synthetic pointer opens existing island")
         try await until("expanded normal-run-loop viewport settles") { self.nativeSettled(island, progress: 1, after: openedAt) }
@@ -1176,7 +1186,7 @@ final class MusicRenderHarness: NSObject {
         try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
         try await waitIdle(panel, after: 0)
         let corridor = panel.smokeMusicGestureCorridor
-        let outside = CGPoint(x: corridor.minX - 50, y: corridor.midY)
+        let outside = CGPoint(x: panel.geometry.screen.minX - 10, y: panel.geometry.screen.minY - 10)
         func point(_ fraction: CGFloat, _ y: CGFloat? = nil) -> CGPoint {
             CGPoint(x: corridor.minX + corridor.width * fraction, y: y ?? corridor.midY)
         }
@@ -1357,14 +1367,15 @@ final class MusicRenderHarness: NSObject {
         let before = panel.smokeLyricsSelected
         let accepted = panel.smokeMusicGesture(openLyrics: true)
         print("MUSIC_GESTURE_OPEN_DIAGNOSTIC: previouslySelected=\(before) accepted=\(accepted) selected=\(panel.smokeLyricsSelected) corridor=\(panel.smokeMusicGestureCorridor) owner=\(String(reflecting: panel.smokeExpansionOwner)) target=\(panel.smokeTargetProgress)")
-        try require(accepted && panel.smokeLyricsSelected,
-                    "a full no-button fixed-corridor left-to-right crossing selects lyric mode")
+        try require(accepted && panel.smokeLyricsSelected && !panel.isInteracting
+            && panel.smokeExpansionOwner == .music && panel.smokeTargetProgress == panel.smokeMusicTargetProgress,
+                    "a full no-button fixed-corridor left-to-right crossing selects passive lyric ownership after exit")
     }
 
     private func verifyClosedGestureNotice(_ fixture: MusicFixture, panel: IslandPanelController) async throws {
         let fresh = try await read(fixture); try await release(fixture, fresh, position: 1)
         let corridor = panel.smokeMusicGestureCorridor
-        let fixedPoint = CGPoint(x: corridor.minX - 50, y: corridor.midY)
+        let fixedPoint = CGPoint(x: panel.geometry.screen.minX - 10, y: panel.geometry.screen.minY - 10)
         panel.smokePointer(at: fixedPoint, now: ProcessInfo.processInfo.systemUptime)
         try require(!panel.smokeLyricsSelected, "closed-mode notice fixture starts with an actual explicit reverse crossing")
         let notice = try makeNotice(duration: .short)
@@ -1784,9 +1795,18 @@ final class MusicRenderHarness: NSObject {
             let controller = value.controller
             print("MUSIC_FAILURE_SOURCE: fixture=\(index) enabled=\(controller.enabled) playing=\(controller.isPlayingForPresentation) title=\(String(reflecting: controller.trackTitle)) line=\(String(reflecting: controller.line)) next=\(String(reflecting: controller.nextLine)) synchronized=\(controller.isSynchronized) status=\(String(reflecting: controller.statusText)) local=\(controller.hasLocalLyrics) readCursor=\(value.readCursor) importCursor=\(value.importCursor) snapshot=\(String(reflecting: controller.syntheticPlaybackSnapshot))")
         }
-        for (index, panel) in passivePanels.enumerated() {
-            print("MUSIC_FAILURE_PANEL: panel=\(index) owner=\(String(reflecting: panel.smokeExpansionOwner)) lyricsSelected=\(panel.smokeLyricsSelected) gestureCorridor=\(panel.smokeMusicGestureCorridor) progress=\(panel.smokeProgress) target=\(panel.smokeTargetProgress) motion=\(panel.smokeMotionRunning) interacting=\(panel.isInteracting) musicTarget=\(panel.smokeMusicTargetActive) musicVisible=\(panel.smokeMusicVisible) noticeTarget=\(panel.smokeNoticeTargetActive) noticeVisible=\(panel.smokeNoticeVisible) armed=\(String(reflecting: panel.smokeNoticeArmedAt)) probe=\(String(reflecting: panel.motionProbe))")
+        if let island { dumpPanelFailure(island, label: "primary") }
+        for (index, panel) in passivePanels.enumerated() where panel !== island {
+            dumpPanelFailure(panel, label: "passive-\(index)")
         }
+    }
+    private func dumpPanelFailure(_ panel: IslandPanelController, label: String) {
+        let probe = panel.motionProbe
+        print("MUSIC_FAILURE_PANEL: panel=\(label) owner=\(String(reflecting: panel.smokeExpansionOwner)) lyricsSelected=\(panel.smokeLyricsSelected) gestureCorridor=\(panel.smokeMusicGestureCorridor) progress=\(panel.smokeProgress) target=\(panel.smokeTargetProgress) motion=\(panel.smokeMotionRunning) interacting=\(panel.isInteracting) musicTarget=\(panel.smokeMusicTargetActive) musicVisible=\(panel.smokeMusicVisible) noticeTarget=\(panel.smokeNoticeTargetActive) noticeVisible=\(panel.smokeNoticeVisible) armed=\(String(reflecting: panel.smokeNoticeArmedAt)) probe=\(String(reflecting: probe))")
+        guard let wanted = nativeExpectations[ObjectIdentifier(panel)] else { return }
+        let frame = panel.geometry.frame(progress: wanted.progress)
+        let bounds = CGRect(origin: .zero, size: frame.size)
+        print("MUSIC_FAILURE_VIEWPORT: panel=\(label) expectedProgress=\(wanted.progress) requiredAfter=\(wanted.after) renderedAt=\(probe.renderedAt) expectedFrame=\(frame) visible=\(probe.visible) nonKey=\(probe.nonKey) keyUnchanged=\(NSApp.keyWindow === initialKey) placementValid=\(panel.placementIsValid) stopped=\(!probe.running) requestedMatches=\(probe.requestedProgress == wanted.progress) renderedMatches=\(probe.renderedProgress == wanted.progress) fresh=\(probe.renderedAt >= wanted.after) frameMatches=\(probe.frame == frame) viewportMatches=\(probe.viewport == frame.size) contentBoundsMatch=\(probe.contentBounds == bounds) presentationBoundsMatch=\(probe.layerPresentation == bounds) topAttached=\(abs(probe.frame.maxY - screen.frame.maxY) < 0.001) paint=\(String(reflecting: panel.paintReceipt))")
     }
     private func makeGeometry(contentHeight: CGFloat = 260) -> IslandGeometry? {
         let frame = screen.frame, width: CGFloat = 220, inset: CGFloat = 32
@@ -1797,6 +1817,7 @@ final class MusicRenderHarness: NSObject {
         return IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor, contentHeight: contentHeight)
     }
     private func nativeSettled(_ island: IslandPanelController, progress: Double, after: TimeInterval) -> Bool {
+        nativeExpectations[ObjectIdentifier(island)] = (progress, after)
         let probe = island.motionProbe, expected = island.geometry.frame(progress: progress)
         return probe.visible && probe.nonKey && NSApp.keyWindow === initialKey && island.placementIsValid
             && !probe.running && probe.requestedProgress == progress && probe.renderedProgress == progress

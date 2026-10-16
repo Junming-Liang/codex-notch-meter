@@ -644,12 +644,16 @@ final class IslandPanelController: NSObject {
         guard model.demo, CommandLine.arguments.contains("--music-test") else { return false }
         let corridor = geometry.musicGestureCorridor
         let now = ProcessInfo.processInfo.systemUptime
-        updatePointer(CGPoint(x: corridor.minX - 5, y: corridor.midY), now: now, buttonDownOverride: false)
+        // Leaving the fixed gesture band is not necessarily leaving the growing
+        // body. Use a point outside the display for this synthetic exit, so it
+        // cannot promote ordinary hover immediately after selecting lyrics.
+        let outside = CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
+        updatePointer(outside, now: now, buttonDownOverride: false)
         let fractions: [CGFloat] = openLyrics ? [0.02, 0.25, 0.52, 0.75, 0.98] : [0.98, 0.75, 0.48, 0.25, 0.02]
         for (index, fraction) in fractions.enumerated() {
             updatePointer(CGPoint(x: corridor.minX + corridor.width * fraction, y: corridor.midY), now: now + Double(index + 1) * 0.035, buttonDownOverride: false)
         }
-        updatePointer(CGPoint(x: corridor.minX - 5, y: corridor.midY), now: now + 0.21, buttonDownOverride: false)
+        updatePointer(outside, now: now + 0.21, buttonDownOverride: false)
         return model.music.lyricsModeEnabled == openLyrics
     }
     var smokeMusicVisible: Bool { presentation.showingMusic }
