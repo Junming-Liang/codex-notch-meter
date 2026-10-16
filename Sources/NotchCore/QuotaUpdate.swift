@@ -19,6 +19,9 @@ public struct QuotaWindowUpdate: Equatable, Sendable {
     public let bucketID: String
     public let windowID: String
     public let change: Change
+    /// True only when a fresh, continuous read confirms different numeric quota.
+    /// This is notice eligibility, not evidence of consumption across reset cycles.
+    public let hasNumericChange: Bool
 }
 
 /// One bounded refresh result. Only public bucket/window IDs reach presentation.
@@ -34,6 +37,19 @@ public struct QuotaUpdate: Equatable, Sendable {
 
     public func window(bucketID: String, windowID: String) -> QuotaWindowUpdate? {
         windows.first { $0.bucketID == bucketID && $0.windowID == windowID }
+    }
+
+    /// Choose only a window whose quota actually changed. An unchanged preferred
+    /// window must never mask or stand in for another window's numeric change.
+    public func changedWindow(preferredBucketID: String? = nil, preferredWindowID: String? = nil) -> QuotaWindowUpdate? {
+        guard kind != .readFailed else { return nil }
+        if let preferredBucketID, let preferredWindowID,
+           let preferred = windows.first(where: {
+               $0.bucketID == preferredBucketID && $0.windowID == preferredWindowID && $0.hasNumericChange
+           }) {
+            return preferred
+        }
+        return windows.first { $0.hasNumericChange }
     }
 }
 
@@ -69,16 +85,23 @@ public struct QuotaUpdateTracker: Sendable {
             bucket.windows.map { window -> QuotaWindowUpdate in
                 let key = WindowKey(bucketID: bucket.id, windowID: window.id)
                 let change: QuotaWindowUpdate.Change
+                let hasNumericChange: Bool
                 if let commonReason {
                     change = .updated(reason: commonReason)
+                    hasNumericChange = false
                 } else if !currentIndex.isUnambiguous(key) || previousIndex?.isAmbiguous(key) == true {
                     change = .updated(reason: .dataUnavailable)
+                    hasNumericChange = false
                 } else if let oldWindow = previousIndex?.windows[key] {
-                    change = Self.compare(oldWindow, window, at: now)
+                    let comparison = Self.compare(oldWindow, window, at: now)
+                    change = comparison.change
+                    hasNumericChange = comparison.hasNumericChange
                 } else {
                     change = .updated(reason: .newWindow)
+                    hasNumericChange = false
                 }
-                return QuotaWindowUpdate(bucketID: bucket.id, windowID: window.id, change: change)
+                return QuotaWindowUpdate(bucketID: bucket.id, windowID: window.id,
+                                         change: change, hasNumericChange: hasNumericChange)
             }
         }
 
@@ -123,24 +146,35 @@ public struct QuotaUpdateTracker: Sendable {
             && age.isFinite && age >= 0 && age <= freshnessInterval
     }
 
-    private static func compare(_ previous: QuotaWindow, _ current: QuotaWindow, at now: Date) -> QuotaWindowUpdate.Change {
+    private static func compare(_ previous: QuotaWindow, _ current: QuotaWindow, at now: Date)
+        -> (change: QuotaWindowUpdate.Change, hasNumericChange: Bool) {
         guard let oldDuration = previous.durationMinutes, let newDuration = current.durationMinutes,
-              oldDuration > 0, newDuration > 0 else { return .updated(reason: .dataUnavailable) }
-        guard oldDuration == newDuration else { return .updated(reason: .durationChanged) }
+              oldDuration > 0, newDuration > 0 else { return (.updated(reason: .dataUnavailable), false) }
+        guard oldDuration == newDuration else { return (.updated(reason: .durationChanged), false) }
         guard let oldReset = previous.resetsAt, let newReset = current.resetsAt,
               oldReset.timeIntervalSince1970.isFinite, newReset.timeIntervalSince1970.isFinite else {
-            return .updated(reason: .dataUnavailable)
+            return (.updated(reason: .dataUnavailable), false)
         }
-        guard oldReset > now, newReset > now else { return .updated(reason: .resetPending) }
-        guard oldReset == newReset else { return .updated(reason: .resetChanged) }
+        guard newReset > now else { return (.updated(reason: .resetPending), false) }
+        if oldReset != newReset {
+            // A newly confirmed future cycle may change quota even when the old
+            // reset is already due. It never establishes a consumption interval.
+            let numericChange: Bool
+            if let oldRemaining = previous.remainingPercent, let newRemaining = current.remainingPercent {
+                numericChange = oldRemaining != newRemaining
+            } else {
+                numericChange = false
+            }
+            return (.updated(reason: .resetChanged), numericChange)
+        }
         guard let oldRemaining = previous.remainingPercent, let newRemaining = current.remainingPercent else {
-            return .updated(reason: .dataUnavailable)
+            return (.updated(reason: .dataUnavailable), false)
         }
         if newRemaining < oldRemaining {
-            return .decreased(percentagePoints: oldRemaining - newRemaining)
+            return (.decreased(percentagePoints: oldRemaining - newRemaining), true)
         }
-        if newRemaining > oldRemaining { return .updated(reason: .increased) }
-        return .unchanged
+        if newRemaining > oldRemaining { return (.updated(reason: .increased), true) }
+        return (.unchanged, false)
     }
 
     private struct WindowKey: Hashable {

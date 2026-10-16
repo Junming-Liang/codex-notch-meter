@@ -39,9 +39,10 @@ public struct IslandMotion: Equatable, Sendable {
         if reduceMotion { progress = target; velocity = 0; return }
         guard elapsed.isFinite, elapsed > 0 else { return }
         // Exact critically damped solution, in normalized progress per second.
-        // 18 rad/s closely matches the former 120 Hz integration's early response.
+        // 16 rad/s reaches 99% in about0.415s, informed by DynamicNotchKit's
+        // 0.4s reference rhythm while retaining this bounded, non-overshooting solver.
         // Preserve both state values when the target changes; never restart an easing.
-        let frequency = 18.0
+        let frequency = 16.0
         let displacement = progress - target
         let coefficient = velocity + frequency * displacement
         let decay = exp(-frequency * elapsed)
