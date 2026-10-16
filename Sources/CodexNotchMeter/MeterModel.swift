@@ -54,9 +54,11 @@ final class MeterModel: ObservableObject {
     private lazy var skinAnimator = SkinAnimator { [weak self] in self?.skinPhase = $0 }
     private var sleeping = false
     let demo: Bool
+    let music: MusicLyricsController
 
-    init(demo: Bool) {
+    init(demo: Bool, music: MusicLyricsController? = nil) {
         self.demo = demo
+        self.music = music ?? MusicLyricsController(synthetic: demo)
         refreshNoticesEnabled = demo ? true : defaults.object(forKey: "refreshNoticesEnabled") as? Bool ?? true
         noticeDuration = demo ? .standard : NoticeDuration.restored(defaults.string(forKey: "noticeDuration"))
         let fixtureTheme = CommandLine.arguments.first(where: { $0.hasPrefix("--skin=") }).map { String($0.dropFirst(7)) }
@@ -191,6 +193,7 @@ final class MeterModel: ObservableObject {
         return (demo ? "演示 " : degraded ? "◷ " : "") + content
     }
     func start() {
+        music.start()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -253,6 +256,7 @@ final class MeterModel: ObservableObject {
     }
     func wake() { sleeping = false; refresh() }
     func stop() {
+        music.stop()
         timer?.invalidate(); timer = nil
         skinAnimator.stop()
         for pending in outstandingTasks.values { pending.cancel() }
@@ -272,7 +276,7 @@ final class MeterModel: ObservableObject {
         refresh()
     }
     func setUpdateFixture(_ value: QuotaSnapshot) {
-        guard demo, CommandLine.arguments.contains("--update-test") else { return }
+        guard demo, CommandLine.arguments.contains("--update-test") || CommandLine.arguments.contains("--music-test") else { return }
         snapshot = value; now = value.fetchedAt; error = nil
     }
     /// Bounded many-row UI load for native timing only. No account reads or preference writes.

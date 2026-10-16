@@ -8,9 +8,9 @@ import NotchCore
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test"))
+    private let model = MeterModel(demo: CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test") || CommandLine.arguments.contains("--music-test"))
     private lazy var loginSettings = LoginSettingsModel(synthetic: model.demo)
-    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")
+    private let smokeMode = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || CommandLine.arguments.contains("--motion-test") || CommandLine.arguments.contains("--display-test") || CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test") || CommandLine.arguments.contains("--music-test")
     private var smokeReady = false
     private var smokeGeometryValid = false
     private var smokeTimer: Timer?
@@ -21,6 +21,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var displayHarness: DisplayCompatibilityHarness?
     private var collapseHarness: CollapseRenderHarness?
     private var updateHarness: UpdateRenderHarness?
+    private var musicHarness: MusicRenderHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -152,7 +153,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
+            if CommandLine.arguments.contains("--music-test") { runMusicTest() }
+            else if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
             else if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
             else if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
             else if CommandLine.arguments.contains("--motion-test") { runMotionTest() }
@@ -186,7 +188,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         terminating = true
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -211,6 +213,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayCoordinator.refresh()
     }
     private func updateSkinActivity() {
+        model.music.setActive(!sleeping && !displaySleeping && sessionActive && !terminating && !NSApp.isHidden)
         let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
         let visibleIsland = islands.contains { (coloredPrimary || $0.displaysColoredDetails) && $0.panel.isVisible && $0.panel.occlusionState.contains(.visible) }
         // A visible details header is also a color consumer; empty/zero collapsed contours are not.
@@ -323,6 +326,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         displayHarness?.start()
+    }
+    private func runMusicTest() {
+        guard let screen = NSScreen.main else { requestQuit(); return }
+        musicHarness = MusicRenderHarness(screen: screen) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        musicHarness?.start()
     }
     private func runUpdateTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }
