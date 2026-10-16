@@ -4,9 +4,9 @@
   <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg">下载 macOS Universal DMG</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip">ZIP 备用下载</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg">下载 Beta Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -24,13 +24,13 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v0.1.9 已发布。** 修复部分接口已更新额度、却不弹出变化提示的问题。可选账户标识或窗口元数据不可用时，符合新鲜度与窗口匹配条件的数值变化会显示“额度已更新”和当前剩余额度，不推测消耗差值。首读、未变化和失败仍保持安静；2 / 4 / 6 秒停留设置及现有外形、动效不变。
+> **v1.0.0-beta.1 已发布。** 新增默认关闭的 Apple Music 歌词测试功能，保留 v0.1.9 的额度提示修复。只需要额度功能时，也可继续下载 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
 
 显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
-## v1.0.0-beta.1 测试候选版
+## v1.0.0-beta.1 测试版
 
-可选 Apple Music 歌词默认关闭，启用后在原有展开详情中显示；支持本地 LRC，并可单独同意向 LRCLIB 发送歌曲信息进行社区歌词匹配。功能源码已通过云端原生合成检查；Beta 元数据最终版本仍须通过完整发布检查。实际 Music 授权和流媒体读取尚未实机验证。当前下载仍为上方已发布的 v0.1.9，试用步骤与限制见[集成说明](docs/MUSIC-LYRICS.md)。
+可选 Apple Music 歌词默认关闭，启用后在原有展开详情中显示；支持本地 LRC，并可单独同意向 LRCLIB 发送歌曲信息进行社区歌词匹配。最终 Beta 源码已通过完整发布检查。请先自行打开 Music 并播放歌曲，再在设置中启用歌词。实际 Music 授权和流媒体读取尚未实机验证；完整试用步骤、社区歌词来源与限制见[集成说明](docs/MUSIC-LYRICS.md)。
 
 ## 目录
 
@@ -46,15 +46,15 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v0.1.9 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg.sha256)
+1. 下载 [v1.0.0-beta.1 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256)
 2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
 3. 从“应用程序”打开已安装的副本，再推出 DMG
 
-也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
-Universal 产物包含 Apple Silicon 与 Intel 版本。本版已通过 213 项合成测试、双架构打包与签名校验、四种原生窗口场景、五款皮肤的 1× / 2× 像素检查、102 次对齐捕获及 21 次展开操作检查，以及关闭末端、紧凑刷新提示、显示生命周期、官方 helper 只读发现和 DMG 验证。DMG 与 ZIP 各提供独立 SHA-256 文件；精确源码与验证边界见[验证说明](docs/VALIDATION.md)。
+Universal 产物包含 Apple Silicon 与 Intel 版本。功能源码在诊断运行中通过 284 项合成测试（另有 1 项按设计跳过）；最终 Beta 发布运行重复通过全部必需门槛，包括 108 项原生歌词合成检查、双架构打包、签名、原有额度/像素/动效检查、官方 helper 只读发现和 DMG 验证。DMG 与 ZIP 各提供独立 SHA-256 文件；精确源码与验证边界见[验证说明](docs/VALIDATION.md)。
 
 **签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
