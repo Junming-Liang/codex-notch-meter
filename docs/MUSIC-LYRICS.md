@@ -1,22 +1,28 @@
-# v1.0.0-beta.1 Apple Music lyrics: setup and safety contract
+# Apple Music lyrics: setup and safety contract
 
-Status: [v1.0.0-beta.1 is released](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1). The feature source passed [diagnostic Run #34](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38872606427), including 284 passing synthetic tests and 108 native Music-fixture checks. The final beta head passed [release Run #35](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38876321184), including the repeated 108-check native fixture and actual beta-identity DMG inspection. A separate anonymous request for the provider’s documented public example succeeded after a transient HTTP 503 and a backed-off retry; only schema, metadata matching and lyric presence/counts were retained. It did not exercise the shipped Swift transport. Actual Music.app reads, Automation/TCC approval and macOS-version streaming compatibility remain unverified. v0.1.9 remains available independently.
+Published baseline: [v1.0.0-beta.1 is released](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1). The feature source passed [diagnostic Run #34](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38872606427), including 284 passing synthetic tests and 108 native Music-fixture checks. The final beta head passed [release Run #35](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38876321184), including the repeated 108-check native fixture and actual beta-identity DMG inspection. A separate anonymous request for the provider’s documented public example succeeded after a transient HTTP 503 and a backed-off retry; only schema, metadata matching and lyric presence/counts were retained. It did not exercise the shipped Swift transport. Actual Music.app reads, Automation/TCC approval and macOS-version streaming compatibility remain unverified. v0.1.9 remains available independently.
 
-## Beta setup / 测试版使用
+## v1.0.0 formal candidate (native results pending)
 
-1. 自行打开 Music 并播放歌曲。在本应用“设置 → Apple Music 歌词”中开启“在展开详情中显示 Apple Music 歌词”；阅读说明后按意愿批准自动化访问。若需要重试，使用“请求 Music 授权…”。
+The user reported that beta1 displays lyrics in their setup. This is useful configuration-specific feedback, not independent verification of every Music/TCC or streaming combination. The formal candidate adds automatic compact lyrics while fresh playback is playing, pause/stop/stale hiding, and one shared presentation owner. Manual hover details take priority, quota notices temporarily replace passive music without restarting their painted 2/4/6-second dwell, and expiry returns to the current playback state. Settings/menu/popover suppression also applies to newly recreated displays.
+
+The existing shape, calibration, 3.5/4pt strokes and spring remain. The black body now stays visible while its global contour is displaced from idle, then uses a direction-independent C1 fade within the final four points. It shares the same Canvas/progress as the rail. This changes visibility staging, not the spring or path. Island quota captions use “当前额度” and do not display “刘海”. Native coverage and old-fade negative controls must pass before release; no physical smoothness claim follows from fixture pixels.
+
+## Setup / 使用
+
+1. 自行打开 Music 并播放歌曲。在本应用“设置 → Apple Music 歌词”中开启“播放时自动展开 Apple Music 歌词”；阅读说明后按意愿批准自动化访问。若需要重试，使用“请求 Music 授权…”。
 2. 可为当前歌曲导入 UTF-8 LRC / 文本。也可单独开启 LRCLIB 在线匹配：它会接收歌名、歌手、专辑和时长，返回社区歌词。该选项默认关闭，社区歌词不是 Apple 官方歌词。
-3. 悬停刘海或打开菜单栏详情查看歌词；额度提示仍优先。没有歌词、权限拒绝或歌曲信息不可用会显示对应状态；请勿据此假定所有流媒体歌曲受支持。
+3. 播放时自动显示紧凑歌词，暂停后隐藏音乐内容并收起。额度变化提示结束后，仍在播放就返回歌词，否则回到静止状态；悬停可保留普通额度详情。没有匹配歌词时显示歌曲和对应状态，信息失效则停止显示旧内容。
 
-Open Music yourself and play a track. Enable the lyrics setting and choose whether to grant Automation. Import a local UTF-8 LRC/text file for that track, or separately consent to sending its title, artist, album and duration to LRCLIB. Hover the notch or open menu-bar details to view lyrics. Missing lyrics, unavailable metadata and denied permission remain explicit states. This beta is ad-hoc signed and unnotarized; actual authorization and streaming behavior need user testing.
+Open Music yourself and play a track. Enable the lyrics setting and choose whether to grant Automation. Import a local UTF-8 LRC/text file for that track, or separately consent to sending its title, artist, album and duration to LRCLIB. Fresh playing opens compact lyrics automatically; pause hides music, and an active quota notice finishes before returning to music or idle. Hover can retain ordinary quota details. Missing lyrics, unavailable metadata and denied permission remain explicit states. Builds remain ad-hoc signed and unnotarized; authorization and streaming behavior vary by setup.
 
 ## Product boundary
 
 - Add an optional Music.app companion. The quota meter continues to work when Music support is disabled, denied, unavailable, or failing.
-- Preserve the approved notch contour, calibration, stroke widths, animation and quota-refresh behavior. The existing collapse visibility treatment is preserved.
+- Preserve the approved contour, calibration, stroke widths, spring and quota-refresh behavior. The body visibility staging now follows geometric distance from idle during both opening and closing.
 - Show line-synced lyrics only when actual line timestamps are available. Plain text is explicitly unsynced; instrumental, no match, offline, permission denied and unavailable playback metadata are distinct states.
 - Do not call community or imported text “Apple's official lyrics.” Public MusicKit exposes `hasLyrics`, not the lyric text or synchronization payload.
-- The initial UI adds a bounded row inside the existing expanded content and opt-in Settings controls. It does not automatically expand the notch for music.
+- The same existing island automatically opens its compact content while fresh playback is playing. Paused lyrics are hidden even inside manually hovered details; local import and provider consent remain separate controls.
 
 ## Implemented module boundaries
 
@@ -44,11 +50,11 @@ Open Music yourself and play a track. Enable the lyrics setting and choose wheth
 - Missing/error/stale metadata must clear the old lyric, rather than attach it to an unknown song. If Music reports a stale but internally plausible identity, the adapter cannot prove correctness; known API limitations must remain visible in compatibility notes.
 - Bound IPC deadline, payload, outstanding work, retries/backoff and any cache. Do not create an unbounded task per timer tick. A blocked or denied read cannot delay Quit, quota refresh, hover or sleep.
 
-## Initial UI
+## Presentation priority
 
 - Use the existing connected, top-anchored compact island treatment for one current lyric (up to two visual text lines). Keep all text below the system-reported camera exclusion area.
 - Preserve the full-U quota contour and its true remaining fraction. Lyrics do not recolor consumed quota or turn song duration into quota progress.
-- Quota update > active quota details/settings/menu > passive lyrics. Hover retains the existing details behavior; a music mode/setting must be explicit if it changes idle presentation.
+- Active hover shows ordinary details; quota notices replace passive music until their existing dwell expires. Settings/menu/popover suppress passive expansion. None of these creates another panel or motion clock.
 - Reduce Motion uses the existing reduced-motion policy. Do not copy animations or geometry from an unrelated app.
 
 ## Verification before any release
@@ -59,6 +65,14 @@ Open Music yourself and play a track. Enable the lyrics setting and choose wheth
 - Native synthetic UI: quota-notice priority, hover hold, settings/menu priority, clipping, nonactivation, Quit and teardown. Repeat all retained quota/geometry/motion/packaging gates on the final source.
 - Actual Music.app/TCC behavior, macOS-version streaming compatibility and physical-notch rendering require separately authorized integration evidence. Cloud synthetic tests cannot establish them.
 
+## Bounded same-provider matching and retries
+
+- Exact LRCLIB `/api/get` first when album metadata is available. Semantic no-match may proceed to structured `/api/search` for original title+artist, then a conservatively normalized title only when different. Never combine the broad `q` field with an assumed artist filter. An empty album may search directly.
+- At most three distinct sequential requests per lookup, each with a ten-second deadline, separated by at least300ms: at most30.6seconds of request/gap budgets, plus scheduler overhead. No redirect, cookies, credentials or disk response cache. Cancellation retires the chain.
+- Only allowlisted complete film/TV attribution suffixes and known album presentation labels are normalized. Live/remix/acoustic/cover/language/remaster and other recording markers remain identity-bearing; unknown parentheses are retained. Exact normalized artist, duration within two seconds and a unique best candidate are required. Album differences may affect rank but never override a recording mismatch. Arrays at the documented20-result cap are rejected because truncation cannot establish uniqueness.
+- Embedded LRC tags are checked against the selected candidate. Plain text remains explicitly unsynced. No additional provider or metadata recipient is introduced.
+- Genuine no-match, matching record without usable lyrics, version mismatch and temporary service/network failure retain distinct status across ordinary playback polls. At most two automatic retries follow a transient failure: local30/60second backoff, while a longer server Retry-After is never shortened. A metadata-free cooldown survives track/source/consent invalidation. Errors are never relabeled as a confirmed absence merely because another sample arrived.
+
 ## Primary references checked 2026-10-16
 
 - Apple MusicKit Song / `hasLyrics`: https://developer.apple.com/documentation/musickit/song and https://developer.apple.com/documentation/musickit/song/haslyrics
@@ -68,6 +82,7 @@ Open Music yourself and play a track. Enable the lyrics setting and choose wheth
 - Sandbox boundary: https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html
 - Apple DTS discussion of Tahoe current-track/streaming failures: https://developer.apple.com/forums/thread/798267 . The thread acknowledges the issue and recommends catching errors; it does not establish universal resolution.
 - LRCLIB API policy and request contract: https://lrclib.net/docs . Anonymous application access is supported; this does not establish copyright permission for all community lyrics.
+- LRCLIB structured query and result limit: https://github.com/tranxuanthang/lrclib/blob/main/server/src/search_index/query.rs and https://github.com/tranxuanthang/lrclib/blob/main/server/src/search_index.rs . `q` overrides structured fields; search is capped at20 results.
 - LRCLIB provider architecture: https://github.com/tranxuanthang/lrclib/blob/main/ARCHITECTURE.md . Metadata-based community matching is not authoritative Apple lyric identity.
 - MusicLy (MIT) as a public implementation reference only: https://github.com/cbbtoagi/MusicLy . No source is copied into this project.
 
