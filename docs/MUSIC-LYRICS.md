@@ -4,6 +4,18 @@ Released: [v1.0.0](https://github.com/Junming-Liang/codex-notch-meter/releases/t
 
 The user reported that beta1 displays lyrics in their setup. This is configuration-specific feedback; CI injects Music, permission, provider and file boundaries. A separate anonymous request for LRCLIB's documented public example returned HTTP 200 after a transient 503 and backed-off retry, with matching schema/metadata and synchronized-lyrics presence; no lyric text was retained, and that check did not exercise the shipped Swift transport. Cross-version Music/TCC, streaming compatibility and physical appearance remain unverified.
 
+## v1.0.1 development candidate
+
+Native validation is pending; the published v1.0.0 links and evidence above remain the released baseline.
+
+The revised default is a closed, hardware-depth music indicator with tiny real artwork or a neutral placeholder. No playback controls or artwork network requests are added. Move the pointer completely across the fixed top band from left to right without pressing a mouse button to select the lyric view; reverse direction to close it. A crossing with no usable current lyric is ignored. Merely hovering, moving vertically, resizing the panel or jittering near an edge does not select a mode.
+
+The selected mode starts off each app session and survives pause, track changes and display recreation. Those events immediately hide old content and reset a partial crossing; lyrics return only when the selected mode has fresh usable current text. Disabling the feature clears the selection. Quota notices temporarily take priority without changing it. Ordinary hover still opens quota details.
+
+The approved lyric hierarchy is a small 10pt title, left-aligned 18pt current cue and subdued 12pt actual adjacent next cue. Current text can use two lines; missing next text reduces the target height through the existing spring. Blank gaps, before-first cues, instrumental/unmatched/error states cannot create empty lyric cards or fabricated next lines. Plain text stays explicitly unsynchronized.
+
+Artwork uses the existing read-only, PID-scoped public Music Apple Events permission. Its optional raw-data response has a separate 4MiB budget and 150ms event wait, preserving a 1s reserve for the final track-identity read. Only bounded single-frame PNG/JPEG data is considered; source dimensions are inspected before a thumbnail of at most 64×64 pixels is decoded. The same process/track/state bracket applies before publication. Images remain in memory, are never logged, and no alternate network source is used. Installed dictionary and synthetic decoder/own-view checks are required; they do not establish all live Music artwork compatibility.
+
 ## Playback and quota priority
 
 Fresh playing music automatically opens compact lyrics. Pause, stop or stale/error metadata hides music; manual hover may retain ordinary quota details. Quota notices temporarily replace passive music without restarting their painted 2/4/6-second dwell, then return to current playback or idle. Settings/menu/popover suppression also applies to recreated displays.

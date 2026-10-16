@@ -2,6 +2,20 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v1.0.1 closed-to-lyrics candidate (native results pending)
+
+This candidate implements the approved left-aligned B layout: 18pt current lyric, 12pt adjacent synchronized next cue, and a 10pt title. The compact/full design widths are 360/400pt, screen-bounded; hardware exclusion and idle contour remain runtime-derived. Current text wraps to at most two lines, and a missing next cue reduces the compact target height through the existing spring. Hover keeps actual quota windows and fixed footer actions in the same connected body.
+
+The default session mode is closed. Fresh playback can show tiny side artwork and a static playing-state glyph at the original hardware depth; the raw camera exclusion and original quota U contour remain separate. Optional artwork is read with the existing public, PID-scoped Music Apple Events permission, within its own reply/timeout budget, then header-checked and downsampled to at most 64×64 RGBA pixels. Missing/unsafe artwork uses a neutral placeholder; there is no network artwork fetch.
+
+A complete no-button left-to-right pointer crossing of a fixed top corridor enables lyrics; the reverse crossing disables them. The recognizer requires edge entry, directional travel through the middle, finite ordered samples and an opposite end zone, locks after one action, and rearms only after exit. Hover, window resizing and intermediate panel geometry cannot create a crossing. Quota/menu/sleep/track/permission transitions retire any partial crossing.
+
+The selected mode is session-only, initially off, and remains selected across pause/track/display changes while presentation immediately hides until fresh usable current lyrics exist. Explicit feature disable clears the selection. A right crossing with no usable current lyric is ignored. Missing/failed/unmatched/instrumental/before-first/gap states do not open an empty card. Adjacent next cues cannot cross a blank gap, duration endpoint or track generation. Quota notices temporarily override the selected mode and retain their existing painted hold and lifecycle clocks.
+
+A separate bounded quota-reliability correction sends the documented `excludeResetCreditDetails=true` option, with one compatibility fallback only for invalid-params (-32602). Each RPC has a 20s deadline and its connection has a 45s total budget; executable discovery may separately use 30s, followed by bounded process cleanup. Timeout/disconnection failures retry after 15/30/60/120/300s; authentication/protocol failures retain conservative backoff. Retained transient readings remain degraded and show their last-success age. The seven new protocol/deadline/backoff fixtures are synthetic; the user's actual intermittent error has not been inspected, so this does not establish its cause.
+
+New pure/native fixtures cover these rules and actual synthetic own-view current/next text in light/dark appearances, long current lines, shrinking height and retained footer/notice behavior. Local source checks are not native compilation or a physical-device result. v1.0.0 remains the published release below until the final candidate passes its complete gated workflow.
+
 ## v1.0.0 observed formal release
 
 [Release Run #41](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38890633568) passed the complete gated workflow on 2026-10-16. The final `v1.0.0` tag pins source `473c27fc2240b011134d45b889bb313d812b689c`, tree `b6ee3720c91f1cfb49f63ef6c38517fb4ca2183b`. The prior Beta 1 and v0.1.9 tags/assets remain available.
