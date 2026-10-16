@@ -13,10 +13,18 @@ final class QuotaUpdateTests: XCTestCase {
         QuotaSnapshot(buckets: [QuotaBucket(id: bucketID, name: "Synthetic quota", windows: windows ?? [window()])],
                       fetchedAt: date(fetched), continuityIdentity: QuotaContinuityIdentity(identity))
     }
-    private func change(_ first: QuotaSnapshot, _ second: QuotaSnapshot, now: Double? = nil) -> QuotaWindowUpdate.Change? {
+    private func update(_ first: QuotaSnapshot, _ second: QuotaSnapshot, now: Double? = nil) -> QuotaUpdate {
         var tracker = QuotaUpdateTracker()
         _ = tracker.record(first, at: first.fetchedAt)
-        return tracker.record(second, at: now.map(date) ?? second.fetchedAt).windows.first?.change
+        return tracker.record(second, at: now.map(date) ?? second.fetchedAt)
+    }
+    private func change(_ first: QuotaSnapshot, _ second: QuotaSnapshot, now: Double? = nil) -> QuotaWindowUpdate.Change? {
+        update(first, second, now: now).windows.first?.change
+    }
+    private func assertSilent(_ event: QuotaUpdate, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(event.windows.allSatisfy { !$0.hasNumericChange }, file: file, line: line)
+        XCTAssertNil(event.changedWindow(), file: file, line: line)
+        XCTAssertNil(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary"), file: file, line: line)
     }
     private func parsed(identityJSON: String?, at fetched: Double, used: Double = 20) throws -> QuotaSnapshot {
         let identityField = identityJSON.map { ",\"accountId\":\($0)" } ?? ""
@@ -29,12 +37,15 @@ final class QuotaUpdateTests: XCTestCase {
         let event = tracker.record(snapshot(at: 100), at: date(100))
         XCTAssertEqual(event.kind, .updated)
         XCTAssertEqual(event.windows.first?.change, .updated(reason: .initial))
+        assertSilent(event)
     }
 
     func testDecreaseReportsAbsolutePercentagePointsNotRelativePercent() {
         // Remaining 80 -> 60 means 20 percentage points, not 25 percent.
-        XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40)])),
-                       .decreased(percentagePoints: 20))
+        let event = update(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40)]))
+        XCTAssertEqual(event.windows.first?.change, .decreased(percentagePoints: 20))
+        XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+        XCTAssertEqual(event.changedWindow()?.windowID, "codex:primary")
     }
 
     func testFractionalPercentagePointsRemainPrecise() {
@@ -68,11 +79,14 @@ final class QuotaUpdateTests: XCTestCase {
         let event = tracker.record(snapshot(at: 110), at: date(110))
         XCTAssertEqual(event.kind, .unchanged)
         XCTAssertEqual(event.windows.first?.change, .unchanged)
+        assertSilent(event)
     }
 
     func testIncreaseNeverClaimsConsumptionOrRestoration() {
-        XCTAssertEqual(change(snapshot(at: 100, windows: [window(used: 50)]), snapshot(at: 110)),
-                       .updated(reason: .increased))
+        let event = update(snapshot(at: 100, windows: [window(used: 50)]), snapshot(at: 110))
+        XCTAssertEqual(event.windows.first?.change, .updated(reason: .increased))
+        XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+        XCTAssertNil(event.previousFetchedAt)
     }
 
     func testInitialAndRepeatedMissingIdentityAreIncomparable() {
@@ -89,8 +103,10 @@ final class QuotaUpdateTests: XCTestCase {
         _ = tracker.record(snapshot(at: 110, identity: nil, windows: [window(used: 30)]), at: date(110))
         let recovery = tracker.record(snapshot(at: 120, windows: [window(used: 40)]), at: date(120))
         XCTAssertEqual(recovery.windows.first?.change, .updated(reason: .identityUnavailable))
+        assertSilent(recovery)
         let next = tracker.record(snapshot(at: 130, windows: [window(used: 45)]), at: date(130))
         XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
     }
 
     func testAccountSwitchStartsANewContinuityBaseline() {
@@ -98,8 +114,10 @@ final class QuotaUpdateTests: XCTestCase {
         _ = tracker.record(snapshot(at: 100), at: date(100))
         let switched = tracker.record(snapshot(at: 110, identity: "synthetic-account-b", windows: [window(used: 40)]), at: date(110))
         XCTAssertEqual(switched.windows.first?.change, .updated(reason: .accountChanged))
+        assertSilent(switched)
         let next = tracker.record(snapshot(at: 120, identity: "synthetic-account-b", windows: [window(used: 45)]), at: date(120))
         XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
     }
 
     func testChangedBucketOrWindowRoleCannotBeComparedByPosition() {
@@ -111,25 +129,57 @@ final class QuotaUpdateTests: XCTestCase {
     }
 
     func testChangedPositiveDurationIsNonnumeric() {
-        XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40, minutes: 60)])),
-                       .updated(reason: .durationChanged))
+        let event = update(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40, minutes: 60)]))
+        XCTAssertEqual(event.windows.first?.change, .updated(reason: .durationChanged))
+        assertSilent(event)
     }
 
-    func testChangedFutureResetEpochIsNonnumeric() {
-        XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40, reset: 1_001)])),
-                       .updated(reason: .resetChanged))
+    func testChangedFutureResetWithNumericChangeIsEligibleButNeverConsumption() {
+        for used in [10.0, 40.0] {
+            let event = update(snapshot(at: 100), snapshot(at: 110, windows: [window(used: used, reset: 1_001)]))
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .resetChanged))
+            XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+            XCTAssertEqual(event.changedWindow()?.windowID, "codex:primary")
+            XCTAssertNil(event.previousFetchedAt)
+        }
+    }
+
+    func testResetMetadataChangeWithoutNumericChangeIsSilent() {
+        for oldReset in [105.0, 110.0, 1_000.0] {
+            let event = update(snapshot(at: 100, windows: [window(reset: oldReset)]),
+                               snapshot(at: 110, windows: [window(reset: 2_000)]))
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .resetChanged))
+            assertSilent(event)
+        }
     }
 
     func testExpiredOrExactlyDueResetDoesNotRestoreQuotaOrClaimConsumption() {
         for reset in [109.0, 110.0] {
-            XCTAssertEqual(change(snapshot(at: 100, windows: [window(reset: reset)]),
-                                  snapshot(at: 110, windows: [window(used: 40, reset: reset)])),
-                           .updated(reason: .resetPending))
+            let event = update(snapshot(at: 100, windows: [window(reset: reset)]),
+                               snapshot(at: 110, windows: [window(used: 40, reset: reset)]))
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .resetPending))
+            assertSilent(event)
         }
-        // Old reset is due even if the new response reports a new future epoch.
-        XCTAssertEqual(change(snapshot(at: 100, windows: [window(reset: 105)]),
-                              snapshot(at: 110, windows: [window(used: 40, reset: 2_000)])),
-                       .updated(reason: .resetPending))
+    }
+
+    func testNewFutureResetAfterOldCycleExpiresCanReportANumericChange() {
+        for oldReset in [99.0, 105.0, 110.0] {
+            for used in [0.0, 40.0] {
+                let event = update(snapshot(at: 100, windows: [window(reset: oldReset)]),
+                                   snapshot(at: 110, windows: [window(used: used, reset: 2_000)]))
+                XCTAssertEqual(event.windows.first?.change, .updated(reason: .resetChanged))
+                XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+                XCTAssertNil(event.previousFetchedAt)
+            }
+        }
+    }
+
+    func testChangedResetThatIsNotFutureRemainsSilent() {
+        for reset in [99.0, 110.0] {
+            let event = update(snapshot(at: 100), snapshot(at: 110, windows: [window(used: 40, reset: reset)]))
+            XCTAssertEqual(event.windows.first?.change, .updated(reason: .resetPending))
+            assertSilent(event)
+        }
     }
 
     func testMissingOrInvalidMeasurementMetadataCannotProduceDelta() {
@@ -137,16 +187,60 @@ final class QuotaUpdateTests: XCTestCase {
                         window(minutes: nil), window(minutes: 0), window(minutes: -1),
                         window(reset: nil), window(reset: .infinity), window(reset: .nan)]
         for unknown in unknowns {
-            XCTAssertEqual(change(snapshot(at: 100, windows: [unknown]), snapshot(at: 110, windows: [window(used: 40)])),
-                           .updated(reason: .dataUnavailable))
-            XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 110, windows: [unknown])),
-                           .updated(reason: .dataUnavailable))
+            let missingPrevious = update(snapshot(at: 100, windows: [unknown]), snapshot(at: 110, windows: [window(used: 40)]))
+            XCTAssertEqual(missingPrevious.windows.first?.change, .updated(reason: .dataUnavailable))
+            assertSilent(missingPrevious)
+            let missingCurrent = update(snapshot(at: 100), snapshot(at: 110, windows: [unknown]))
+            XCTAssertEqual(missingCurrent.windows.first?.change, .updated(reason: .dataUnavailable))
+            assertSilent(missingCurrent)
         }
     }
 
     func testFreshnessBoundaryIsInclusiveAt180Seconds() {
-        XCTAssertEqual(change(snapshot(at: 100), snapshot(at: 280, windows: [window(used: 40)])),
-                       .decreased(percentagePoints: 20))
+        let event = update(snapshot(at: 100), snapshot(at: 280, windows: [window(used: 40)]))
+        XCTAssertEqual(event.windows.first?.change, .decreased(percentagePoints: 20))
+        XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+    }
+
+    func testInvalidContinuityAndTimingAreNeverNumericNoticeEligible() {
+        let first = snapshot(at: 100)
+        let changed = [window(used: 40)]
+        let cases: [(QuotaSnapshot, QuotaSnapshot, Double)] = [
+            (first, snapshot(at: 110, identity: nil, windows: changed), 110),
+            (snapshot(at: 100, identity: nil), snapshot(at: 110, windows: changed), 110),
+            (snapshot(at: 100, identity: nil), snapshot(at: 110, identity: nil, windows: changed), 110),
+            (first, snapshot(at: 110, identity: "synthetic-account-b", windows: changed), 110),
+            (first, snapshot(at: 110, bucketID: "other", windows: changed), 110),
+            (first, snapshot(at: 110, windows: [window(id: "codex:secondary", used: 40)]), 110),
+            (first, snapshot(at: 281, windows: changed), 281),
+            (first, snapshot(at: 200, windows: changed), 281),
+            (first, snapshot(at: 110, windows: changed), 291),
+            (first, snapshot(at: 99, windows: changed), 110),
+            (first, snapshot(at: 100, windows: changed), 110),
+            (first, snapshot(at: 120, windows: changed), 110),
+            (first, snapshot(at: .nan, windows: changed), 110),
+            (first, snapshot(at: .infinity, windows: changed), 110),
+            (first, snapshot(at: -.infinity, windows: changed), 110),
+            (first, snapshot(at: 110, windows: changed), .nan),
+            (first, snapshot(at: 110, windows: changed), .infinity)
+        ]
+        for (old, new, now) in cases {
+            assertSilent(update(old, new, now: now))
+        }
+    }
+
+    func testUnknownNumbersCannotMakeAChangedResetEligible() {
+        let unknowns: [Double?] = [nil, -1, 101, .nan, .infinity, -.infinity]
+        for used in unknowns {
+            let missingPrevious = update(snapshot(at: 100, windows: [window(used: used, reset: 105)]),
+                                         snapshot(at: 110, windows: [window(used: 40, reset: 2_000)]))
+            XCTAssertEqual(missingPrevious.windows.first?.change, .updated(reason: .resetChanged))
+            assertSilent(missingPrevious)
+            let missingCurrent = update(snapshot(at: 100),
+                                        snapshot(at: 110, windows: [window(used: used, reset: 2_000)]))
+            XCTAssertEqual(missingCurrent.windows.first?.change, .updated(reason: .resetChanged))
+            assertSilent(missingCurrent)
+        }
     }
 
     func testLongGapAndStaleEitherSampleAreNonnumeric() {
@@ -182,10 +276,13 @@ final class QuotaUpdateTests: XCTestCase {
         _ = tracker.record(snapshot(at: 110, windows: [window(used: 30)]), at: date(110))
         let replay = tracker.record(snapshot(at: 105, windows: [window(used: 25)]), at: date(115))
         XCTAssertEqual(replay.windows.first?.change, .updated(reason: .nonMonotonic))
+        assertSilent(replay)
         let recovery = tracker.record(snapshot(at: 120, windows: [window(used: 40)]), at: date(120))
         XCTAssertEqual(recovery.windows.first?.change, .updated(reason: .nonMonotonic))
+        assertSilent(recovery)
         let next = tracker.record(snapshot(at: 130, windows: [window(used: 45)]), at: date(130))
         XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
     }
 
     func testInvalidCurrentTimeClearsTheBaseline() {
@@ -194,8 +291,10 @@ final class QuotaUpdateTests: XCTestCase {
         _ = tracker.record(snapshot(at: 110, windows: [window(used: 30)]), at: date(291))
         let recovery = tracker.record(snapshot(at: 300, windows: [window(used: 40)]), at: date(300))
         XCTAssertEqual(recovery.windows.first?.change, .updated(reason: .stale))
+        assertSilent(recovery)
         let next = tracker.record(snapshot(at: 310, windows: [window(used: 45)]), at: date(310))
         XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
     }
 
     func testFreshSnapshotAfterLongGapBecomesNewBaseline() {
@@ -216,10 +315,13 @@ final class QuotaUpdateTests: XCTestCase {
         XCTAssertEqual(failed.observedAt, date(105))
         XCTAssertNil(failed.fetchedAt)
         XCTAssertNil(failed.previousFetchedAt)
+        assertSilent(failed)
         let recovery = tracker.record(snapshot(at: 110, windows: [window(used: 40)]), at: date(110))
         XCTAssertEqual(recovery.windows.first?.change, .updated(reason: .previousReadFailed))
+        assertSilent(recovery)
         let next = tracker.record(snapshot(at: 120, windows: [window(used: 45)]), at: date(120))
         XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
     }
 
     func testSourcePathChangeInvalidatesBaseline() {
@@ -228,6 +330,14 @@ final class QuotaUpdateTests: XCTestCase {
         tracker.invalidateSource()
         let next = tracker.record(snapshot(at: 110, windows: [window(used: 40)]), at: date(110))
         XCTAssertEqual(next.windows.first?.change, .updated(reason: .sourceChanged))
+        assertSilent(next)
+        let following = tracker.record(snapshot(at: 120, windows: [window(used: 45)]), at: date(120))
+        XCTAssertEqual(following.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(following.windows.first?.hasNumericChange, true)
+        tracker.invalidateSource()
+        let changedAgain = tracker.record(snapshot(at: 130, windows: [window(used: 50)]), at: date(130))
+        XCTAssertEqual(changedAgain.windows.first?.change, .updated(reason: .sourceChanged))
+        assertSilent(changedAgain)
     }
 
     func testEveryReturnedWindowIsTrackedAcrossReordering() {
@@ -247,6 +357,85 @@ final class QuotaUpdateTests: XCTestCase {
         XCTAssertEqual(event.window(bucketID: "codex", windowID: "codex:secondary")?.change, .decreased(percentagePoints: 2))
         XCTAssertEqual(event.window(bucketID: "other", windowID: "other:primary")?.change, .decreased(percentagePoints: 4))
         XCTAssertNil(event.window(bucketID: "missing", windowID: "codex:primary"))
+        XCTAssertTrue(event.windows.allSatisfy(\.hasNumericChange))
+        XCTAssertEqual(event.changedWindow()?.bucketID, "other")
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary")?.windowID, "codex:primary")
+    }
+
+    func testSecondaryOnlyNumericChangeNeverSelectsUnchangedPrimary() {
+        let first = snapshot(at: 100, windows: [window(), window(id: "codex:secondary", used: 30, minutes: 10_080)])
+        let next = snapshot(at: 110, windows: [window(), window(id: "codex:secondary", used: 32, minutes: 10_080)])
+        let event = update(first, next)
+        XCTAssertEqual(event.window(bucketID: "codex", windowID: "codex:primary")?.hasNumericChange, false)
+        let selected = event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary")
+        XCTAssertEqual(selected?.bucketID, "codex")
+        XCTAssertEqual(selected?.windowID, "codex:secondary")
+        XCTAssertEqual(selected?.change, .decreased(percentagePoints: 2))
+        XCTAssertEqual(event.changedWindow(), selected)
+    }
+
+    func testChangedWindowSelectionUsesExactIDsAndDoesNotChangeContinuity() {
+        let oldBuckets = [
+            QuotaBucket(id: "codex", name: "Codex", windows: [window(id: "primary"), window(id: "secondary", used: 30)]),
+            QuotaBucket(id: "other", name: "Other", windows: [window(id: "primary", used: 40)])
+        ]
+        let newBuckets = [
+            QuotaBucket(id: "codex", name: "Codex", windows: [window(id: "primary", used: 21), window(id: "secondary", used: 32)]),
+            QuotaBucket(id: "other", name: "Other", windows: [window(id: "primary", used: 43)])
+        ]
+        let first = QuotaSnapshot(buckets: oldBuckets, fetchedAt: date(100), continuityIdentity: QuotaContinuityIdentity(account))
+        let next = QuotaSnapshot(buckets: newBuckets, fetchedAt: date(110), continuityIdentity: QuotaContinuityIdentity(account))
+        var tracker = QuotaUpdateTracker()
+        _ = tracker.record(first, at: date(100))
+        let event = tracker.record(next, at: date(110))
+        let primary = event.window(bucketID: "codex", windowID: "primary")
+        XCTAssertEqual(event.changedWindow(), primary)
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "secondary")?.change,
+                       .decreased(percentagePoints: 2))
+        let other = event.changedWindow(preferredBucketID: "other", preferredWindowID: "primary")
+        XCTAssertEqual(other?.bucketID, "other")
+        XCTAssertEqual(other?.change, .decreased(percentagePoints: 3))
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "missing", preferredWindowID: "primary"), primary)
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "other", preferredWindowID: "missing"), primary)
+        XCTAssertEqual(event.changedWindow(preferredBucketID: nil, preferredWindowID: "primary"), primary)
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "other", preferredWindowID: nil), primary)
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "primary"), primary)
+
+        let unchanged = QuotaSnapshot(buckets: newBuckets, fetchedAt: date(120), continuityIdentity: QuotaContinuityIdentity(account))
+        assertSilent(tracker.record(unchanged, at: date(120)))
+    }
+
+    func testMetadataOnlyPreferredWindowDoesNotMaskOtherNumericChange() {
+        let first = snapshot(at: 100, windows: [window(), window(id: "codex:secondary", used: 30)])
+        let next = snapshot(at: 110, windows: [window(reset: 2_000), window(id: "codex:secondary", used: 31)])
+        let event = update(first, next)
+        XCTAssertEqual(event.window(bucketID: "codex", windowID: "codex:primary")?.change, .updated(reason: .resetChanged))
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary")?.windowID, "codex:secondary")
+    }
+
+    func testSelectedNumericResetKeepsResetClassificationWhenOtherWindowIsComparable() {
+        let first = snapshot(at: 100, windows: [window(), window(id: "codex:secondary", used: 30, reset: 105)])
+        let next = snapshot(at: 110, windows: [window(), window(id: "codex:secondary", used: 10, reset: 2_000)])
+        let event = update(first, next)
+        // The unchanged primary exposes an interval for itself, never for the
+        // selected secondary's new cycle.
+        XCTAssertEqual(event.previousFetchedAt, date(100))
+        let selected = event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary")
+        XCTAssertEqual(selected?.windowID, "codex:secondary")
+        XCTAssertEqual(selected?.hasNumericChange, true)
+        XCTAssertEqual(selected?.change, .updated(reason: .resetChanged))
+    }
+
+    func testNewResetCycleBecomesTheBaselineForTheNextConsumptionComparison() {
+        var tracker = QuotaUpdateTracker()
+        _ = tracker.record(snapshot(at: 100, windows: [window(used: 80, reset: 105)]), at: date(100))
+        let reset = tracker.record(snapshot(at: 110, windows: [window(used: 10, reset: 2_000)]), at: date(110))
+        XCTAssertEqual(reset.windows.first?.change, .updated(reason: .resetChanged))
+        XCTAssertEqual(reset.windows.first?.hasNumericChange, true)
+        let next = tracker.record(snapshot(at: 120, windows: [window(used: 15, reset: 2_000)]), at: date(120))
+        XCTAssertEqual(next.windows.first?.change, .decreased(percentagePoints: 5))
+        XCTAssertEqual(next.windows.first?.hasNumericChange, true)
+        XCTAssertEqual(next.previousFetchedAt, date(110))
     }
 
     func testMissingWindowIsNotRememberedAcrossLaterRefreshes() {
@@ -255,8 +444,10 @@ final class QuotaUpdateTests: XCTestCase {
         let removed = tracker.record(snapshot(at: 110), at: date(110))
         XCTAssertEqual(removed.kind, .updated)
         XCTAssertEqual(removed.windows.count, 1)
+        assertSilent(removed)
         let returned = tracker.record(snapshot(at: 120, windows: [window(), window(id: "codex:secondary", used: 50)]), at: date(120))
         XCTAssertEqual(returned.window(bucketID: "codex", windowID: "codex:secondary")?.change, .updated(reason: .newWindow))
+        assertSilent(returned)
     }
 
     func testDuplicateOrEmptyWindowAndBucketIDsAreIncomparable() {
@@ -264,20 +455,49 @@ final class QuotaUpdateTests: XCTestCase {
         let duplicates = snapshot(at: 110, windows: [window(used: 30), window(used: 40)])
         var tracker = QuotaUpdateTracker()
         _ = tracker.record(valid, at: date(100))
-        XCTAssertTrue(tracker.record(duplicates, at: date(110)).windows.allSatisfy { $0.change == .updated(reason: .dataUnavailable) })
-        XCTAssertEqual(tracker.record(snapshot(at: 120, windows: [window(used: 45)]), at: date(120)).windows.first?.change,
-                       .updated(reason: .dataUnavailable))
+        let ambiguous = tracker.record(duplicates, at: date(110))
+        XCTAssertTrue(ambiguous.windows.allSatisfy { $0.change == .updated(reason: .dataUnavailable) })
+        assertSilent(ambiguous)
+        let recovery = tracker.record(snapshot(at: 120, windows: [window(used: 45)]), at: date(120))
+        XCTAssertEqual(recovery.windows.first?.change, .updated(reason: .dataUnavailable))
+        assertSilent(recovery)
         XCTAssertEqual(change(valid, snapshot(at: 110, bucketID: "", windows: [window(used: 40)])), .updated(reason: .dataUnavailable))
         XCTAssertEqual(change(valid, snapshot(at: 110, windows: [window(id: "", used: 40)])), .updated(reason: .dataUnavailable))
+        assertSilent(update(valid, snapshot(at: 110, bucketID: "", windows: [window(used: 40)])))
+        assertSilent(update(valid, snapshot(at: 110, windows: [window(id: "", used: 40)])))
         let bucket = QuotaBucket(id: "codex", name: "Codex", windows: [window(used: 40)])
         let repeatedBucket = QuotaSnapshot(buckets: [bucket, bucket], fetchedAt: date(110), continuityIdentity: QuotaContinuityIdentity(account))
         XCTAssertEqual(change(valid, repeatedBucket), .updated(reason: .dataUnavailable))
+        assertSilent(update(valid, repeatedBucket))
+        assertSilent(update(repeatedBucket, snapshot(at: 120, windows: [window(used: 45)])))
+    }
+
+    func testDuplicatedBucketsWithDistinctWindowIDsAreStillIneligible() {
+        let first = snapshot(at: 100, windows: [window(), window(id: "codex:secondary", used: 30)])
+        let duplicated = QuotaSnapshot(buckets: [
+            QuotaBucket(id: "codex", name: "First", windows: [window(used: 21)]),
+            QuotaBucket(id: "codex", name: "Second", windows: [window(id: "codex:secondary", used: 32)])
+        ], fetchedAt: date(110), continuityIdentity: QuotaContinuityIdentity(account))
+        let event = update(first, duplicated)
+        XCTAssertTrue(event.windows.allSatisfy { $0.change == .updated(reason: .dataUnavailable) })
+        assertSilent(event)
+        assertSilent(update(duplicated, snapshot(at: 120, windows: [window(used: 25), window(id: "codex:secondary", used: 35)])))
+    }
+
+    func testAmbiguousPreferredWindowDoesNotHideAnUnambiguousNumericChange() {
+        let first = snapshot(at: 100, windows: [window(), window(id: "codex:secondary", used: 30)])
+        let next = snapshot(at: 110, windows: [window(used: 21), window(used: 22), window(id: "codex:secondary", used: 35)])
+        let event = update(first, next)
+        XCTAssertTrue(event.windows.filter { $0.windowID == "codex:primary" }.allSatisfy { !$0.hasNumericChange })
+        XCTAssertEqual(event.changedWindow(preferredBucketID: "codex", preferredWindowID: "codex:primary")?.windowID, "codex:secondary")
+        XCTAssertEqual(event.changedWindow()?.change, .decreased(percentagePoints: 5))
     }
 
     func testPublicSnapshotInitializerRemainsIdentityFree() {
         let first = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Demo", windows: [window()])], fetchedAt: date(100))
         let next = QuotaSnapshot(buckets: [QuotaBucket(id: "codex", name: "Demo", windows: [window(used: 40)])], fetchedAt: date(110))
         XCTAssertEqual(change(first, next), .updated(reason: .identityUnavailable))
+        assertSilent(update(first, next))
     }
 
     func testParserAcceptsOptionalCamelCaseIdentityForExistingResponse() throws {
@@ -295,6 +515,7 @@ final class QuotaUpdateTests: XCTestCase {
             let next = try parsed(identityJSON: identity, at: 110, used: 40)
             XCTAssertEqual(next.bucket()?.windows.first?.remainingPercent, 60)
             XCTAssertEqual(change(first, next), .updated(reason: .identityUnavailable))
+            assertSilent(update(first, next))
         }
     }
 
@@ -332,5 +553,9 @@ final class QuotaUpdateTests: XCTestCase {
         dump(next, to: &diagnostic)
         XCTAssertFalse(diagnostic.contains(privateValue))
         XCTAssertEqual(Set(Mirror(reflecting: event).children.compactMap(\.label)), Set(["kind", "windows", "observedAt", "fetchedAt", "previousFetchedAt"]))
+        XCTAssertEqual(event.windows.first?.hasNumericChange, true)
+        XCTAssertFalse(String(reflecting: event.changedWindow()).contains(privateValue))
+        XCTAssertEqual(Set(Mirror(reflecting: try XCTUnwrap(event.changedWindow())).children.compactMap(\.label)),
+                       Set(["bucketID", "windowID", "change", "hasNumericChange"]))
     }
 }

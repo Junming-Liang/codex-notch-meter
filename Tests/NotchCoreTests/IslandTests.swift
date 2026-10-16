@@ -90,9 +90,27 @@ final class IslandTests: XCTestCase {
     func testSpringMatchesCriticalResponseAndConsumesWholeInterval() {
         var motion = IslandMotion()
         motion.advance(expanded: true, elapsed: 0.2, reduceMotion: false)
-        // Independent closed-form reference for a unit step at 18 rad/s.
-        XCTAssertEqual(motion.progress, 0.8743108767424542, accuracy: 1e-12)
-        XCTAssertEqual(motion.velocity, 1.7705772145845584, accuracy: 1e-12)
+        // Independent closed-form reference for a unit step at 16 rad/s.
+        XCTAssertEqual(motion.progress, 0.8287987432908619, accuracy: 1e-12)
+        XCTAssertEqual(motion.velocity, 2.08702484369235, accuracy: 1e-12)
+    }
+    func testReferenceInformedMotionMilestonesRemainIndependentOfNoticeDwell() {
+        // Solve the analytical unit step independently at1ms resolution. These are
+        // point/progress timings, not display FPS or equivalence to Apple's spring.
+        for expanded in [false, true] {
+            var motion = IslandMotion()
+            motion.advance(expanded: !expanded, elapsed: 0, reduceMotion: true)
+            var time95: Double?, time99: Double?
+            for tick in 1...1_000 {
+                motion.advance(expanded: expanded, elapsed: 0.001, reduceMotion: false)
+                let residual = abs((expanded ? 1.0 : 0.0) - motion.progress)
+                if residual <= 0.05 && time95 == nil { time95 = Double(tick) / 1_000 }
+                if residual <= 0.01 && time99 == nil { time99 = Double(tick) / 1_000 }
+            }
+            XCTAssertEqual(time95 ?? -1, 0.297, accuracy: 0.001)
+            XCTAssertEqual(time99 ?? -1, 0.415, accuracy: 0.001)
+            for duration in NoticeDuration.allCases { XCTAssertGreaterThan(duration.seconds, time99 ?? 1) }
+        }
     }
     func testSpringIsIndependentOfCadenceAndIntervalPartition() {
         // Every cadence reaches exactly the same target-change times, including
