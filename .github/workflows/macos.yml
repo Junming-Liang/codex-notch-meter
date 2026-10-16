@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.7 developer-preview DMG and ZIP after all checks pass
+        description: Publish v0.1.8 developer-preview DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -101,10 +101,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.7-universal.zip
-            dist/CodexNotchMeter-0.1.7-universal.zip.sha256
-            dist/CodexNotchMeter-0.1.7-universal.dmg
-            dist/CodexNotchMeter-0.1.7-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.8-universal.zip
+            dist/CodexNotchMeter-0.1.8-universal.zip.sha256
+            dist/CodexNotchMeter-0.1.8-universal.dmg
+            dist/CodexNotchMeter-0.1.8-universal.dmg.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -131,22 +131,23 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-0.1.7-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-0.1.7-universal.dmg.sha256
+          sha256sum --check CodexNotchMeter-0.1.8-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-0.1.8-universal.dmg.sha256
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.7" --jq '.[] | select(.ref == "refs/tags/v0.1.7") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.7") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.8" --jq '.[] | select(.ref == "refs/tags/v0.1.8") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.8") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.7 tag or release." >&2
+            echo "Refusing to replace an existing v0.1.8 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.7
-          进度轮廓加厚迭代：彩色描边从 2.5 pt 增至 3.5 pt，黑色底线从 3.5 pt 增至 4 pt；圆弧路径、定位、框架与额度比例不变。新增同一圆弧内侧的旧/新宽度原生对比，并验证浅色与深色背景覆盖。
+          ## Codex Notch Meter v0.1.8
+          只有经过连续性验证的实际数值变化才弹出额度提示；未变化、初次读取、失败和仅元数据变化保持安静。提示停留时长可选短2秒/标准4秒/长6秒，默认4秒，从完全展开并完成绘制后开始计时；悬停可保持详情。
+          黑色主体与进度轮廓由同一个同步 Canvas、同一不可变几何帧绘制，保留 v0.1.7 外形、位置与3.5/4pt描边。动效节奏参考 DynamicNotchKit 示例，采用约0.415秒达到99%的连续临界阻尼响应；不是逐帧复制或实体设备流畅度保证。
           延续显示兼容性：按实际内建显示能力与系统原始安全区域定位，不按机型硬编码刘海坐标。屏幕布局不变时保留当前面板与动效；模式/缩放/连接变化只替换受影响的面板。睡眠、锁屏会话、隐藏或关闭显示时停止轮廓定时器，恢复时重新读取布局。
           无刘海、外接屏、合盖、镜像或缺失/无效安全区域使用菜单栏。保留默认零偏移逐屏校准、五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、v0.1.5 连续悬停动效、DMG 和可选登录时启动。
           自动圆弧轮廓统一进度线与黑色主体；详情按内容收紧，刷新时短暂包裹展开，只有可比读数才显示减少的百分点。初次、未知、重置和失败不会伪装成消耗。
@@ -163,22 +164,22 @@ jobs:
           Paired old/new stroke samples passed at 1x/2x across both lower corners, all five skins and full/partial/zero/unknown states. White/dark background contribution and chromatic coverage were measured separately; this is synthetic coverage, not proof of exact physical-notch fit.
           All five skins passed native 1x/2x full-U contour alpha/color/arc/live-selection/phase gates. Remaining fills from the left; the consumed right suffix is pure black. A shared maximum-15fps color scheduler passed synthetic lifecycle pause/resume checks.
           Raw-edge native pixel-axis and mirrored-corner checks passed for off-center, odd/even/fractional inputs, signed calibration and reset; the recreated old edge-rounding control was rejected. Forced 1x/2x captures are not physical Retina placement tests.
-          Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The baseline reproduces the old drawing/layout strategy with the new spring, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
+          Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The observational baseline uses the old synchronous layout/timer strategy with the same current spring and Canvas, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
           The production display planner/reconciler passed injected native lifecycle checks: identical snapshots preserve controllers, changed geometry/identity retires only affected panels, fresh bounded retries recover from incomplete topology, and suspension/termination rejects stale callbacks. Family-shaped pure geometry profiles and actual own-view pixel/layout checks are synthetic coverage, not physical model, clamshell, mirroring or Spaces tests.
-          Compact refresh-state native tests passed for intermediate targets, two-second holds, live hover promotion, retired expiry, Reduce Motion and content-fit Quit layout. Automatic circular geometry remains a documented approximation, not measured per-model hardware truth.
+          Compact refresh-state native tests passed for numeric-change-only eligibility, actual 2/4/6-second painted-endpoint holds, live hover promotion, replacement/retired expiry, Reduce Motion and content-fit Quit layout. Synchronous-paint callbacks and separate 1x/2x paired body/rail pixel probes passed; these are not compositor scanout or physical hand-feel measurements. Automatic circular geometry remains a documented approximation, not measured per-model hardware truth.
           Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.7" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.7 \
+            -f ref="refs/tags/v0.1.8" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v0.1.8 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.7 · macOS Developer Preview" \
+            --title "v0.1.8 · macOS Developer Preview" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.7-universal.zip \
-            dist/CodexNotchMeter-0.1.7-universal.zip.sha256 \
-            dist/CodexNotchMeter-0.1.7-universal.dmg \
-            dist/CodexNotchMeter-0.1.7-universal.dmg.sha256
+            dist/CodexNotchMeter-0.1.8-universal.zip \
+            dist/CodexNotchMeter-0.1.8-universal.zip.sha256 \
+            dist/CodexNotchMeter-0.1.8-universal.dmg \
+            dist/CodexNotchMeter-0.1.8-universal.dmg.sha256
