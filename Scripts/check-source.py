@@ -14,11 +14,26 @@ for path in sources:
     for forbidden in ('thread/start', 'turn/start', 'account/login/start', 'account/logout', 'account/usage/read'):
         if forbidden in content:
             failures.append(f'{path.relative_to(root)}: forbidden RPC {forbidden}')
-    for forbidden in ('AXIsProcessTrusted', 'CGRequestScreenCaptureAccess', 'CGEvent.tapCreate', 'URLSession', 'auth.json', 'sessions/'):
+    for forbidden in ('AXIsProcessTrusted', 'CGRequestScreenCaptureAccess', 'CGEvent.tapCreate', 'auth.json', 'sessions/', 'MediaRemotePrivate'):
         if forbidden in content:
             failures.append(f'{path.relative_to(root)}: forbidden integration {forbidden}')
+    # Only the optional, separately consented lyrics boundary may construct a
+    # network session. Quota/discovery/other application sources remain barred.
+    if 'URLSession' in content and path.relative_to(root).as_posix() != 'Sources/CodexNotchMeter/LyricsProvider.swift':
+        failures.append(f'{path.relative_to(root)}: network outside optional lyrics boundary')
     if re.search(r'/(Users|workspace|root)/', content):
         failures.append(f'{path.relative_to(root)}: machine-specific absolute path')
+lyrics_transport = (root / 'Sources/CodexNotchMeter/LyricsProvider.swift').read_text()
+for guard in ('URLSessionConfiguration.ephemeral', 'config.httpCookieStorage = nil',
+              'config.urlCredentialStorage = nil', 'config.urlCache = nil',
+              'willPerformHTTPRedirection', 'completionHandler(nil)',
+              'LRCLIBLookup.isAllowed(url: request.url)', 'request.maximumResponseBytes'):
+    if guard not in lyrics_transport:
+        failures.append(f'Optional lyrics transport safety guard missing: {guard}')
+lyrics_policy = (root / 'Sources/NotchCore/LyricsLookup.swift').read_text()
+for guard in ('guard consent else', 'components.host = "lrclib.net"', 'components.path = "/api/get"'):
+    if guard not in lyrics_policy:
+        failures.append(f'Optional lyrics request safety guard missing: {guard}')
 rpc = (root / 'Sources/NotchCore/RPC.swift').read_text()
 for required in ('refreshToken": false', 'F_SETNOSIGPIPE', 'SIGKILL', '4_194_304'):
     if required not in rpc:
@@ -37,6 +52,7 @@ else:
         ('Scripts/test-build-dmg.py', r'"CFBundleShortVersionString": "([^"\n]+)"', expected_version),
         ('Scripts/test-build-dmg.py', r'"CFBundleVersion": "([^"\n]+)"', expected_build),
         ('Scripts/test-build-dmg.py', r'assertRaisesRegex\(RuntimeError, "([0-9]+\.[0-9]+\.[0-9]+)"\)', expected_version),
+        ('Sources/NotchCore/LyricsLookup.swift', r'CodexNotchMeter/([0-9]+\.[0-9]+\.[0-9]+) ', expected_version),
         ('Sources/NotchCore/RPC.swift', r'"version": "([^"\n]+)"', expected_version),
         ('Sources/CodexNotchMeter/Views.swift', r'Text\("v([0-9]+\.[0-9]+\.[0-9]+) · 开源预览版"\)', expected_version),
         ('.github/workflows/macos.yml', r'CodexNotchMeter-([0-9]+\.[0-9]+\.[0-9]+)-universal', expected_version),
