@@ -8,13 +8,14 @@ import Glibc
 /// Newline-delimited app-server protocol; only explicitly allowlisted requests exist.
 public enum ReadOnlyRequest: String, CaseIterable, Sendable {
     case initialize, account = "account/read", rateLimits = "account/rateLimits/read"
-    public func encoded(id: Int) throws -> Data {
+    public func encoded(id: Int, backgroundPoll: Bool = true) throws -> Data {
         var object: [String: Any] = ["id": id, "method": rawValue]
         switch self {
         case .initialize:
-            object["params"] = ["clientInfo": ["name": "codex_notch_meter", "title": "Codex Notch Meter", "version": "1.0.0"]]
+            object["params"] = ["clientInfo": ["name": "codex_notch_meter", "title": "Codex Notch Meter", "version": "1.0.1"]]
         case .account: object["params"] = ["refreshToken": false]
-        case .rateLimits: break
+        case .rateLimits:
+            if backgroundPoll { object["params"] = ["excludeResetCreditDetails": true] }
         }
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         data.append(0x0A)
@@ -76,15 +77,22 @@ public final class RPCConnection: @unchecked Sendable {
     private let executable: URL
     private let arguments: [String]
     private let timeout: TimeInterval
+    private let totalTimeout: TimeInterval
 
-    public init(executable: URL, arguments: [String] = ["app-server"], timeout: TimeInterval = 12) {
+    public init(executable: URL, arguments: [String] = ["app-server"], timeout: TimeInterval = 20, totalTimeout: TimeInterval = 45) {
         self.executable = executable; self.arguments = arguments; self.timeout = timeout
+        self.totalTimeout = totalTimeout
     }
     public func start() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 guard !started, !closed else { continuation.resume(throwing: MeterError.disconnected); return }
                 started = true
+                // One budget spans initialize, account, quota and any compatibility fallback.
+                queue.asyncAfter(deadline: .now() + totalTimeout) { [weak self] in
+                    guard let self, !self.closed else { return }
+                    self.closeLocked(error: .timedOut)
+                }
                 process.executableURL = executable
                 process.arguments = arguments
                 process.environment = CodexExecutable.runtimeEnvironment()
@@ -140,7 +148,7 @@ public final class RPCConnection: @unchecked Sendable {
             }
         }
     }
-    public func request(_ method: ReadOnlyRequest) async throws -> Data {
+    public func request(_ method: ReadOnlyRequest, backgroundPoll: Bool = true) async throws -> Data {
         try Task.checkCancellation()
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
@@ -149,7 +157,7 @@ public final class RPCConnection: @unchecked Sendable {
                     nextID += 1
                     let id = nextID
                     pending[id] = continuation
-                    do { try input.fileHandleForWriting.write(contentsOf: method.encoded(id: id)) }
+                    do { try input.fileHandleForWriting.write(contentsOf: method.encoded(id: id, backgroundPoll: backgroundPoll)) }
                     catch { closeLocked(error: .disconnected); return }
                     queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
                         guard let self, self.pending[id] != nil else { return }

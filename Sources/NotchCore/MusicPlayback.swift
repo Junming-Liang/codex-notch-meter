@@ -4,6 +4,53 @@ public enum MusicPlaybackState: Equatable, Sendable {
     case playing, paused, stopped, unknown
 }
 
+/// A tiny, already-decoded sRGB thumbnail. Rows are tightly packed RGBA8 with
+/// premultiplied alpha last and byte-order 32 big. This value contains no file
+/// path, URL or compressed image: a consumer must construct its CGImage directly
+/// from these pixels instead of invoking another image decoder. Never persist it.
+public struct MusicArtwork: Equatable, Sendable {
+    public static let maximumDimension = 64
+    public static let bytesPerPixel = 4
+    public static let maximumBytes = maximumDimension * maximumDimension * bytesPerPixel
+    public let rgbaBytes: Data
+    public let pixelWidth: Int
+    public let pixelHeight: Int
+    public var bytesPerRow: Int { pixelWidth * Self.bytesPerPixel }
+
+    public init?(rgbaBytes: Data, pixelWidth: Int, pixelHeight: Int) {
+        // Validate dimensions before multiplication, including hostile Int.max.
+        guard (1...Self.maximumDimension).contains(pixelWidth),
+              (1...Self.maximumDimension).contains(pixelHeight),
+              rgbaBytes.count == pixelWidth * pixelHeight * Self.bytesPerPixel else { return nil }
+        self.rgbaBytes = rgbaBytes
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+    }
+}
+
+/// Shared pure bounds for the public adapter's ImageIO preflight. Only one
+/// JPEG/PNG frame is considered; source dimensions are checked before decoding.
+public enum MusicArtworkDecodingPolicy {
+    public static let maximumEncodedBytes = 4_194_304
+    public static let maximumSourceDimension = 4_096
+    public static let maximumSourcePixels = 16_777_216
+
+    public static func acceptsEncodedByteCount(_ count: Int) -> Bool {
+        (1...maximumEncodedBytes).contains(count)
+    }
+
+    public static func acceptsSource(pixelWidth: Double, pixelHeight: Double,
+                                     imageCount: Int) -> Bool {
+        guard imageCount == 1, pixelWidth.isFinite, pixelHeight.isFinite,
+              pixelWidth >= 1, pixelHeight >= 1,
+              pixelWidth <= Double(maximumSourceDimension),
+              pixelHeight <= Double(maximumSourceDimension),
+              pixelWidth.rounded(.down) == pixelWidth,
+              pixelHeight.rounded(.down) == pixelHeight else { return false }
+        return pixelWidth * pixelHeight <= Double(maximumSourcePixels)
+    }
+}
+
 /// An in-memory comparison key, not an Apple catalog identifier. Metadata alone
 /// cannot distinguish two recordings with identical fields. Do not log this key.
 public struct MusicTrackIdentity: Equatable, Hashable, Sendable {
@@ -51,15 +98,19 @@ public struct MusicPlaybackSnapshot: Equatable, Sendable {
     /// Earliest monotonic time at which the position could have been observed;
     /// all consumers must use ProcessInfo.systemUptime, never wall-clock Date.
     public let observedAt: TimeInterval
+    /// Optional pixels from this exact bracketed track read, never a prior song.
+    public let artwork: MusicArtwork?
 
     public init?(track: MusicTrackIdentity, state: MusicPlaybackState,
-                 position: TimeInterval, observedAt: TimeInterval) {
+                 position: TimeInterval, observedAt: TimeInterval,
+                 artwork: MusicArtwork? = nil) {
         guard position.isFinite, position >= 0, position <= track.duration,
               observedAt.isFinite, observedAt >= 0 else { return nil }
         self.track = track
         self.state = state
         self.position = position
         self.observedAt = observedAt
+        self.artwork = artwork
     }
 }
 
@@ -126,19 +177,21 @@ public struct MusicTrackFields: Sendable {
 }
 
 public enum MusicPlaybackValidation {
-    /// Bracket the position with two metadata and state reads. This rejects a
+    /// Bracket the position and optional artwork with two metadata/state reads. This rejects a
     /// detected transition, but cannot prove Music's current-track data is fresh
     /// or make several Apple Events atomic (including an A -> B -> A transition).
     public static func result(before: MusicTrackFields, after: MusicTrackFields,
                               stateBefore: MusicPlaybackState, stateAfter: MusicPlaybackState,
-                              position: TimeInterval?, observedAt: TimeInterval) -> MusicReadResult {
+                              position: TimeInterval?, observedAt: TimeInterval,
+                              artwork: MusicArtwork? = nil) -> MusicReadResult {
         do {
             let first = try before.validated()
             let last = try after.validated()
             guard first == last, stateBefore == stateAfter else { return .unavailable(.changedDuringRead) }
             guard let position else { return .unavailable(.unknownTrack) }
             guard let snapshot = MusicPlaybackSnapshot(track: last, state: stateAfter,
-                                                        position: position, observedAt: observedAt) else {
+                                                        position: position, observedAt: observedAt,
+                                                        artwork: artwork) else {
                 return .unavailable(.invalidResponse)
             }
             return .snapshot(snapshot)

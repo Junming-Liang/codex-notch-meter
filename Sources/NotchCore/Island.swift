@@ -105,9 +105,15 @@ public struct IslandGeometry: Equatable, Sendable {
     public let calibratedNotch: CGRect
     /// Exact collapsed contour in global coordinates: 3pt on the sides/bottom.
     public let contourFrame: CGRect
-    public let collapsedSize: CGSize
-    public let expandedSize: CGSize
+    public var collapsedSize: CGSize { frame(progress: 0).size }
+    /// Optional visible music wings are not camera geometry or calibration.
+    public var showsMusicAccessories = false
+    public var expandedSize: CGSize { frame(progress: 1).size }
     public let contentHeight: CGFloat
+    public let compactWidth: CGFloat
+    public var compactContentWidth: CGFloat { max(1, compactWidth - 66) }
+    public var noticeContentWidth: CGFloat { max(1, compactWidth - 36) }
+    public var detailContentWidth: CGFloat { max(1, expandedContourFrame.width - 66) }
     public let backingScale: CGFloat
     private let expandedContourFrame: CGRect
     public init(notch: NotchGeometry, screen: CGRect, backingScale: CGFloat = 1, horizontalAdjustment: Double = 0, shapeCalibration: ContourCalibration = ContourCalibration(), contentHeight: CGFloat = 180) {
@@ -121,7 +127,8 @@ public struct IslandGeometry: Equatable, Sendable {
         let corrected = CGRect(x: hardware.midX - correctedWidth / 2,
             y: hardware.maxY - correctedDepth, width: correctedWidth, height: correctedDepth)
         let scale = backingScale.isFinite && backingScale > 0 ? backingScale : 1
-        let width = min(max(340, hardware.width + 40), screen.width - 24)
+        let width = min(max(400, hardware.width + 40), screen.width - 24)
+        self.compactWidth = min(width, max(360, hardware.width + 40))
         let content = min(340, max(132, contentHeight.isFinite ? contentHeight : 180))
         let height = min(hardware.height + 8 + content, screen.height - 32)
         self.contentHeight = height - hardware.height - 8
@@ -161,12 +168,17 @@ public struct IslandGeometry: Equatable, Sendable {
         let expandedX = min(max(calibratedNotch.midX - width / 2, expandedLeft), expandedRight - width)
         expandedContourFrame = CGRect(x: expandedX,
             y: screen.maxY - height, width: width, height: height)
-        collapsedSize = Self.nativeFrame(containing: IslandContour(rect: contourFrame, cornerAdjustment: shapeCalibration.corner, referenceDepth: hardware.height).bounds, screen: screen, scale: scale).size
-        expandedSize = Self.nativeFrame(containing: expandedContourFrame, screen: screen, scale: scale).size
     }
-    public var updateProgress: Double {
-        let updateHeight = min(expandedContourFrame.height - 20, notch.height + 78)
-        return Double(max(0.15, min(0.8, (updateHeight - contourFrame.height) / (expandedContourFrame.height - contourFrame.height))))
+    public var updateProgress: Double { progress(forHeight: notch.height + 78) }
+    /// The music target changes through the existing spring; the geometry map
+    /// itself stays fixed, so cue wrapping never reinterprets an active frame.
+    public func musicProgress(contentHeight: CGFloat) -> Double {
+        let content = contentHeight.isFinite ? min(90, max(48, contentHeight)) : 48
+        return progress(forHeight: notch.height + 16 + content)
+    }
+    private func progress(forHeight height: CGFloat) -> Double {
+        let target = min(expandedContourFrame.height - 20, height)
+        return Double(max(0.15, min(0.8, (target - contourFrame.height) / (expandedContourFrame.height - contourFrame.height))))
     }
     /// Maximum side/bottom/turn displacement from idle in one global point space.
     /// Native window pixel rounding is deliberately excluded from this paint input.
@@ -200,7 +212,30 @@ public struct IslandGeometry: Equatable, Sendable {
             && shapeCalibration == other.shapeCalibration && backingScale == other.backingScale
     }
     public func frame(progress: Double) -> CGRect {
-        Self.nativeFrame(containing: IslandContour(rect: drawingFrame(progress: progress), progress: progress, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height).bounds, screen: screen, scale: backingScale)
+        let contour = IslandContour(rect: drawingFrame(progress: progress), progress: progress, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height).bounds
+        let envelope = showsMusicAccessories ? contour.union(musicAccessoryFrame) : contour
+        return Self.nativeFrame(containing: envelope, screen: screen, scale: backingScale)
+    }
+    /// Black side wings retain the hardware depth. The raw camera exclusion and
+    /// original U path stay separate and unchanged; near-edge space fails closed.
+    public var musicAccessoryFrame: CGRect {
+        CGRect(x: max(screen.minX, calibratedNotch.minX - 34), y: screen.maxY - notch.height,
+               width: min(screen.maxX, calibratedNotch.maxX + 34) - max(screen.minX, calibratedNotch.minX - 34),
+               height: notch.height)
+    }
+    public var canShowMusicAccessories: Bool {
+        calibratedNotch.minX - screen.minX >= 34 && screen.maxX - calibratedNotch.maxX >= 34 && notch.height >= 20
+    }
+    /// Fixed at the original hardware anchor, never at the moving card edge.
+    public var musicGestureCorridor: CGRect {
+        CGRect(x: musicAccessoryFrame.minX, y: screen.maxY - min(18, notch.height),
+               width: musicAccessoryFrame.width, height: min(18, notch.height))
+    }
+    public func musicAccessoryRects(progress: Double) -> (left: CGRect, right: CGRect) {
+        let native = frame(progress: progress)
+        let y = CGFloat(0), depth = notch.height
+        return (CGRect(x: calibratedNotch.minX - 34 - native.minX, y: y, width: 37, height: depth),
+                CGRect(x: calibratedNotch.maxX - 3 - native.minX, y: y, width: 37, height: depth))
     }
     /// Exact drawing rectangle in top-down coordinates inside the normalized window.
     /// Its origin must be honored; centering it in the window reintroduces grid bias.
@@ -220,12 +255,19 @@ public struct IslandGeometry: Equatable, Sendable {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
         if p == 0 { return contourFrame }
         if p == 1 { return expandedContourFrame }
-        // Reach the wrapped pill width smoothly before continuing down to details.
-        let widthProgress = min(1, p / CGFloat(updateProgress))
-        let widthEase = widthProgress * widthProgress * (3 - 2 * widthProgress)
-        let width = contourFrame.width + (expandedContourFrame.width - contourFrame.width) * widthEase
+        // Reach one shared compact width, retain it through all music/notice
+        // heights, then grow toward details. This map never depends on text.
+        let lower = CGFloat(musicProgress(contentHeight: 48))
+        let upper = CGFloat(musicProgress(contentHeight: 90))
+        func ease(_ value: CGFloat) -> CGFloat {
+            let t = min(1, max(0, value)); return t * t * (3 - 2 * t)
+        }
+        let compactEase = ease(p / lower)
+        let detailEase = ease((p - upper) / (1 - upper))
+        let width = contourFrame.width + (compactWidth - contourFrame.width) * compactEase
+            + (expandedContourFrame.width - compactWidth) * detailEase
         let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * p
-        let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * widthEase
+        let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * compactEase
         return CGRect(x: center - width / 2,
             y: screen.maxY - height, width: width, height: height)
     }

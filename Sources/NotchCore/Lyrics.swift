@@ -209,6 +209,32 @@ public struct LyricsTimeline: Sendable {
         case line(index: Int, cue: LyricCue)
     }
 
+    /// One selection and its honest whole-line preview. Playback/presentation
+    /// policy remains the caller's responsibility; a fresh paused line is usable.
+    public struct Preview: Equatable, Sendable {
+        public let selection: Selection
+        public let nextCue: LyricCue?
+
+        public var currentText: String? {
+            switch selection {
+            case .line(_, let cue): return cue.text.isEmpty ? nil : cue.text
+            case .plain(let lines):
+                guard let first = lines.first, !first.isEmpty else { return nil }
+                return first
+            default: return nil
+            }
+        }
+
+        /// Status labels, empty cues, and missing text never qualify as lyrics.
+        public var isEligible: Bool { currentText != nil }
+
+        /// Plain text stays explicitly unsynchronized, even when it is usable.
+        public var isSynchronized: Bool {
+            if case .line = selection { return true }
+            return false
+        }
+    }
+
     public let freshnessInterval: TimeInterval
     public private(set) var generation: UInt64 = 0
     private var document: LyricsDocument = .unavailable
@@ -305,6 +331,26 @@ public struct LyricsTimeline: Sendable {
             let cue = cues[lower - 1]
             return cue.text.isEmpty ? .gap : .line(index: lower - 1, cue: cue)
         }
+    }
+
+    /// Selects once, retaining selection's clock, freshness and generation rules.
+    /// The next line is only the immediately following normalized cue: never
+    /// skip a blank clearing cue or manufacture timings for plain text. Cues
+    /// starting at or beyond a known track end cannot become a next preview.
+    public mutating func preview(at now: TimeInterval) -> Preview {
+        let selected = selection(at: now)
+        var nextCue: LyricCue?
+        if case .line(let index, _) = selected,
+           case .synchronized(let cues) = document.content,
+           cues.indices.contains(index + 1) {
+            let candidate = cues[index + 1]
+            let duration = sample?.duration
+            if !candidate.text.isEmpty,
+               duration.map({ candidate.startTime < $0 }) ?? true {
+                nextCue = candidate
+            }
+        }
+        return Preview(selection: selected, nextCue: nextCue)
     }
 
     private func validClock(_ now: TimeInterval) -> Bool {

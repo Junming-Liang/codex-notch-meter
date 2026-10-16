@@ -90,6 +90,16 @@ public enum CodexExecutable {
 }
 
 public enum QuotaReader {
+    /// Old helpers may reject the optional background-poll parameter. Retry only
+    /// that explicit protocol error, once, within the connection's total budget.
+    static func readRateLimits(_ connection: RPCConnection) async throws -> Data {
+        do { return try await connection.request(.rateLimits) }
+        catch MeterError.serverError(-32602) {
+            try Task.checkCancellation()
+            return try await connection.request(.rateLimits, backgroundPoll: false)
+        }
+    }
+
     public static func fetch(executable: URL) async throws -> QuotaSnapshot {
         let connection = RPCConnection(executable: executable)
         do {
@@ -103,7 +113,7 @@ public enum QuotaReader {
             case .unsupported: throw MeterError.unsupportedAccount
             case .chatGPT: break
             }
-            let response = try await connection.request(.rateLimits)
+            let response = try await readRateLimits(connection)
             let snapshot = try QuotaParser.parse(response)
             await connection.shutdown()
             return snapshot

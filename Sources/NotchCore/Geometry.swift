@@ -50,9 +50,19 @@ public struct NotchGeometry: Equatable, Sendable {
 public struct RefreshPolicy: Equatable, Sendable {
     public private(set) var failures: Int = 0
     public init() {}
-    public mutating func succeeded() { failures = 0 }
-    public mutating func failed() { failures = min(failures + 1, 5) }
-    public var delay: TimeInterval { failures == 0 ? 60 : min(60 * pow(2, Double(failures)), 900) }
+    private var transientFailure = false
+    public mutating func succeeded() { failures = 0; transientFailure = false }
+    public mutating func failed(_ error: MeterError? = nil) {
+        let transient = error == .timedOut || error == .disconnected
+        if transient != transientFailure { failures = 0 }
+        transientFailure = transient
+        failures = min(failures + 1, 5)
+    }
+    public var delay: TimeInterval {
+        guard failures > 0 else { return 60 }
+        if transientFailure { return [15.0, 30, 60, 120, 300][failures - 1] }
+        return min(60 * pow(2, Double(failures)), 900)
+    }
     public static func shouldRefreshOnHover(lastAttempt: Date?, now: Date) -> Bool {
         lastAttempt.map { now.timeIntervalSince($0) >= 30 } ?? true
     }
