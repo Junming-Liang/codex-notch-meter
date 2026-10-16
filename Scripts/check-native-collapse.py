@@ -47,6 +47,9 @@ def check_matrix(label, keys, expected, flags):
 
 
 replay_flags = {'valid': 'true', 'offlineReplay': 'true', 'scanout': 'false'}
+check_matrix('paired-body-rail', ('theme', 'scale', 'progress'),
+             set(itertools.product(themes, scales, (0.5, 0.3))),
+             {'valid': 'true', 'railShiftRejected': 'true', 'bodyShiftRejected': 'true', 'replayNotScanout': 'true'})
 check_matrix('coupled-body', ('theme', 'scale', 'progress'),
              set(itertools.product(themes, scales, (0.1, 0.05, 0.02))),
              dict(replay_flags, legacyRendered='true', legacyRejected='true', outsideCamera='true'))
@@ -57,4 +60,4 @@ check_matrix('body-endpoint', ('fixture', 'theme', 'scale', 'progress'), endpoin
 check_matrix('extreme-tail', ('fixture', 'scale'),
              set(itertools.product(('shortest', 'tallest'), scales)),
              dict(replay_flags, terminalBounds='true', terminalAxes='true'))
-print('COLLAPSE_MATRIX_OK: 30 rendered coupling/legacy controls, 42 body endpoints, 4 extreme tails; offline replay only')
+print('COLLAPSE_MATRIX_OK: 20 paired body/rail shift controls, 30 rendered coupling/legacy controls, 42 body endpoints, 4 extreme tails; offline replay only')
