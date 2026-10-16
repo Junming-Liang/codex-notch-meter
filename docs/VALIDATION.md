@@ -12,6 +12,8 @@ The reauthorized closing-visibility correction preserves the contour, rail, spri
 
 Numeric bundle and release identity are1.0.0/build13. The final-tag workflow rejects conflicting existing tags and never replaces beta1/v019. Local source checks,22 DMG mocks,20 dictionary fixtures and receipt-validator self-tests are synthetic preflight, not native success. The user's beta1 lyric-display report is configuration-specific; Music/TCC/streaming and physical feel are not universally established.
 
+[Run #36](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38882185064) stopped during Swift compilation: the close-pixel harness's nested contour-distance expression exceeded the compiler's type-checking budget. Both jobs reported the same error; native gates and official-helper discovery did not execute. The repair splits the same seven `CGFloat` terms into explicit locals, preserving their maximum, infinity fallback and all thresholds. New native results remain pending.
+
 ## v1.0.0-beta.1 observed release results
 
 [Release Run #35](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38876321184) passed all required gates on 2026-10-16. The beta tag pins source `289f8f115e58a6dcbd6311f0d451f15846a61c07`, tree `08cf5a8a7ad32a44efbcafad8408a062a0310f86`. Directly read current-run receipts confirm 108 native synthetic Music checks in 33.090 seconds, the actual beta DMG identity/readonly inspection and both archive checksums. Detailed unit/package/official receipts and retained-gate completion from Run #34 apply to the unchanged runtime implementation; Run #35 repeats the full gated workflow successfully.
