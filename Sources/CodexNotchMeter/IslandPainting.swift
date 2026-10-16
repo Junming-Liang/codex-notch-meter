@@ -11,11 +11,12 @@ struct IslandVisualFrame {
     let progress: Double
     let viewport: CGSize
     let noticeID: UUID?
+    let musicRevision: UInt64
     let contour: IslandContour
     let surfaceOpacity: Double
     let railOpacity: Double
-    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, noticeID: UUID? = nil, baseline: Bool = false) {
-        self.progress = progress; self.viewport = viewport; self.noticeID = noticeID
+    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, noticeID: UUID? = nil, musicRevision: UInt64 = 0, baseline: Bool = false) {
+        self.progress = progress; self.viewport = viewport; self.noticeID = noticeID; self.musicRevision = musicRevision
         contour = IslandContour(rect: geometry.contourRect(progress: progress), progress: progress,
             cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
         surfaceOpacity = baseline ? min(1, progress * 3) : geometry.surfaceOpacity(progress: progress)

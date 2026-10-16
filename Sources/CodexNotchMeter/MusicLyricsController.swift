@@ -15,11 +15,25 @@ final class MusicLyricsController: ObservableObject {
     @Published private(set) var onlineLookupEnabled: Bool
     @Published private(set) var trackTitle = ""
     @Published private(set) var line = ""
+    @Published private(set) var nextLine = ""
+    @Published private(set) var isSynchronized = false
+    @Published private(set) var presentationRevision: UInt64 = 0
     @Published private(set) var statusText = "Apple Music 歌词未启用"
     @Published private(set) var sourceLabel = ""
     @Published private(set) var needsAuthorization = false
     @Published private(set) var hasLocalLyrics = false
     @Published private(set) var isPlayingForPresentation = false
+    @Published private(set) var isFreshPlaying = false
+    @Published private(set) var lyricsModeEnabled = false
+    @Published private(set) var artwork: MusicArtwork?
+    var playbackRevision: UUID { trackRevision }
+
+    /// Session choice; unavailable content never invents a lyric or opens a card.
+    func selectLyricsMode(_ value: Bool) {
+        guard !stopped, enabled, lyricsModeEnabled != value else { return }
+        guard !value || isPlayingForPresentation else { return }
+        lyricsModeEnabled = value; presentationRevision &+= 1
+    }
     @Published private(set) var lookupState = LyricsLookupState.idle
     let synthetic: Bool
 
@@ -79,6 +93,7 @@ final class MusicLyricsController: ObservableObject {
     func setEnabled(_ value: Bool) {
         guard !stopped, enabled != value else { return }
         enabled = value
+        if !value { lyricsModeEnabled = false }
         defaults?.set(value, forKey: "musicLyricsEnabled")
         retireWork()
         clearPlayback()
@@ -108,6 +123,7 @@ final class MusicLyricsController: ObservableObject {
             line = ""; sourceLabel = ""
             statusText = value ? "等待歌词匹配" : "可为当前歌曲导入 LRC 歌词"
         }
+        refreshLine()
         if value { beginLookupIfNeeded() }
     }
 
@@ -175,6 +191,7 @@ final class MusicLyricsController: ObservableObject {
         lookupGeneration = nil
         resetLookupState()
         statusText = "可为当前歌曲导入 LRC 歌词"
+        refreshLine()
         beginLookupIfNeeded()
     }
 
@@ -188,7 +205,11 @@ final class MusicLyricsController: ObservableObject {
     }
 
     private func clearPlayback() {
+        let hadPresentation = isPlayingForPresentation || isFreshPlaying || !line.isEmpty || !nextLine.isEmpty
         if isPlayingForPresentation { isPlayingForPresentation = false }
+        isFreshPlaying = false; artwork = nil
+        nextLine = ""; isSynchronized = false
+        if hadPresentation { presentationRevision &+= 1 }
         trackRevision = UUID()
         _ = timeline.replaceTrack(at: clock())
         current = nil; document = .unavailable
@@ -251,6 +272,7 @@ final class MusicLyricsController: ObservableObject {
             }
             if current?.track != value.track {
                 trackRevision = UUID()
+                presentationRevision &+= 1
                 lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
                 importTask?.cancel(); importTask = nil
                 document = .unavailable; hasLocalLyrics = false; sourceLabel = ""; line = ""
@@ -266,6 +288,7 @@ final class MusicLyricsController: ObservableObject {
                 receive(.unavailable(.invalidResponse)); return
             }
             current = value; needsAuthorization = false; trackTitle = value.track.title
+            if artwork != value.artwork { artwork = value.artwork }
             refreshLine()
             beginLookupIfNeeded()
         }
@@ -348,7 +371,10 @@ final class MusicLyricsController: ObservableObject {
     private func refreshLine() {
         lineTimer?.invalidate(); lineTimer = nil
         let now = clock()
-        var selection = timeline.selection(at: now)
+        let previous = (line, nextLine, isSynchronized, isPlayingForPresentation, isFreshPlaying)
+        let preview = timeline.preview(at: now)
+        var selection = preview.selection
+        nextLine = ""; isSynchronized = false
         // An unavailable lyric document intentionally short-circuits the pure
         // timeline. Source freshness still governs the visible song metadata.
         if let value = current {
@@ -361,9 +387,10 @@ final class MusicLyricsController: ObservableObject {
             playing = value.state == .playing && age.isFinite && age >= 0
                 && age < timeline.freshnessInterval && value.position + age < value.track.duration
         } else { playing = false }
-        if isPlayingForPresentation != playing { isPlayingForPresentation = playing }
         switch selection {
-        case .line(_, let cue): line = cue.text; statusText = current?.state == .paused ? "已暂停" : "同步歌词"
+        case .line(_, let cue):
+            line = cue.text; nextLine = preview.nextCue?.text ?? ""; isSynchronized = true
+            statusText = current?.state == .paused ? "已暂停" : "同步歌词"
         case .plain(let lines): line = lines.first ?? ""; statusText = "纯文本歌词 · 未同步"
         case .instrumental: line = ""; statusText = "纯音乐"
         case .beforeFirstLine: line = ""; statusText = "等待第一句歌词"
@@ -378,8 +405,16 @@ final class MusicLyricsController: ObservableObject {
         // Pause hides the music presentation immediately; keep only internal
         // track/document identity so a fresh resume can select its current cue.
         if current?.state == .paused {
-            line = ""
+            line = ""; nextLine = ""; isSynchronized = false
             if !trackTitle.isEmpty { statusText = "已暂停" }
+        }
+        if isFreshPlaying != playing { isFreshPlaying = playing }
+        if !playing { artwork = nil }
+        let eligible = playing && preview.isEligible && !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !eligible { line = ""; nextLine = ""; isSynchronized = false }
+        if isPlayingForPresentation != eligible { isPlayingForPresentation = eligible }
+        if previous.0 != line || previous.1 != nextLine || previous.2 != isSynchronized || previous.3 != eligible || previous.4 != playing {
+            presentationRevision &+= 1
         }
         guard enabled, active, !stopped, let value = current else { return }
         var next = value.observedAt + timeline.freshnessInterval

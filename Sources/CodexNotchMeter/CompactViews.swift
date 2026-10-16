@@ -11,48 +11,46 @@ private struct CompactQuitFrame: PreferenceKey {
 @MainActor
 struct CompactDetailView: View {
     @ObservedObject var model: MeterModel
+    @ObservedObject var music: MusicLyricsController
+    let width: CGFloat
     let height: CGFloat
     let quitFrameChanged: (CGRect) -> Void
     let refresh: () -> Void
     let settings: () -> Void
     let quit: () -> Void
+    private var musicMode: Bool { model.error == nil && music.isPlayingForPresentation && music.lyricsModeEnabled }
+    private var musicHeight: CGFloat { MusicPreviewLayout.contentHeight(line: music.line, nextLine: music.nextLine, width: width) }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Codex").font(.system(size: 12, weight: .semibold))
-                if model.demo { Text("演示数据").font(.system(size: 9)).foregroundStyle(.orange) }
-                Spacer()
-                Text(model.degraded ? "上次读取" : "额度概览").font(.system(size: 10)).foregroundStyle(.secondary)
-                Button(action: refresh) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11)).frame(width: 24, height: 22)
-                }.buttonStyle(.plain).help("刷新额度").accessibilityLabel("刷新额度")
-                    .disabled(model.refreshing || model.demo)
-            }.frame(height: 22)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if model.error != nil {
-                        Text(model.status).font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            if musicMode {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        MusicCompactView(music: music).frame(height: musicHeight)
+                        Divider().overlay(Color.white.opacity(0.08))
+                        quotaContent
                     }
-                    if model.error == nil { MusicLyricRow(music: model.music) }
-                    if let snapshot = model.snapshot {
-                        ForEach(snapshot.buckets) { bucket in
-                            if snapshot.buckets.count > 1 {
-                                Text(bucket.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                            }
-                            ForEach(bucket.windows) { window in
-                                compactRow(window)
-                            }
-                            if bucket.windows.isEmpty { Text("暂无额度窗口").font(.system(size: 11)).foregroundStyle(.secondary) }
-                        }
-                    } else {
-                        Text("—").font(.system(size: 24, weight: .semibold))
-                        Text(model.status).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }.frame(height: max(48, height - 82))
+                }.frame(height: max(48, height - 52))
+            } else {
+                HStack {
+                    Text("Codex").font(.system(size: 12, weight: .semibold))
+                    if model.demo { Text("演示数据").font(.system(size: 9)).foregroundStyle(.orange) }
+                    Spacer()
+                    Text(model.degraded ? "上次读取" : "额度概览").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Button(action: refresh) {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 11)).frame(width: 24, height: 22)
+                    }.buttonStyle(.plain).help("刷新额度").accessibilityLabel("刷新额度")
+                        .disabled(model.refreshing || model.demo)
+                }.frame(height: 22)
+                ScrollView { quotaContent }.frame(height: max(48, height - 82))
+            }
             HStack {
                 Button(action: settings) { Label("设置", systemImage: "slider.horizontal.3") }
                     .buttonStyle(.plain).help("打开设置")
+                if musicMode {
+                    Button(action: refresh) { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.plain).help("刷新额度").accessibilityLabel("刷新额度")
+                        .disabled(model.refreshing || model.demo)
+                }
                 Spacer()
                 Text(model.snapshot.map { $0.fetchedAt.formatted(date: .omitted, time: .shortened) } ?? "未读取")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -64,10 +62,49 @@ struct CompactDetailView: View {
             }.font(.system(size: 11)).frame(height: 28).padding(.horizontal, 2)
         }
         .padding(.bottom, 16)
-        .frame(width: 304, height: height, alignment: .top)
+        .frame(width: width, height: height, alignment: .top)
         .coordinateSpace(name: "compactDetails")
         .onPreferenceChange(CompactQuitFrame.self, perform: quitFrameChanged)
         .foregroundStyle(Color.white).environment(\.colorScheme, .dark)
+    }
+    private var quotaContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if model.error != nil {
+                Text(model.status).font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if let snapshot = model.snapshot {
+                ForEach(snapshot.buckets) { bucket in
+                    if snapshot.buckets.count > 1 {
+                        Text(bucket.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                    ForEach(bucket.windows) { window in
+                        if musicMode { musicQuotaRow(window) } else { compactRow(window) }
+                    }
+                    if bucket.windows.isEmpty { Text("暂无额度窗口").font(.system(size: 11)).foregroundStyle(.secondary) }
+                }
+            } else {
+                Text("—").font(.system(size: 24, weight: .semibold))
+                Text(model.status).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    private func musicQuotaRow(_ window: QuotaWindow) -> some View {
+        HStack(spacing: 10) {
+            Text(windowTitle(window)).font(.system(size: 10)).lineLimit(1).frame(width: 55, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Color.black
+                    if let remaining = window.remainingPercent, remaining > 0 {
+                        Capsule().fill(quotaPaint(remaining, theme: model.theme, phase: model.skinPhase))
+                            .frame(width: proxy.size.width * remaining / 100)
+                            .opacity(model.degraded || window.resetPending(at: model.now) ? 0.55 : 1)
+                    }
+                }
+            }.frame(height: 3)
+            Text(window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "—")
+                .font(.system(size: 11, weight: .medium)).monospacedDigit().frame(width: 38, alignment: .trailing)
+        }.frame(height: 20).help(resetLine(window))
+            .accessibilityElement(children: .combine).accessibilityHint(resetLine(window))
     }
     private func compactRow(_ window: QuotaWindow) -> some View {
         VStack(alignment: .leading, spacing: 3) {

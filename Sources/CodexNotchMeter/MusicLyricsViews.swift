@@ -3,53 +3,106 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Fixed compact content inside the existing notice-sized contour. Missing
-/// lyrics have an honest status; playback does not expand an empty quota card.
+/// Actual text metrics drive a bounded target height; line breaks do not change
+/// the geometry map or start a second animation. The first line stays dominant.
+@MainActor
+enum MusicPreviewLayout {
+    static let currentFontSize: CGFloat = 18
+    static let nextFontSize: CGFloat = 12
+    static func contentHeight(line: String, nextLine: String, width: CGFloat) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: currentFontSize, weight: .semibold)
+        let bounds = (line as NSString).boundingRect(with: CGSize(width: max(1, width), height: 10_000),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
+        let oneLine = ceil(font.ascender - font.descender + font.leading)
+        let extra: CGFloat = bounds.height > oneLine + 1 ? 22 : 0
+        return (nextLine.isEmpty ? 48 : 68) + extra
+    }
+}
+
+/// Only real decoded thumbnail data or a neutral placeholder is displayed.
+/// The static playing glyph is a state indicator, not a simulated audio spectrum.
+@MainActor
+struct MusicClosedAccessories: View {
+    @ObservedObject var music: MusicLyricsController
+    let left: CGRect
+    let right: CGRect
+    private var image: CGImage? {
+        guard let art = music.artwork, let provider = CGDataProvider(data: art.rgbaBytes as CFData),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(width: art.pixelWidth, height: art.pixelHeight, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: art.bytesPerRow, space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            wing(left)
+            wing(right)
+            Group {
+                if let image { Image(decorative: image, scale: 1).resizable().interpolation(.high).scaledToFill() }
+                else { Image(systemName: "music.note").font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white.opacity(0.12)) }
+            }.frame(width: 20, height: 20).clipShape(RoundedRectangle(cornerRadius: 4))
+                .offset(x: left.minX + 7, y: max(0, (left.height - 20) / 2))
+            Image(systemName: "waveform").font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72)).frame(width: 20, height: 20)
+                .offset(x: right.maxX - 27, y: max(0, (right.height - 20) / 2))
+        }.accessibilityElement(children: .ignore).accessibilityLabel("Apple Music 正在播放")
+    }
+    private func wing(_ rect: CGRect) -> some View {
+        Path { path in
+            let r = min(CGFloat(7), rect.height / 2)
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r), control: CGPoint(x: rect.minX, y: rect.maxY))
+            path.closeSubpath()
+        }.fill(.black)
+    }
+}
+
+/// Approved B: small song title, left-aligned current cue, quieter actual next cue.
 @MainActor
 struct MusicCompactView: View {
     @ObservedObject var music: MusicLyricsController
     var body: some View {
-        if music.isPlayingForPresentation {
-            VStack(alignment: .leading, spacing: 5) {
+        if music.isPlayingForPresentation && music.lyricsModeEnabled {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 5) {
-                    Image(systemName: "music.note")
-                    Text(music.trackTitle.isEmpty ? "Apple Music" : music.trackTitle).lineLimit(1)
+                    Text(music.trackTitle).lineLimit(1)
+                    if !music.isSynchronized { Text("未同步").lineLimit(1) }
                     Spacer(minLength: 4)
-                }.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                Text(music.line.isEmpty ? music.statusText : music.line)
-                    .font(.system(size: 12, weight: music.line.isEmpty ? .regular : .medium))
-                    .foregroundStyle(music.line.isEmpty ? Color.secondary : Color.primary)
-                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                }.font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color(red: 0.63, green: 0.64, blue: 0.67))
+                Text(music.line)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.97, green: 0.97, blue: 0.98))
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !music.nextLine.isEmpty {
+                    Text(music.nextLine).font(.system(size: 12))
+                        .foregroundStyle(Color(red: 0.44, green: 0.45, blue: 0.49))
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, 2).foregroundStyle(.white).environment(\.colorScheme, .dark)
+                .padding(.top, 2).environment(\.colorScheme, .dark)
                 .accessibilityElement(children: .combine)
         }
     }
 }
 
-/// Fits inside the existing scrollable detail content; never sizes the island.
+/// The same hierarchy is used inside scrollable manual details, with source
+/// attribution retained for imported/community lyrics.
 @MainActor
 struct MusicLyricRow: View {
     @ObservedObject var music: MusicLyricsController
     var body: some View {
-        if music.enabled && music.isPlayingForPresentation {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    Image(systemName: "music.note").font(.system(size: 9))
-                    Text(music.trackTitle.isEmpty ? "Apple Music" : music.trackTitle)
-                        .font(.system(size: 10, weight: .medium)).lineLimit(1)
-                    Spacer(minLength: 2)
-                    Text(music.sourceLabel).font(.system(size: 8)).lineLimit(1)
-                }.foregroundStyle(.secondary)
-                Text(music.line.isEmpty ? music.statusText : music.line)
-                    .font(.system(size: 11, weight: music.line.isEmpty ? .regular : .medium))
-                    .foregroundStyle(music.line.isEmpty ? Color.secondary : Color.primary)
-                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                if !music.line.isEmpty && music.statusText != "同步歌词" {
-                    Text(music.statusText).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }.padding(.vertical, 4)
-                .accessibilityElement(children: .combine)
+        if music.enabled && music.isPlayingForPresentation && music.lyricsModeEnabled {
+            VStack(alignment: .leading, spacing: 4) {
+                MusicCompactView(music: music)
+                Text(music.sourceLabel).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+            }.padding(.vertical, 4).accessibilityElement(children: .combine)
         }
     }
 }
@@ -61,10 +114,10 @@ struct MusicLyricsSettings: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("播放时自动展开 Apple Music 歌词", isOn: Binding(
+                Toggle("Apple Music 歌词与播放指示", isOn: Binding(
                     get: { music.enabled }, set: { music.setEnabled($0) }))
                     .disabled(music.synthetic)
-                Text("默认关闭。播放时显示紧凑歌词，暂停时收起；悬停可保持详情，额度提示结束后返回歌词。启用时会请求读取 Music 当前歌曲与播放位置的自动化权限；不会打开 Music 或控制播放。")
+                Text("默认关闭。启用后播放时保持收起；鼠标从左向右划过顶部显示匹配歌词，反向划过关闭。暂停收起，恢复时保留所选模式；额度提示临时优先。启用时请求读取 Music 当前歌曲、播放位置和封面的自动化权限；不会打开 Music 或控制播放。")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if music.enabled {
                     Text(music.statusText).font(.system(size: 11)).foregroundStyle(.secondary)

@@ -1,6 +1,7 @@
 import AppKit
 import CoreServices
 import Darwin
+import ImageIO
 import NotchCore
 
 /// Read-only public Apple Events adapter. Construction is inert. The controller
@@ -33,6 +34,11 @@ private enum MusicAppleEvents {
     private static let executablePath = bundlePath + "/Contents/MacOS/Music"
     private static let maximumReplyBytes = 65_536
     private static let maximumDescriptorBytes = 16_384
+    private static let maximumArtworkReplyBytes = MusicArtworkDecodingPolicy.maximumEncodedBytes + 65_536
+    // Optional art gets a short IPC budget, leaving the unchanged outer read
+    // deadline and the second identity/state read in charge of correctness.
+    private static let artworkWaitLimit: TimeInterval = 0.15
+    private static let artworkReadReserve: TimeInterval = 1
 
     // Public Music scripting dictionary properties; none is a write/control
     // command. Mac CI compiles this adapter and inspects the public dictionary.
@@ -46,7 +52,10 @@ private enum MusicAppleEvents {
         static let album = code("pAlb")
         static let duration = code("pDur")
         static let persistentID = code("pPIS")
+        static let artworkRawData = code("pRaw")
     }
+
+    private static let artworkClass = code("cArt")
 
     private struct Target {
         let application: NSRunningApplication
@@ -111,13 +120,50 @@ private enum MusicAppleEvents {
         // old position look newly sampled when the response is finally received.
         let observedAt = ProcessInfo.processInfo.systemUptime
         let position = try number(get(Property.playerPosition, target: target, request: request))
+        let artwork: MusicArtwork?
+        if beforeState == .playing { artwork = try optionalArtwork(target: target, request: request) }
+        else { artwork = nil }
         let after = try track(target: target, request: request)
         let afterState = try state(target: target, request: request)
         try request.checkCancellation()
         try target.validate()
         return MusicPlaybackValidation.result(before: before, after: after,
                                                stateBefore: beforeState, stateAfter: afterState,
-                                               position: position, observedAt: observedAt)
+                                               position: position, observedAt: observedAt, artwork: artwork)
+    }
+
+    private static func optionalArtwork(target: Target, request: MusicReadRequest) throws -> MusicArtwork? {
+        try request.checkCancellation()
+        guard request.remainingTime >= artworkReadReserve + artworkWaitLimit else { return nil }
+        do {
+            // Read only raw data of artwork 1 of current track. No enumeration,
+            // library lookup, file URL, image download, or alternate source.
+            let container = try firstArtwork(of: property(Property.currentTrack))
+            let value = try get(Property.artworkRawData, container: container,
+                                target: target, request: request,
+                                replyLimit: maximumArtworkReplyBytes, waitLimit: artworkWaitLimit)
+            guard !isMissing(value),
+                  MusicArtworkDecodingPolicy.acceptsEncodedByteCount(descriptorSize(value)) else { return nil }
+            // Raw data is opaque. Do not coerce a URL/file/other descriptor or
+            // ask AppKit to interpret it: ImageIO accepts only JPEG/PNG bytes.
+            let allowedTypes: [DescType] = [DescType(typeData), code("JPEG"), code("PNGf")]
+            guard allowedTypes.contains(value.descriptorType) else { return nil }
+            let data = value.data
+            try request.checkCancellation()
+            let artwork = MusicArtworkDecoder.decode(data)
+            try request.checkCancellation()
+            return artwork
+        } catch let failure as MusicReadFailure {
+            switch failure {
+            case .cancelled, .targetMismatch, .notRunning, .permissionDenied, .authorizationRequired:
+                throw failure
+            default:
+                // Missing, malformed, oversized or locally timed-out artwork
+                // does not invalidate a usable playback/lyrics observation.
+                try request.checkCancellation()
+                return nil
+            }
+        }
     }
 
     private static func track(target: Target, request: MusicReadRequest) throws -> MusicTrackFields {
@@ -165,8 +211,22 @@ private enum MusicAppleEvents {
         return specifier
     }
 
+    private static func firstArtwork(of container: NSAppleEventDescriptor) throws -> NSAppleEventDescriptor {
+        let record = NSAppleEventDescriptor.record()
+        record.setDescriptor(NSAppleEventDescriptor(typeCode: artworkClass), forKeyword: AEKeyword(keyAEDesiredClass))
+        record.setDescriptor(NSAppleEventDescriptor(enumCode: OSType(formAbsolutePosition)), forKeyword: AEKeyword(keyAEKeyForm))
+        record.setDescriptor(NSAppleEventDescriptor(int32: 1), forKeyword: AEKeyword(keyAEKeyData))
+        record.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
+        guard let specifier = record.coerce(toDescriptorType: typeObjectSpecifier) else {
+            throw MusicReadFailure.invalidResponse
+        }
+        return specifier
+    }
+
     private static func get(_ propertyCode: OSType, container: NSAppleEventDescriptor = .null(),
-                            target: Target, request: MusicReadRequest) throws -> NSAppleEventDescriptor {
+                            target: Target, request: MusicReadRequest,
+                            replyLimit: Int = maximumReplyBytes,
+                            waitLimit: TimeInterval = 5) throws -> NSAppleEventDescriptor {
         try request.checkCancellation()
         try target.validate()
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kAECoreSuite), eventID: AEEventID(kAEGetData),
@@ -191,7 +251,7 @@ private enum MusicAppleEvents {
         guard let descriptor = event.aeDesc else { throw MusicReadFailure.invalidResponse }
         let remaining = request.remainingTime
         guard remaining > 0 else { throw MusicReadFailure.timedOut }
-        let ticks = max(1, Int(min(remaining, 5) * 60))
+        let ticks = max(1, Int(min(remaining, waitLimit) * 60))
         var reply = AppleEvent()
         defer { AEDisposeDesc(&reply) }
         // The no-consent-prompt flag closes the race between preflight and send,
@@ -204,7 +264,7 @@ private enum MusicAppleEvents {
         try request.checkCancellation()
         try target.validate()
         let size = AESizeOfFlattenedDesc(&reply)
-        guard size > 0, size <= maximumReplyBytes else { throw MusicReadFailure.invalidResponse }
+        guard size > 0, size <= replyLimit else { throw MusicReadFailure.invalidResponse }
 
         // Check the error number, never the potentially private error message.
         var errorNumber: Int32 = 0
@@ -267,11 +327,67 @@ private enum MusicAppleEvents {
     }
 }
 
+/// Data-only, bounded ImageIO boundary. It is internal so native synthetic
+/// fixtures can exercise it without Music, Apple Events, file or network access.
+enum MusicArtworkDecoder {
+    static func decode(_ data: Data) -> MusicArtwork? {
+        guard MusicArtworkDecodingPolicy.acceptsEncodedByteCount(data.count) else { return nil }
+        let pngSignature: [UInt8] = [137, 80, 78, 71, 13, 10, 26, 10]
+        let jpegSignature: [UInt8] = [255, 216, 255]
+        guard data.starts(with: pngSignature) || data.starts(with: jpegSignature) else { return nil }
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false,
+                                             kCGImageSourceShouldAllowFloat: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary),
+              CGImageSourceGetStatus(source) == .statusComplete,
+              let sourceType = CGImageSourceGetType(source),
+              ["public.jpeg", "public.png"].contains(sourceType as String),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, sourceOptions as CFDictionary)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              let depth = properties[kCGImagePropertyDepth] as? NSNumber,
+              (1...8).contains(depth.intValue), depth.doubleValue == Double(depth.intValue),
+              MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: width.doubleValue,
+                                                       pixelHeight: height.doubleValue,
+                                                       imageCount: CGImageSourceGetCount(source)) else { return nil }
+
+        // No full-sized CGImage/NSImage is created. Bound both the requested and
+        // returned thumbnail, then normalize into an exact small RGBA buffer.
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: MusicArtwork.maximumDimension,
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldAllowFloat: false
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary),
+              (1...MusicArtwork.maximumDimension).contains(thumbnail.width),
+              (1...MusicArtwork.maximumDimension).contains(thumbnail.height),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let pixelWidth: Int = thumbnail.width
+        let pixelHeight: Int = thumbnail.height
+        let bytesPerRow: Int = pixelWidth * MusicArtwork.bytesPerPixel
+        var rgba = Data(count: bytesPerRow * pixelHeight)
+        let bitmapInfo: UInt32 = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        let rendered = rgba.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: pixelWidth, height: pixelHeight,
+                                          bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                          space: colorSpace, bitmapInfo: bitmapInfo) else { return false }
+            context.interpolationQuality = .high
+            context.draw(thumbnail, in: CGRect(x: 0, y: 0, width: CGFloat(pixelWidth), height: CGFloat(pixelHeight)))
+            return true
+        }
+        guard rendered else { return nil }
+        return MusicArtwork(rgbaBytes: rgba, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+    }
+}
+
 // Primary API references checked for this implementation:
 // https://developer.apple.com/documentation/coreservices/1442994-aesendmessage
 // https://developer.apple.com/library/archive/technotes/tn2002/tn2053.html
 // https://developer.apple.com/documentation/coreservices/3025784-aedeterminepermissiontoautomatet
 // https://developer.apple.com/documentation/appkit/nsrunningapplication
 // https://developer.apple.com/documentation/foundation/nsappleeventdescriptor
+// https://developer.apple.com/library/archive/documentation/GraphicsImaging/Conceptual/ImageIOGuide/imageio_source/ikpg_source.html
 // Public Music current-track limitations (not a universal streaming guarantee):
 // https://developer.apple.com/forums/thread/798267

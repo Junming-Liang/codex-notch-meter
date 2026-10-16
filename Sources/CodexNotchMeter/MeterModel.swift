@@ -165,6 +165,12 @@ final class MeterModel: ObservableObject {
     var stale: Bool { (!demo || CommandLine.arguments.contains("--contour-test")) && (snapshot?.isStale(at: now) ?? false) }
     var degraded: Bool { stale || error != nil }
     var status: String {
+        guard degraded, let snapshot else { return readStatus }
+        let age = max(0, Int(now.timeIntervalSince(snapshot.fetchedAt)))
+        let label = age < 60 ? "\(age) 秒前" : "\(age / 60) 分钟前"
+        return readStatus + " 上次成功读取：" + label + "。"
+    }
+    private var readStatus: String {
         if let error {
             switch error {
             case .codexMissing, .invalidExecutable: return "未找到受支持的 Codex 应用或 CLI，请在设置中选择已安装的官方应用。"
@@ -243,7 +249,7 @@ final class MeterModel: ObservableObject {
                 self.refreshNotice = nil
                 // Never show another account's prior numbers after sign-out or account-type change.
                 if [.signedOut, .unsupportedAccount, .noQuota, .codexMissing, .invalidExecutable].contains(failure) { snapshot = nil }
-                policy.failed()
+                policy.failed(failure)
             }
             guard let self else { return }
             refreshing = false; now = Date(); nextAttempt = now.addingTimeInterval(policy.delay)
