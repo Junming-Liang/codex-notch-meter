@@ -557,7 +557,7 @@ final class IslandTests: XCTestCase {
             XCTAssertEqual(geometry.notch, notch.notch)
             XCTAssertEqual(geometry.contourFrame.midX, center + geometry.horizontalAdjustment)
             let expanded = globalRect(geometry.contourRect(progress: 1), in: geometry.frame(progress: 1))
-            XCTAssertEqual(expanded.width, 340)
+            XCTAssertEqual(expanded.width, 400)
             XCTAssertNotEqual(expanded.midX, geometry.calibratedNotch.midX)
             XCTAssertEqual(leftSide ? expanded.minX : expanded.maxX,
                 leftSide ? screen.minX + 12 : screen.maxX - 12)

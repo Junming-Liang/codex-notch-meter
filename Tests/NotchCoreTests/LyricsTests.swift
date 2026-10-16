@@ -326,4 +326,257 @@ final class LyricsTests: XCTestCase {
         XCTAssertEqual(LyricsTimeline(freshnessInterval: 0.5).freshnessInterval, 0.5)
         XCTAssertEqual(LyricsTimeline(freshnessInterval: 31).freshnessInterval, 30)
     }
+
+    func testPreviewBoundariesGapsAndLastLineUseOnlyTheImmediateNextCue() throws {
+        var timeline = LyricsTimeline(freshnessInterval: 30)
+        let document = try LRCParser.parse("[00:02]Paper comet\n[00:04]Amber orbit\n[00:06]\n[00:08]Glass cloud\n[00:10]Quiet star")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 100))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                      sampledAt: 100, now: 100))
+        let before = timeline.preview(at: 101.999)
+        XCTAssertEqual(before.selection, .beforeFirstLine)
+        XCTAssertFalse(before.isEligible)
+        XCTAssertNil(before.currentText)
+        XCTAssertNil(before.nextCue)
+
+        let first = timeline.preview(at: 102)
+        XCTAssertEqual(first.currentText, "Paper comet")
+        XCTAssertTrue(first.isEligible)
+        XCTAssertTrue(first.isSynchronized)
+        XCTAssertEqual(first.nextCue, LyricCue(startTime: 4, text: "Amber orbit"))
+        XCTAssertEqual(timeline.preview(at: 103.999), first)
+
+        let beforeGap = timeline.preview(at: 104)
+        XCTAssertEqual(beforeGap.currentText, "Amber orbit")
+        XCTAssertNil(beforeGap.nextCue, "An explicit blank cannot be skipped")
+        let gap = timeline.preview(at: 106)
+        XCTAssertEqual(gap.selection, .gap)
+        XCTAssertFalse(gap.isEligible)
+        XCTAssertNil(gap.currentText)
+        XCTAssertNil(gap.nextCue)
+        XCTAssertEqual(timeline.preview(at: 107.999), gap)
+
+        let afterGap = timeline.preview(at: 108)
+        XCTAssertEqual(afterGap.currentText, "Glass cloud")
+        XCTAssertEqual(afterGap.nextCue, LyricCue(startTime: 10, text: "Quiet star"))
+        let last = timeline.preview(at: 110)
+        XCTAssertEqual(last.currentText, "Quiet star")
+        XCTAssertTrue(last.isEligible)
+        XCTAssertNil(last.nextCue)
+        XCTAssertEqual(timeline.preview(at: 120), last)
+    }
+
+    func testPreviewUsesSortedDeduplicatedCuesIncludingBlankWinner() throws {
+        var timeline = LyricsTimeline(freshnessInterval: 30)
+        let document = try LRCParser.parse("[00:04]Discarded\n[00:00]Paper comet\n[00:02]Discarded too\n[00:02]Amber orbit\n[00:04]\n[00:06]Glass cloud")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 0))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                      sampledAt: 0, now: 0))
+        XCTAssertEqual(timeline.preview(at: 0).nextCue, LyricCue(startTime: 2, text: "Amber orbit"))
+        let second = timeline.preview(at: 2)
+        XCTAssertEqual(second.selection, .line(index: 1, cue: LyricCue(startTime: 2, text: "Amber orbit")))
+        XCTAssertNil(second.nextCue)
+        XCTAssertEqual(timeline.preview(at: 4).selection, .gap)
+        XCTAssertEqual(timeline.preview(at: 6).currentText, "Glass cloud")
+    }
+
+    func testPreviewReanchorsAfterSeekingForwardAndBackward() throws {
+        var timeline = LyricsTimeline()
+        let document = try LRCParser.parse("[00:02]Paper comet\n[00:04]Amber orbit\n[00:06]Glass cloud")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 10))
+        XCTAssertTrue(timeline.update(generation: generation, position: 2, isPlaying: false,
+                                      sampledAt: 10, now: 10))
+        XCTAssertEqual(timeline.preview(at: 10).nextCue?.text, "Amber orbit")
+        XCTAssertTrue(timeline.update(generation: generation, position: 7, isPlaying: false,
+                                      sampledAt: 11, now: 11))
+        let forward = timeline.preview(at: 11)
+        XCTAssertEqual(forward.currentText, "Glass cloud")
+        XCTAssertNil(forward.nextCue)
+        XCTAssertTrue(timeline.update(generation: generation, position: 3, isPlaying: false,
+                                      sampledAt: 12, now: 12))
+        let backward = timeline.preview(at: 12)
+        XCTAssertEqual(backward.currentText, "Paper comet")
+        XCTAssertEqual(backward.nextCue, LyricCue(startTime: 4, text: "Amber orbit"))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: false,
+                                      sampledAt: 13, now: 13))
+        XCTAssertFalse(timeline.preview(at: 13).isEligible)
+    }
+
+    func testPreviewPauseHoldsExactLineAndPollingNeverRefreshesSourceAge() throws {
+        for isPlaying in [false, true] {
+            var timeline = LyricsTimeline()
+            let document = try LRCParser.parse("[00:00]Paper comet\n[00:02]Amber orbit\n[00:10]Glass cloud")
+            let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 100))
+            XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: isPlaying,
+                                          sampledAt: 100, now: 100))
+            for now in [100.0, 101, 102, 104.999] {
+                let preview = timeline.preview(at: now)
+                XCTAssertTrue(preview.isEligible)
+                XCTAssertEqual(preview.currentText, isPlaying && now >= 102 ? "Amber orbit" : "Paper comet")
+                XCTAssertEqual(preview.nextCue?.text, isPlaying && now >= 102 ? "Glass cloud" : "Amber orbit")
+            }
+            let expired = timeline.preview(at: 105)
+            XCTAssertEqual(expired.selection, .stale)
+            XCTAssertFalse(expired.isEligible)
+            XCTAssertNil(expired.currentText)
+            XCTAssertNil(expired.nextCue)
+            XCTAssertEqual(timeline.preview(at: 110), expired)
+            XCTAssertFalse(timeline.update(generation: generation, position: 0, isPlaying: isPlaying,
+                                           sampledAt: 105, now: 110))
+            XCTAssertEqual(timeline.preview(at: 110), expired)
+        }
+    }
+
+    func testPreviewResumeAdvancesFromTheNewPlaybackAnchor() throws {
+        var timeline = LyricsTimeline(freshnessInterval: 30)
+        let document = try LRCParser.parse("[00:00]Paper comet\n[00:04]Amber orbit\n[00:06]Glass cloud")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 100))
+        XCTAssertTrue(timeline.update(generation: generation, position: 3, isPlaying: false,
+                                      sampledAt: 100, now: 100))
+        XCTAssertEqual(timeline.preview(at: 110).currentText, "Paper comet")
+        XCTAssertTrue(timeline.update(generation: generation, position: 3, isPlaying: true,
+                                      sampledAt: 110, now: 110))
+        let resumed = timeline.preview(at: 111)
+        XCTAssertEqual(resumed.currentText, "Amber orbit")
+        XCTAssertEqual(resumed.nextCue, LyricCue(startTime: 6, text: "Glass cloud"))
+    }
+
+    func testPreviewFiltersNextCueAtOrBeyondKnownDurationAndEndsExactly() throws {
+        let document = try LRCParser.parse("[00:00]Paper comet\n[00:05]Amber orbit")
+        let durations: [TimeInterval] = [4.999, 5, 5.001]
+        for duration in durations {
+            var timeline = LyricsTimeline(freshnessInterval: 30)
+            let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 0))
+            XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                          duration: duration, sampledAt: 0, now: 0))
+            let first = timeline.preview(at: 0)
+            XCTAssertTrue(first.isEligible)
+            XCTAssertEqual(first.nextCue, duration > 5 ? LyricCue(startTime: 5, text: "Amber orbit") : nil)
+            XCTAssertTrue(timeline.preview(at: duration - 0.001).isEligible)
+            let ended = timeline.preview(at: duration)
+            XCTAssertEqual(ended.selection, .ended)
+            XCTAssertFalse(ended.isEligible)
+            XCTAssertNil(ended.currentText)
+            XCTAssertNil(ended.nextCue)
+        }
+    }
+
+    func testPreviewUsesEffectiveOffsetTimesWithoutInventingTimings() throws {
+        var timeline = LyricsTimeline(freshnessInterval: 30)
+        let document = try LRCParser.parse("[00:01]Early paper\n[00:04]Later paper\n[offset:3000]")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 100))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                      sampledAt: 100, now: 100))
+        let first = timeline.preview(at: 100)
+        XCTAssertEqual(first.selection, .line(index: 0, cue: LyricCue(startTime: -2, text: "Early paper")))
+        XCTAssertEqual(first.nextCue, LyricCue(startTime: 1, text: "Later paper"))
+        XCTAssertEqual(timeline.preview(at: 101).currentText, "Later paper")
+    }
+
+    func testPreviewInvalidClocksAndFutureSamplesCannotRewindOrPoisonState() throws {
+        var timeline = LyricsTimeline()
+        let document = try LRCParser.parse("[00:00]Paper comet\n[00:04]Amber orbit\n[00:08]Glass cloud")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 10))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                      sampledAt: 10, now: 10))
+        let initial = timeline.preview(at: 11)
+        XCTAssertFalse(timeline.update(generation: generation, position: 8, isPlaying: true,
+                                       sampledAt: 12, now: 11))
+        XCTAssertEqual(timeline.preview(at: 11), initial)
+        let invalidClocks: [TimeInterval] = [-1, 10, .nan, .infinity, -.infinity]
+        for now in invalidClocks {
+            let invalid = timeline.preview(at: now)
+            XCTAssertEqual(invalid.selection, .stale)
+            XCTAssertFalse(invalid.isEligible)
+            XCTAssertNil(invalid.currentText)
+            XCTAssertNil(invalid.nextCue)
+        }
+        XCTAssertEqual(timeline.preview(at: 11), initial)
+        XCTAssertEqual(timeline.preview(at: 14).currentText, "Amber orbit")
+        XCTAssertEqual(timeline.preview(at: 100).selection, .stale)
+        XCTAssertEqual(timeline.preview(at: 14).selection, .stale, "Preview retains selection's monotonic watermark")
+        XCTAssertEqual(timeline.generation, generation)
+    }
+
+    func testPreviewNewGenerationImmediatelyRetiresCurrentAndNextLyrics() throws {
+        var timeline = LyricsTimeline()
+        let document = try LRCParser.parse("[00:00]Paper comet\n[00:04]Amber orbit")
+        let oldGeneration = try XCTUnwrap(timeline.replaceTrack(with: document, at: 10))
+        XCTAssertTrue(timeline.update(generation: oldGeneration, position: 0, isPlaying: false,
+                                      sampledAt: 10, now: 10))
+        XCTAssertNotNil(timeline.preview(at: 10).nextCue)
+        let newGeneration = try XCTUnwrap(timeline.replaceTrack(at: 11))
+        let unavailable = timeline.preview(at: 11)
+        XCTAssertEqual(unavailable.selection, .unavailable)
+        XCTAssertFalse(unavailable.isEligible)
+        XCTAssertNil(unavailable.nextCue)
+        XCTAssertFalse(timeline.setLyrics(document, generation: oldGeneration))
+        XCTAssertFalse(timeline.update(generation: oldGeneration, position: 0, isPlaying: true,
+                                       sampledAt: 11, now: 11))
+        XCTAssertTrue(timeline.setLyrics(document, generation: newGeneration))
+        let waiting = timeline.preview(at: 11)
+        XCTAssertEqual(waiting.selection, .waitingForPlayback)
+        XCTAssertFalse(waiting.isEligible)
+        XCTAssertNil(waiting.currentText)
+        XCTAssertNil(waiting.nextCue)
+        XCTAssertTrue(timeline.update(generation: newGeneration, position: 0, isPlaying: false,
+                                      sampledAt: 11, now: 11))
+        XCTAssertEqual(timeline.preview(at: 11).nextCue?.text, "Amber orbit")
+    }
+
+    func testPreviewPlainUsesOnlyFirstLineAndAlwaysRemainsUnsynchronized() throws {
+        var timeline = LyricsTimeline()
+        let document = try LRCParser.parse("Paper comet\nAmber orbit")
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: document, at: 10))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: false,
+                                      sampledAt: 10, now: 10))
+        let preview = timeline.preview(at: 10)
+        XCTAssertEqual(preview.selection, .plain(["Paper comet", "Amber orbit"]))
+        XCTAssertEqual(preview.currentText, "Paper comet")
+        XCTAssertTrue(preview.isEligible)
+        XCTAssertFalse(preview.isSynchronized)
+        XCTAssertNil(preview.nextCue)
+        XCTAssertEqual(timeline.preview(at: 14.999), preview)
+        XCTAssertFalse(timeline.preview(at: 15).isEligible)
+    }
+
+    func testPreviewStatusAndEmptyTextNeverQualifyAsCurrentLyrics() throws {
+        let ineligible: [LyricsTimeline.Selection] = [
+            .unavailable, .instrumental, .waitingForPlayback, .stale, .beforeFirstLine, .gap, .ended,
+            .plain([]), .plain([""]), .plain(["", "Do not skip the first line"]),
+            .line(index: 0, cue: LyricCue(startTime: 0, text: ""))
+        ]
+        for selection in ineligible {
+            let preview = LyricsTimeline.Preview(selection: selection, nextCue: nil)
+            XCTAssertFalse(preview.isEligible)
+            XCTAssertNil(preview.currentText)
+        }
+
+        var timeline = LyricsTimeline()
+        let generation = try XCTUnwrap(timeline.replaceTrack(with: .instrumental, at: 0))
+        XCTAssertTrue(timeline.update(generation: generation, position: 0, isPlaying: true,
+                                      sampledAt: 0, now: 0))
+        let instrumental = timeline.preview(at: 0)
+        XCTAssertEqual(instrumental.selection, .instrumental)
+        XCTAssertFalse(instrumental.isEligible)
+        XCTAssertFalse(instrumental.isSynchronized)
+        XCTAssertNil(instrumental.nextCue)
+    }
+
+    func testPreviewSelectionExactlyMatchesExistingSelectionAcrossContentAndTime() throws {
+        let documents = [try timedDocument(), try LRCParser.parse("Paper comet\nAmber orbit"),
+                         LyricsDocument.instrumental, LyricsDocument.unavailable]
+        for document in documents {
+            for isPlaying in [false, true] {
+                var selectionTimeline = LyricsTimeline(freshnessInterval: 30)
+                let generation = try XCTUnwrap(selectionTimeline.replaceTrack(with: document, at: 100))
+                XCTAssertTrue(selectionTimeline.update(generation: generation, position: 0, isPlaying: isPlaying,
+                                                       duration: 12, sampledAt: 100, now: 100))
+                var previewTimeline = selectionTimeline
+                for now in [100.0, 102, 104, 106, 109, 111.999, 112, 130] {
+                    XCTAssertEqual(previewTimeline.preview(at: now).selection, selectionTimeline.selection(at: now))
+                }
+            }
+        }
+    }
 }

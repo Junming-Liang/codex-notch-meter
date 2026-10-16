@@ -132,4 +132,58 @@ final class ContourTests: XCTestCase {
         XCTAssertEqual(compact.expandedSize.height, 220)
     }
 
+    func testApprovedMusicTargetsAdaptHeightWithoutChangingGeometryMap() {
+        let value = geometry()
+        let idle = value.frame(progress: 0)
+        XCTAssertEqual(value.compactWidth, 360)
+        XCTAssertEqual(value.compactContentWidth, 294)
+        XCTAssertEqual(value.detailContentWidth, 334)
+        for (content, height) in [(CGFloat(48), CGFloat(96)), (68, 116), (70, 118), (90, 138)] {
+            let p = value.musicProgress(contentHeight: content)
+            let rect = value.contourRect(progress: p)
+            XCTAssertEqual(rect.height, height, accuracy: 0.000001)
+            XCTAssertEqual(rect.width, 360, accuracy: 0.000001)
+            XCTAssertTrue(value.screen.contains(value.frame(progress: p)))
+            XCTAssertEqual(value.frame(progress: 0), idle)
+        }
+        XCTAssertEqual(value.contourRect(progress: 1).width, 400)
+        XCTAssertEqual(value.contourRect(progress: value.updateProgress).width, 360, accuracy: 0.000001)
+        XCTAssertEqual(value.musicProgress(contentHeight: .nan), value.musicProgress(contentHeight: 48))
+        XCTAssertEqual(value.musicProgress(contentHeight: 1_000), value.musicProgress(contentHeight: 90))
+    }
+    func testMusicTargetChangesRetainCurrentPositionAndVelocity() {
+        let value = geometry()
+        var motion = IslandMotion()
+        let small = value.musicProgress(contentHeight: 48), large = value.musicProgress(contentHeight: 90)
+        motion.advance(target: small, elapsed: 0.12, reduceMotion: false)
+        let previous = motion, previousFrame = value.frame(progress: motion.progress)
+        motion.advance(target: large, elapsed: 0, reduceMotion: false)
+        XCTAssertEqual(motion, previous)
+        XCTAssertEqual(value.frame(progress: motion.progress), previousFrame)
+        for target in [large, small, value.updateProgress, large, 1, small, 0] {
+            for _ in 0..<120 { motion.advance(target: target, elapsed: 1.0 / 60, reduceMotion: false) }
+            XCTAssertTrue(motion.isSettled(at: target))
+            XCTAssertTrue(value.screen.contains(value.frame(progress: motion.progress)))
+        }
+    }
+    func testMusicWidthsAndHeightStayScreenBoundedAtBothScales() {
+        for scale in [CGFloat(1), 2] {
+            for screenWidth in [CGFloat(356), 400, 1440] {
+                let screen = CGRect(x: -1000, y: 200, width: screenWidth, height: 800)
+                let raw = NotchGeometry(notch: CGRect(x: screen.midX - 110, y: screen.maxY - 32, width: 220, height: 32), leftPanel: .zero, rightPanel: .zero)
+                let value = IslandGeometry(notch: raw, screen: screen, backingScale: scale, contentHeight: 132)
+                XCTAssertLessThanOrEqual(value.compactWidth, screenWidth - 24)
+                for step in 0...100 {
+                    let p = Double(step) / 100
+                    XCTAssertTrue(screen.contains(value.frame(progress: p)))
+                }
+                for content in [CGFloat(48), 68, 90] {
+                    let p = value.musicProgress(contentHeight: content)
+                    XCTAssertLessThan(p, 1)
+                    XCTAssertGreaterThanOrEqual(value.frame(progress: p).height, 96)
+                }
+            }
+        }
+    }
+
 }

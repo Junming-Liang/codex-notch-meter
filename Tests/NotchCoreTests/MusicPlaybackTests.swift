@@ -20,10 +20,16 @@ final class MusicPlaybackTests: XCTestCase {
 
     private func result(before: MusicTrackFields? = nil, after: MusicTrackFields? = nil,
                         stateBefore: MusicPlaybackState = .playing, stateAfter: MusicPlaybackState = .playing,
-                        position: Double? = 20, observedAt: Double = 100) -> MusicReadResult {
+                        position: Double? = 20, observedAt: Double = 100,
+                        artwork: MusicArtwork? = nil) -> MusicReadResult {
         MusicPlaybackValidation.result(before: before ?? fields(), after: after ?? fields(),
                                        stateBefore: stateBefore, stateAfter: stateAfter,
-                                       position: position, observedAt: observedAt)
+                                       position: position, observedAt: observedAt, artwork: artwork)
+    }
+
+    private func artwork() throws -> MusicArtwork {
+        try XCTUnwrap(MusicArtwork(rgbaBytes: Data([255, 0, 0, 255, 0, 128, 0, 128]),
+                                  pixelWidth: 2, pixelHeight: 1))
     }
 
     func testValidSnapshotPreservesMetadataAndMonotonicObservation() throws {
@@ -32,6 +38,77 @@ final class MusicPlaybackTests: XCTestCase {
         XCTAssertEqual(snapshot.position, 20)
         XCTAssertEqual(snapshot.observedAt, 100)
         XCTAssertEqual(snapshot.state, .playing)
+        XCTAssertNil(snapshot.artwork)
+    }
+
+    func testArtworkHasExactBoundedDecodedRGBAStorage() throws {
+        let value = try artwork()
+        XCTAssertEqual(value.pixelWidth, 2)
+        XCTAssertEqual(value.pixelHeight, 1)
+        XCTAssertEqual(value.bytesPerRow, 8)
+        XCTAssertEqual(value.rgbaBytes, Data([255, 0, 0, 255, 0, 128, 0, 128]))
+        XCTAssertEqual(MusicArtwork.maximumBytes, 16_384)
+        XCTAssertNotNil(MusicArtwork(rgbaBytes: Data(repeating: 0, count: MusicArtwork.maximumBytes),
+                                    pixelWidth: 64, pixelHeight: 64))
+        XCTAssertNotNil(MusicArtwork(rgbaBytes: Data(repeating: 255, count: 4), pixelWidth: 1, pixelHeight: 1))
+    }
+
+    func testArtworkDimensionsAndByteLengthsFailClosedWithoutOverflow() {
+        let bytes = Data(repeating: 0, count: 4)
+        for dimension in [Int.min, -1, 0, 65, Int.max] {
+            XCTAssertNil(MusicArtwork(rgbaBytes: bytes, pixelWidth: dimension, pixelHeight: 1))
+            XCTAssertNil(MusicArtwork(rgbaBytes: bytes, pixelWidth: 1, pixelHeight: dimension))
+        }
+        for count in [0, 1, 3, 5, MusicArtwork.maximumBytes + 1] {
+            XCTAssertNil(MusicArtwork(rgbaBytes: Data(repeating: 0, count: count), pixelWidth: 1, pixelHeight: 1))
+        }
+        XCTAssertNil(MusicArtwork(rgbaBytes: Data(repeating: 0, count: 16), pixelWidth: 2, pixelHeight: 1))
+    }
+
+    func testArtworkDecodeSourceBudgetsRejectBombAndAnimationMetadata() {
+        for count in [Int.min, -1, 0, MusicArtworkDecodingPolicy.maximumEncodedBytes + 1, Int.max] {
+            XCTAssertFalse(MusicArtworkDecodingPolicy.acceptsEncodedByteCount(count))
+        }
+        XCTAssertTrue(MusicArtworkDecodingPolicy.acceptsEncodedByteCount(1))
+        XCTAssertTrue(MusicArtworkDecodingPolicy.acceptsEncodedByteCount(4_194_304))
+        for dimension in [Double.nan, .infinity, -.infinity, -1, 0, 0.5, 1.5, 4_097, Double.greatestFiniteMagnitude] {
+            XCTAssertFalse(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: dimension, pixelHeight: 1, imageCount: 1))
+            XCTAssertFalse(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: 1, pixelHeight: dimension, imageCount: 1))
+        }
+        for count in [Int.min, -1, 0, 2, Int.max] {
+            XCTAssertFalse(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: 32, pixelHeight: 32, imageCount: count))
+        }
+        XCTAssertTrue(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: 1, pixelHeight: 1, imageCount: 1))
+        XCTAssertTrue(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: 3_000, pixelHeight: 3_000, imageCount: 1))
+        XCTAssertTrue(MusicArtworkDecodingPolicy.acceptsSource(pixelWidth: 4_096, pixelHeight: 4_096, imageCount: 1))
+    }
+
+    func testArtworkUsesSameCompleteTrackAndStateBracketAsPlayback() throws {
+        let pixels = try artwork()
+        guard case .snapshot(let sample) = result(artwork: pixels) else { return XCTFail("Expected synthetic artwork") }
+        XCTAssertEqual(sample.artwork, pixels)
+        for changed in [fields(title: "Synthetic Dusk"), fields(artist: "Changed Artist"),
+                        fields(album: "Changed Album"), fields(duration: 181),
+                        fields(persistentID: nil), fields(persistentID: "FEDCBA9876543210")] {
+            XCTAssertEqual(result(after: changed, artwork: pixels), .unavailable(.changedDuringRead))
+        }
+        XCTAssertEqual(result(stateAfter: .paused, artwork: pixels), .unavailable(.changedDuringRead))
+        XCTAssertEqual(result(stateAfter: .stopped, artwork: pixels), .unavailable(.changedDuringRead))
+        XCTAssertEqual(result(after: fields(title: nil), artwork: pixels), .unavailable(.unknownTrack))
+        XCTAssertEqual(result(position: .nan, artwork: pixels), .unavailable(.invalidResponse))
+    }
+
+    func testMissingOrRejectedArtworkDoesNotBreakMetadataOrReusePreviousPixels() throws {
+        let pixels = try artwork()
+        guard case .snapshot(let first) = result(artwork: pixels),
+              case .snapshot(let absent) = result(),
+              case .snapshot(let malformed) = result(artwork: MusicArtwork(rgbaBytes: Data(), pixelWidth: 1, pixelHeight: 1))
+        else { return XCTFail("Optional artwork must not break valid metadata") }
+        XCTAssertEqual(first.track, absent.track)
+        XCTAssertEqual(first.position, absent.position)
+        XCTAssertEqual(absent, malformed)
+        XCTAssertNil(absent.artwork)
+        XCTAssertNotEqual(first, absent)
     }
 
     func testStableComparisonIncludesEveryIdentityField() {
@@ -201,7 +278,8 @@ final class MusicPlaybackTests: XCTestCase {
         let finished = expectation(description: "Synthetic transport returned")
         let release = DispatchSemaphore(value: 0)
         let identity = try XCTUnwrap(track())
-        let sample = try XCTUnwrap(MusicPlaybackSnapshot(track: identity, state: .playing, position: 20, observedAt: 100))
+        let sample = try XCTUnwrap(MusicPlaybackSnapshot(track: identity, state: .playing, position: 20,
+                                                        observedAt: 100, artwork: artwork()))
         let probe = MusicReadProbe()
         let provider = BoundedMusicSnapshotProvider { request in
             probe.record(prompt: request.allowPermissionPrompt)
