@@ -15,6 +15,7 @@ final class NativeMotionHarness: NSObject {
     private var controller: IslandPanelController?
     private var timer: Timer?
     private var samples: [IslandMotionSample] = []
+    private var initialApplyTime: TimeInterval = 0
     private var probes: [IslandMotionProbe] = []
     private var paints: [(receipt: IslandPaintReceipt, active: Bool)] = []
     private var summaries: [(String, Double, Double)] = []
@@ -43,8 +44,8 @@ final class NativeMotionHarness: NSObject {
     func start() {
         guard model.demo, CommandLine.arguments.contains("--motion-test") else { finish(false); return }
         model.theme = .rainbow
-        let historyControls = verifyPresentationHistoryControls()
-        SmokeDiagnostics.mark("motion presentation replacement-age controls valid=\(historyControls)")
+        let historyControls = verifyPresentationHistoryControls() && verifyViewUpdateHistoryControls()
+        SmokeDiagnostics.mark("motion presentation/view replacement-age controls valid=\(historyControls)")
         guard historyControls else { finish(false); return }
         initialKey = NSApp.keyWindow
         startProfile()
@@ -54,6 +55,7 @@ final class NativeMotionHarness: NSObject {
     private func startProfile() {
         controller?.stop(); samples = []; probes = []; paints = []; phase = 0; phaseStarted = CACurrentMediaTime(); loadCount = 0; heldPointer = nil; pacing = nil; pacingResults = []
         let profile = profiles[profileIndex]
+        initialApplyTime = phaseStarted
         model.setMotionFixture(remaining: 72)
         lastLoad = CACurrentMediaTime(); lastColorLoad = lastLoad
         controller = IslandPanelController(model: model, geometry: geometry, startPolling: false, reducedMotionOverride: false,
@@ -236,6 +238,67 @@ final class NativeMotionHarness: NSObject {
             && !matches(old, at: 10.101) && matches(new, at: 10.101)
             && !matches(CGSize(width: 999, height: 999), at: 10.02)
     }
+    private struct ViewUpdateAge {
+        let acknowledgedApplyAt: TimeInterval
+        let replacedAt: TimeInterval?
+        let seconds: TimeInterval
+        let rawSeconds: TimeInterval
+    }
+    /// Age begins when the acknowledged state is first replaced, not when an
+    /// unchanged idle state was acknowledged. Further requests cannot reset it.
+    /// This observes SwiftUI view updates, not compositor presentation or paint.
+    private func viewUpdateAge(at now: TimeInterval, renderedAt: TimeInterval,
+        rendered: Double, requested: Double,
+        history: [(time: TimeInterval, progress: Double)]) -> ViewUpdateAge? {
+        guard now.isFinite, renderedAt.isFinite, renderedAt <= now,
+            rendered.isFinite, requested.isFinite, (0...1).contains(rendered), (0...1).contains(requested),
+            !history.isEmpty,
+            history.allSatisfy({ $0.time.isFinite && $0.progress.isFinite && (0...1).contains($0.progress) }),
+            zip(history, history.dropFirst()).allSatisfy({ $0.time <= $1.time }) else { return nil }
+        let available = history.filter { $0.time <= now }
+        guard let latest = available.last, abs(latest.progress - requested) < 1e-12,
+            let acknowledged = available.lastIndex(where: {
+                $0.time <= renderedAt && abs($0.progress - rendered) < 1e-12
+            }) else { return nil }
+        let replacement = available.dropFirst(acknowledged + 1).first {
+            abs($0.progress - rendered) > 0.00001
+        }?.time
+        let mismatch = abs(requested - rendered) > 0.00001
+        guard !mismatch || replacement != nil else { return nil }
+        return ViewUpdateAge(acknowledgedApplyAt: available[acknowledged].time, replacedAt: replacement,
+            seconds: mismatch ? now - (replacement ?? now) : 0, rawSeconds: mismatch ? now - renderedAt : 0)
+    }
+    private func verifyViewUpdateHistoryControls() -> Bool {
+        let history: [(time: TimeInterval, progress: Double)] = [
+            (1, 0), (10, 0.1), (10.04, 0.2), (10.08, 0.3), (10.12, 0.2), (10.16, 0.1)]
+        func age(_ now: TimeInterval, _ rendered: Double, _ acknowledged: TimeInterval, _ requested: Double,
+            _ entries: [(time: TimeInterval, progress: Double)] = []) -> ViewUpdateAge? {
+            viewUpdateAge(at: now, renderedAt: acknowledged, rendered: rendered, requested: requested,
+                history: entries.isEmpty ? history : entries)
+        }
+        let idle = age(9, 0, 1.01, 0)
+        let firstReplacement = age(10.02, 0, 1.01, 0.1)
+        let backlog = age(10.121, 0, 1.01, 0.2)
+        let moving = age(10.161, 0.1, 10.01, 0.1)
+        let staleMoving = age(10.161, 0.1, 10.01, 0.4, history + [(10.16, 0.4)])
+        let reversal = age(10.17, 0.2, 10.125, 0.1)
+        let unacknowledgedReversal = age(10.13, 0.2, 10.05, 0.2)
+        // Repeated requests preserve the first outstanding replacement. A newly
+        // acknowledged reversal starts a new budget; a matching final state has no lag.
+        return idle?.seconds == 0
+            && firstReplacement.map { abs($0.seconds - 0.02) < 1e-10 && $0.rawSeconds > 9 } == true
+            && backlog.map { $0.seconds > 0.12 && $0.replacedAt == 10 } == true
+            && moving?.seconds == 0
+            && staleMoving.map { $0.seconds > 0.12 && $0.replacedAt == 10.04 } == true
+            && reversal.map { abs($0.seconds - 0.01) < 1e-10 && $0.acknowledgedApplyAt == 10.12 } == true
+            && unacknowledgedReversal?.seconds == 0
+            && age(10.02, 0.2, 10.01, 0.1) == nil // Future matching apply cannot acknowledge a view.
+            && age(10.02, 0, 10.03, 0.1) == nil // Future acknowledgement.
+            && age(10.02, 0.7, 1.01, 0.1) == nil // Unmatched state.
+            && age(10.02, 0, 1.01, 0.9) == nil // Untracked current request.
+            && age(10.02, 0, 1.01, 0.1, [(1, 0), (10, 0.1), (9, 0.2)]) == nil
+            && age(10.02, 0, 1.01, 0.1, [(1, 0), (Double.nan, 0.1)]) == nil
+    }
     private func percentile(_ values: [Double], _ fraction: Double) -> Double {
         guard !values.isEmpty else { return .infinity }
         let sorted = values.sorted()
@@ -256,8 +319,26 @@ final class NativeMotionHarness: NSObject {
             a.generation == b.generation ? b.observed - a.observed : nil
         }
         let maxGap = gaps.max() ?? .infinity, p95Gap = percentile(gaps, 0.95), p95Apply = percentile(durations, 0.95)
-        let mismatch = probes.filter { abs($0.requestedProgress - $0.renderedProgress) > 0.00001 }
-        let maxRenderLag = mismatch.map { max(0, $0.observed - $0.renderedAt) }.max() ?? 0
+        let requestHistory = [(time: initialApplyTime, progress: 0.0)] + samples.map {
+            (time: $0.observed, progress: $0.progress)
+        }
+        let viewAges = probes.map { probe in
+            viewUpdateAge(at: probe.observed, renderedAt: probe.renderedAt,
+                rendered: probe.renderedProgress, requested: probe.requestedProgress, history: requestHistory)
+        }
+        let historyValid = viewAges.allSatisfy { $0 != nil }
+        let maxRenderLag = historyValid ? (viewAges.compactMap { $0?.seconds }.max() ?? 0) : .infinity
+        let maxRawAge = viewAges.compactMap { $0?.rawSeconds }.max() ?? .infinity
+        let worstCorrected = viewAges.indices.max { (viewAges[$0]?.seconds ?? .infinity) < (viewAges[$1]?.seconds ?? .infinity) }
+        let worstRaw = viewAges.indices.max { (viewAges[$0]?.rawSeconds ?? .infinity) < (viewAges[$1]?.rawSeconds ?? .infinity) }
+        for index in probes.indices where viewAges[index] == nil || index == worstCorrected || index == worstRaw {
+            let probe = probes[index], age = viewAges[index]
+            SmokeDiagnostics.mark("motion view-age profile=\(profile) probe=\(index) observed=\(probe.observed) requested=\(probe.requestedProgress) rendered=\(probe.renderedProgress) acknowledgedAt=\(probe.renderedAt) matchedApplyAt=\(String(describing: age?.acknowledgedApplyAt)) firstReplacementAt=\(String(describing: age?.replacedAt)) rawAgeSeconds=\(String(describing: age?.rawSeconds)) replacementAgeSeconds=\(String(describing: age?.seconds)) historyValid=\(age != nil)")
+            if let age {
+                let relevant = requestHistory.filter { $0.time >= age.acknowledgedApplyAt && $0.time <= probe.observed }
+                SmokeDiagnostics.mark("motion view-age request-history profile=\(profile) probe=\(index) states=\(relevant)")
+            }
+        }
         let presentationProbes = probes.filter { $0.layerPresentation != nil }
         let activePresentationCount = presentationProbes.filter { $0.running }.count
         var presentationsValid = true
@@ -303,12 +384,12 @@ final class NativeMotionHarness: NSObject {
         let closingPaints = progressDeltas.filter { $0 < -0.0001 }.count
         let coherentPaint = activePaints.count >= 20 && openingPaints >= 5 && closingPaints >= 5 && paintMatches
         SmokeDiagnostics.mark("motion synchronous-paint profile=\(profile) callbacks=\(paints.count) active=\(activePaints.count) opening=\(openingPaints) closing=\(closingPaints) sameFramePaths=\(paintMatches) valid=\(coherentPaint) scanout=false")
-        let valid = pacingValid && coherentPaint && samples.count >= 30 && probes.count >= 30 && presentationProbes.count >= 20 && activePresentationCount >= 20
+        let valid = pacingValid && coherentPaint && historyValid && samples.count >= 30 && probes.count >= 30 && presentationProbes.count >= 20 && activePresentationCount >= 20
             && presentationsValid && native && source == expectedSource
             && (profile == .synchronousBaseline || cadence)
         passed = valid && passed
         summaries.append((profile.rawValue, p95Apply, p95Gap))
-        SmokeDiagnostics.mark("motion summary profile=\(profile) source=\(source) callbacks=\(samples.count) normalRunLoopProbes=\(probes.count) loadUpdates=\(loadCount) callbackMaxSeconds=\(maxGap) callbackP95Seconds=\(p95Gap) applyP95Seconds=\(p95Apply) maxViewUpdateLagSeconds=\(maxRenderLag) presentationSamples=\(presentationProbes.count) activePresentationSamples=\(activePresentationCount) presentationBoundsValid=\(presentationsValid) native=\(native) cadence=\(cadence) valid=\(valid)")
+        SmokeDiagnostics.mark("motion summary profile=\(profile) source=\(source) callbacks=\(samples.count) normalRunLoopProbes=\(probes.count) loadUpdates=\(loadCount) callbackMaxSeconds=\(maxGap) callbackP95Seconds=\(p95Gap) applyP95Seconds=\(p95Apply) maxViewUpdateLagSeconds=\(maxRenderLag) maxRawViewAgeSeconds=\(maxRawAge) viewHistoryValid=\(historyValid) presentationSamples=\(presentationProbes.count) activePresentationSamples=\(activePresentationCount) presentationBoundsValid=\(presentationsValid) native=\(native) cadence=\(cadence) valid=\(valid)")
         for (index, sample) in samples.enumerated() where index % 12 == 0 || index == samples.count - 1 {
             SmokeDiagnostics.mark("motion sample profile=\(profile) index=\(index) observed=\(sample.observed) scheduled=\(sample.scheduled) generation=\(sample.generation) progress=\(sample.progress) velocity=\(sample.velocity) applySeconds=\(sample.applyDuration) frame=\(sample.frame) content=\(sample.contentBounds) previousViewUpdatedViewport=\(sample.viewport)")
         }

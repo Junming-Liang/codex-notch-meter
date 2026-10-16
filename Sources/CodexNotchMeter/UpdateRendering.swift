@@ -377,7 +377,10 @@ final class UpdateRenderHarness: NSObject {
                     check(secondaryVerified, "changed secondary completed its own passive notice dwell")
                     print("UPDATE_SECONDARY_OK: unchanged primary did not mask numeric secondary change")
                 }
-                closingAt = now; retainsNoticeWhileClosing = !reduced
+                // Expiry can snap and paint before this inspection callback runs.
+                // Require freshness after the actual scheduled deadline, not after
+                // the later observation of that already-completed transition.
+                closingAt = armed + hold; retainsNoticeWhileClosing = !reduced
                 if reduced {
                     check(island.smokeProgress == 0 && !island.smokeMotionRunning && !island.smokeNoticeVisible,
                         "Reduce Motion expires with immediate idle snap and cleared content")
@@ -546,7 +549,7 @@ final class UpdateRenderHarness: NSObject {
         if !island.smokeNoticeTargetActive {
             check(oldDeadlineVerified && held >= hold - 0.05 && held <= hold + 0.75 && paintedFor >= hold - 0.05,
                 "replacement receives its own full painted hold armed=\(held) painted=\(paintedFor) seconds=\(hold)")
-            closingAt = now; retainsNoticeWhileClosing = true; next(.closing, at: now)
+            closingAt = armed + hold; retainsNoticeWhileClosing = true; next(.closing, at: now)
         } else if held > hold + 0.75 { check(false, "replacement expiry did not retire") }
     }
 
