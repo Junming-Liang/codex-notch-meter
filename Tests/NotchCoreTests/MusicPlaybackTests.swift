@@ -207,7 +207,12 @@ final class MusicPlaybackTests: XCTestCase {
             probe.record(prompt: request.allowPermissionPrompt)
             began.fulfill()
             _ = release.wait(timeout: .now() + 3)
-            XCTAssertThrowsError(try request.checkCancellation())
+            do {
+                try request.checkCancellation()
+                XCTFail("Cancelled transport must reject its retired request")
+            } catch {
+                XCTAssertEqual(error as? MusicReadFailure, .cancelled)
+            }
             finished.fulfill()
             return .snapshot(sample)
         }
