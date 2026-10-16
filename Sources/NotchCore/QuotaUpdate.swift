@@ -19,8 +19,9 @@ public struct QuotaWindowUpdate: Equatable, Sendable {
     public let bucketID: String
     public let windowID: String
     public let change: Change
-    /// True only when a fresh, continuous read confirms different numeric quota.
-    /// This is notice eligibility, not evidence of consumption across reset cycles.
+    /// True when fresh matching window reads contain different numeric quota.
+    /// Missing optional identity/metadata permits a current-value notice only,
+    /// never a consumption claim or a comparable source interval.
     public let hasNumericChange: Bool
 }
 
@@ -93,7 +94,15 @@ public struct QuotaUpdateTracker: Sendable {
                     change = .updated(reason: .dataUnavailable)
                     hasNumericChange = false
                 } else if let oldWindow = previousIndex?.windows[key] {
-                    let comparison = Self.compare(oldWindow, window, at: now)
+                    let comparison: (change: QuotaWindowUpdate.Change, hasNumericChange: Bool)
+                    if snapshot.continuityIdentity == nil {
+                        comparison = Self.compareObservedValues(oldWindow, window, at: now, reason: .identityUnavailable)
+                    } else if (oldWindow.durationMinutes == nil && window.durationMinutes == nil)
+                        || (oldWindow.resetsAt == nil && window.resetsAt == nil) {
+                        comparison = Self.compareObservedValues(oldWindow, window, at: now, reason: .dataUnavailable)
+                    } else {
+                        comparison = Self.compare(oldWindow, window, at: now)
+                    }
                     change = comparison.change
                     hasNumericChange = comparison.hasNumericChange
                 } else {
@@ -130,20 +139,47 @@ public struct QuotaUpdateTracker: Sendable {
     private func comparisonReason(previous: QuotaSnapshot?, current: QuotaSnapshot, now: Date) -> QuotaUpdateReason? {
         guard Self.isFresh(current.fetchedAt, at: now) else { return .stale }
         guard let previous else { return current.continuityIdentity == nil ? .identityUnavailable : nextReason }
-        guard let oldIdentity = previous.continuityIdentity, let newIdentity = current.continuityIdentity else {
-            return .identityUnavailable
-        }
-        guard oldIdentity == newIdentity else { return .accountChanged }
         let elapsed = current.fetchedAt.timeIntervalSince(previous.fetchedAt)
         guard elapsed.isFinite, elapsed > 0 else { return .nonMonotonic }
         guard elapsed <= Self.freshnessInterval, Self.isFresh(previous.fetchedAt, at: now) else { return .stale }
-        return nil
+        switch (previous.continuityIdentity, current.continuityIdentity) {
+        case (nil, nil):
+            // Older backends legitimately omit accountId; the parser also treats
+            // malformed optional identity as unavailable. Numeric observation is
+            // still useful, but compareObservedValues cannot claim consumption.
+            return nil
+        case (.some(let old), .some(let new)):
+            return old == new ? nil : .accountChanged
+        default:
+            // Identity appearing/disappearing is a baseline boundary, not a delta.
+            return .identityUnavailable
+        }
     }
 
     private static func isFresh(_ fetchedAt: Date, at now: Date) -> Bool {
         let age = now.timeIntervalSince(fetchedAt)
         return now.timeIntervalSince1970.isFinite && fetchedAt.timeIntervalSince1970.isFinite
             && age.isFinite && age >= 0 && age <= freshnessInterval
+    }
+
+    /// Compatibility path for optional backend fields. Only the current value is
+    /// presented; equal optional metadata means "not known to have changed", not
+    /// proof of account, duration or reset continuity. Invalid numeric quota,
+    /// changed duration, one-sided metadata loss and due resets stay silent.
+    private static func compareObservedValues(_ previous: QuotaWindow, _ current: QuotaWindow,
+        at now: Date, reason: QuotaUpdateReason)
+        -> (change: QuotaWindowUpdate.Change, hasNumericChange: Bool) {
+        let silent: (QuotaWindowUpdate.Change, Bool) = (.updated(reason: reason), false)
+        guard previous.durationMinutes == current.durationMinutes else { return silent }
+        switch (previous.resetsAt, current.resetsAt) {
+        case (nil, nil): break
+        case (.some(let old), .some(let new)):
+            guard old.timeIntervalSince1970.isFinite, new.timeIntervalSince1970.isFinite,
+                  new > now else { return silent }
+        default: return silent
+        }
+        guard let old = previous.remainingPercent, let new = current.remainingPercent else { return silent }
+        return (.updated(reason: reason), old != new)
     }
 
     private static func compare(_ previous: QuotaWindow, _ current: QuotaWindow, at now: Date)
