@@ -24,6 +24,8 @@ jobs:
         run: swift --version
       - name: Public source checks
         run: python3 Scripts/check-source.py
+      - name: Synthetic Music dictionary discovery safety tests
+        run: python3 Scripts/test-music-dictionary.py
       - name: Inspect public Music scripting dictionary without launch
         run: python3 Scripts/check-music-dictionary.py
       - name: Synthetic unit and subprocess tests
