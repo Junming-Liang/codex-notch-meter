@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 APP_NAME = "Codex Notch Meter.app"
 IMAGE_NAME = f"CodexNotchMeter-{VERSION}-universal.dmg"
 INSTRUCTIONS_NAME = "Install - 安装说明.txt"
