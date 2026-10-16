@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.9 开发预览
+## v1.0.0 正式版
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.9/CodexNotchMeter-0.1.9-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0)
 
-本版修复可选账户标识或窗口元数据不可用时，额度已更新却没有变化提示的问题。符合条件的数值变化显示“额度已更新”和当前剩余额度；只有可验证的连续读数才计算消耗百分点。首读、未变化、失败仍保持安静。2 / 4 / 6 秒停留、外形、动效和描边均保持不变。原生与安装包验证已通过；实际登录项注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
+播放 Apple Music 时自动展开紧凑歌词，暂停或播放信息失效时收起；额度变化提示保持优先，结束后返回当前播放状态。歌词与在线匹配默认关闭，开启步骤和数据传输说明见[歌词设置](MUSIC-LYRICS.md)。保留五款皮肤、2 / 4 / 6 秒额度提示、原有轮廓与描边，并改进黑色主体的连续收起。完整原生发布门槛已通过，详见[验证说明](VALIDATION.md)。[Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 和 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) 仍保留。
 
 ## 安装
 
@@ -26,7 +26,7 @@ DMG 是拖放安装映像，不是后台安装器。它不自动复制文件、�
 - **等待批准**：点击“在系统设置中批准…”自行处理，或“取消待批准请求”。应用不会代替用户批准。
 - **失败 / 未找到**：显示实际状态和安装建议；可以由用户点击“打开系统登录项…”。
 
-预览版只有 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止打开应用或拒绝登录项注册。DMG 不能消除签名限制；项目不提供关闭 Gatekeeper、删除隔离属性或其他安全绕过命令。
+发布产物只有 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止打开应用或拒绝登录项注册。DMG 不能消除签名限制；项目不提供关闭 Gatekeeper、删除隔离属性或其他安全绕过命令。
 
 CI 仅模拟注册/取消状态转换，并在原生进程中只读观察系统 API；不会实际注册、取消或更改 runner 的登录项。真实用户批准和注销/重启后启动尚未验证。Apple 的[注册说明](https://developer.apple.com/documentation/servicemanagement/smappservice/register())明确要求尊重用户批准；[开发者技术支持](https://developer.apple.com/forums/thread/799910)也提醒 ad-hoc 签名在 Service Management 集成中可能存在问题。
 
