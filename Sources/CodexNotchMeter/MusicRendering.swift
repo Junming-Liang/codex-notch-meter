@@ -366,7 +366,7 @@ final class MusicRenderHarness: NSObject {
         let a1 = try await read(fixture); try await release(fixture, a1, position: 1)
         let oldA = try await lookup(fixture)
         guard let originalSelection = fixture.controller.importSelectionToken else { throw Failure(label: "missing A file-picker token") }
-        let b = try await read(fixture); try await release(fixture, b, track: "Synthetic B", position: 1)
+        let b = try await read(fixture); try await release(fixture, b, track: "HARBOR B", position: 1)
         let oldB = try await lookup(fixture)
         fixture.controller.importLyrics(from: URL(fileURLWithPath: "/synthetic-old-picker.lrc"), for: originalSelection)
         try await dwell(0.10)
@@ -391,7 +391,7 @@ final class MusicRenderHarness: NSObject {
             return cancelled && returned
         }
         try await dwell(0.10)
-        try require(fixture.controller.line == Self.firstLine && fixture.controller.trackTitle == "Synthetic A",
+        try require(fixture.controller.line == Self.firstLine && fixture.controller.trackTitle == "HARBOR A",
                     "delayed A and B cannot overwrite the replacement A revision")
         print("MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true")
 
@@ -521,8 +521,12 @@ final class MusicRenderHarness: NSObject {
             && !fixture.controller.hasLocalLyrics && fixture.controller.statusText.contains("LRC"),
             "fresh playing source opens the compact body even without a lyric document")
         let statusPixels = try await compactOCR(panel, languages: ["zh-Hans", "en-US"])
-        try require(contains(statusPixels, "Synthetic A") && contains(statusPixels, "LRC")
-            && !contains(statusPixels, Self.firstLine), "no-document compact pixels show the song and honest import status")
+        let titleVisible = contains(statusPixels, "HARBOR A")
+        let importStatusVisible = contains(statusPixels, "LRC")
+        let obsoleteLyricVisible = contains(statusPixels, Self.firstLine)
+        print("MUSIC_AUTO_EMPTY_DIAGNOSTIC: titleVisible=\(titleVisible) importStatusVisible=\(importStatusVisible) obsoleteLyricVisible=\(obsoleteLyricVisible)")
+        try require(titleVisible && importStatusVisible && !obsoleteLyricVisible,
+                    "no-document compact pixels show the song and honest import status")
         print("MUSIC_AUTO_EMPTY_OK: noHover=true owner=music document=unavailable statusToken=LRC ownViewOCR=true passive=true")
 
         // Hold the next ordinary read. The real five-second source timer must
@@ -571,7 +575,7 @@ final class MusicRenderHarness: NSObject {
         let noticeFrames = passiveFrameSamples
         let noticePixels = try await compactOCR(panel)
         try require(contains(noticePixels, "80%") && contains(noticePixels, "79%")
-            && !contains(noticePixels, Self.firstLine) && !contains(noticePixels, "Synthetic A"),
+            && !contains(noticePixels, Self.firstLine) && !contains(noticePixels, "HARBOR A"),
             "actual compact pixels replace Music with the 80 to 79 percent quota notice")
         try require(panel.showRefreshNotice(notice), "repeated identical notice is accepted without a new dwell")
         var playingUpdates = 0
@@ -609,7 +613,7 @@ final class MusicRenderHarness: NSObject {
         try await dwell(0.15)
         let returnPixels = try await compactOCR(panel)
         try require(contains(returnPixels, fixture.controller.line) && !fixture.controller.line.isEmpty
-            && !contains(returnPixels, "79%") && contains(returnPixels, "Synthetic A")
+            && !contains(returnPixels, "79%") && contains(returnPixels, "HARBOR A")
             && panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
             "own-view pixels prove Music to quota notice to Music content replacement")
         print("MUSIC_AUTO_PRIORITY_OK: hold=\(decimal(held)) expected=6 paintBeforeArm=true playingUpdates=\(playingUpdates) lyricUpdates=\(lyricUpdates) dwellUnchanged=true motionUnchanged=true samePanel=true")
@@ -656,7 +660,7 @@ final class MusicRenderHarness: NSObject {
         }
         passivePaintChecks += 1
         try verifyNoLegacyLabel(pausedPixels)
-        try require(!contains(pausedPixels, Self.firstLine) && !contains(pausedPixels, "Synthetic A")
+        try require(!contains(pausedPixels, Self.firstLine) && !contains(pausedPixels, "HARBOR A")
             && contains(pausedPixels, "Codex") && panel.verifyExpandedLayout(includePixels: false),
             "paused expanded details retain quota and footer while Music lyric and title disappear from pixels")
         try await exitDetails(panel)
@@ -851,9 +855,25 @@ final class MusicRenderHarness: NSObject {
             && naturalPaintMatches(panel, progress: panel.geometry.updateProgress, after: 0),
             "compact own-view capture follows independently observed native readiness")
         let raster = try ownViewImage(panel, progress: panel.geometry.updateProgress)
+        // This harness owns only original synthetic song/text fixtures. Keep the
+        // unchanged native-size capture available when OCR fails, without ever
+        // capturing the screen, Music.app or a live user's metadata.
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = String(format: "compact-%02d.png", passivePaintChecks + 1)
+        guard let png = NSBitmapImageRep(cgImage: raster.image).representation(using: .png, properties: [:]) else {
+            throw Failure(label: "cannot encode synthetic compact own-view evidence")
+        }
+        try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
         guard let observations = await MusicRasterOCR.recognize(raster.image, languages: languages) else {
             throw Failure(label: "bounded compact Music OCR failed")
         }
+        let diagnostic: [String: Any] = ["fixture": "original-synthetic-only", "image": filename,
+            "width": raster.width, "height": raster.height, "progress": panel.smokeProgress,
+            "scale": screen.backingScaleFactor, "observations": observations,
+            "appearance": panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "unknown"]
+        let diagnosticJSON = try JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys])
+        print("MUSIC_COMPACT_OCR_DIAGNOSTIC: \(String(decoding: diagnosticJSON, as: UTF8.self))")
         passivePaintChecks += 1
         try verifyNoLegacyLabel(observations)
         return observations
@@ -996,14 +1016,14 @@ final class MusicRenderHarness: NSObject {
         "[00:00]\(Self.firstLine)\n[00:10]\(Self.secondLine)\n[00:20]Morning sails return to the pier"
     }
     private func document(_ text: String) throws -> LyricsDocument { try LRCParser.parse(text) }
-    private func snapshot(track: String = "Synthetic A", position: TimeInterval,
+    private func snapshot(track: String = "HARBOR A", position: TimeInterval,
                           state: MusicPlaybackState = .playing, observedAt: TimeInterval? = nil) -> MusicReadResult {
         guard let identity = MusicTrackIdentity(title: track, artist: "Original Fixture Ensemble", album: "Native Test Harbor", duration: 120),
               let value = MusicPlaybackSnapshot(track: identity, state: state, position: position,
                 observedAt: observedAt ?? ProcessInfo.processInfo.systemUptime) else { return .unavailable(.invalidResponse) }
         return .snapshot(value)
     }
-    private func release(_ value: MusicFixture, _ request: MusicFixtureCall<Bool>, track: String = "Synthetic A",
+    private func release(_ value: MusicFixture, _ request: MusicFixtureCall<Bool>, track: String = "HARBOR A",
                          position: TimeInterval, state: MusicPlaybackState = .playing, observedAt: TimeInterval? = nil) async throws {
         try require(await value.reader.release(request.id, snapshot(track: track, position: position, state: state, observedAt: observedAt)),
                     "release actual pending synthetic Music request")

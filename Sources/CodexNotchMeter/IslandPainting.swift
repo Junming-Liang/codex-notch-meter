@@ -118,7 +118,11 @@ enum IslandPaintParity {
             progress: progress, legacySurface: legacySurface))
         host.sizingOptions = []; if #available(macOS 14.0, *) { host.safeAreaRegions = [] }
         panel.contentView = host; panel.setFrame(frame, display: true); panel.orderFrontRegardless()
-        return NativeContourBitmap.capture(host, scale: scale, topRowFirst: topRowFirst, padToWholePixels: true)
+        let bitmap = NativeContourBitmap.capture(host, scale: scale, topRowFirst: topRowFirst, padToWholePixels: true)
+        if legacySurface, progress == 0.02 {
+            SmokeDiagnostics.mark("paint legacy-reference-layout theme=\(model.theme.rawValue) scale=\(scale) progress=\(progress) intendedFrame=\(frame) panelFrame=\(panel.frame) hostFrame=\(host.frame) hostBounds=\(host.bounds) viewport=\(String(describing: bitmap?.size)) pixelsWide=\(bitmap?.representation.pixelsWide ?? 0) pixelsHigh=\(bitmap?.representation.pixelsHigh ?? 0) topRowFirst=\(topRowFirst) panelBacking=\(panel.backingScaleFactor) diagnosticOnly=true scanout=false")
+        }
+        return bitmap
     }
     static func check(current: NativeContourBitmap, model: MeterModel, geometry: IslandGeometry, progress: Double) -> Bool {
         guard let reference = captureReference(model: model, geometry: geometry, progress: progress,
