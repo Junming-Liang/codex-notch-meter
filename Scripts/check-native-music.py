@@ -49,6 +49,7 @@ def receipts_valid(stdout: str) -> bool:
         'MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0',
         'MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true',
         'MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true',
+        'MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true',
         'MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true',
         'MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true',
         'MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true',
@@ -131,6 +132,7 @@ MUSIC_DENIED_OK: explicitRetryPrompt=true followupPrompt=false idle=3.15 noAutom
 MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0
 MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true
 MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true
+MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true
 MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true
 MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true
 MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true
