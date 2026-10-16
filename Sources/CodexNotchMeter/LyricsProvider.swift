@@ -95,7 +95,7 @@ private final class BoundedLyricsRequest: NSObject, URLSessionDataDelegate, @unc
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) {
-        // Also reject same-host redirects: consent covers this exact endpoint.
+        // Also reject same-host redirects: consent covers only the reviewed fixed endpoints.
         completionHandler(nil)
         finish(.failure(.requestNotAllowed))
     }

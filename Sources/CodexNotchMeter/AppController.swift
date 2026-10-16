@@ -214,6 +214,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func updateSkinActivity() {
         model.music.setActive(!sleeping && !displaySleeping && sessionActive && !terminating && !NSApp.isHidden)
+        islands.forEach { $0.setMusicPresentationAllowed(passiveMusicAllowed) }
         let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
         let visibleIsland = islands.contains { (coloredPrimary || $0.displaysColoredDetails) && $0.panel.isVisible && $0.panel.occlusionState.contains(.visible) }
         // A visible details header is also a color consumer; empty/zero collapsed contours are not.
@@ -226,11 +227,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func makeIsland(geometry: IslandGeometry, polling: Bool = true, reducedMotion: Bool? = nil) -> IslandPanelController {
         IslandPanelController(model: model, geometry: geometry, startPolling: polling, reducedMotionOverride: reducedMotion,
+            musicPresentationAllowed: passiveMusicAllowed,
             activityChanged: { [weak self] in self?.updateSkinActivity() },
             hovered: { [weak self] in self?.model.hover() },
             refresh: { [weak self] in self?.model.refresh() },
             settings: { [weak self] in self?.showSettings() },
             quit: { [weak self] in self?.requestQuit() })
+    }
+    private var passiveMusicAllowed: Bool {
+        displayActivity.permitsOverlay && !menuOpen && !popover.isShown && settingsWindow?.isVisible != true
     }
     private func deliverPendingNotice() {
         guard let notice = pendingNotice else { return }
@@ -254,14 +259,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         defer { updateSkinActivity() }
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let button = statusItem.button {
             let menu = makeStatusMenu()
-            menuOpen = true; islands.forEach { $0.collapse() }
-            defer { menuOpen = false; deliverPendingNotice() }
+            menuOpen = true; islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }
+            defer { menuOpen = false; updateSkinActivity(); deliverPendingNotice() }
             NSMenu.popUpContextMenu(menu, with: event, for: button)
             return
         }
         guard let button = statusItem.button else { return }
         if popover.isShown { popover.performClose(nil) }
-        else { islands.forEach { $0.collapse() }; popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY); model.hover() }
+        else { islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }; popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY); model.hover() }
     }
     private func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
@@ -276,7 +281,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     @objc private func refreshNow() { model.refresh() }
     @objc private func showSettings() {
-        popover.performClose(nil); islands.forEach { $0.collapse() }
+        popover.performClose(nil); islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }
         loginSettings.refresh()
         if settingsWindow == nil {
             let view = SettingsView(model: model, login: loginSettings, chooseExecutable: { [weak self] in self?.chooseExecutable() }, quit: { [weak self] in self?.requestQuit() })

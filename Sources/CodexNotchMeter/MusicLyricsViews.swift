@@ -3,12 +3,36 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Fixed compact content inside the existing notice-sized contour. Missing
+/// lyrics have an honest status; playback does not expand an empty quota card.
+@MainActor
+struct MusicCompactView: View {
+    @ObservedObject var music: MusicLyricsController
+    var body: some View {
+        if music.isPlayingForPresentation {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 5) {
+                    Image(systemName: "music.note")
+                    Text(music.trackTitle.isEmpty ? "Apple Music" : music.trackTitle).lineLimit(1)
+                    Spacer(minLength: 4)
+                }.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                Text(music.line.isEmpty ? music.statusText : music.line)
+                    .font(.system(size: 12, weight: music.line.isEmpty ? .regular : .medium))
+                    .foregroundStyle(music.line.isEmpty ? Color.secondary : Color.primary)
+                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, 2).foregroundStyle(.white).environment(\.colorScheme, .dark)
+                .accessibilityElement(children: .combine)
+        }
+    }
+}
+
 /// Fits inside the existing scrollable detail content; never sizes the island.
 @MainActor
 struct MusicLyricRow: View {
     @ObservedObject var music: MusicLyricsController
     var body: some View {
-        if music.enabled {
+        if music.enabled && music.isPlayingForPresentation {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
                     Image(systemName: "music.note").font(.system(size: 9))
@@ -37,10 +61,10 @@ struct MusicLyricsSettings: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("在展开详情中显示 Apple Music 歌词", isOn: Binding(
+                Toggle("播放时自动展开 Apple Music 歌词", isOn: Binding(
                     get: { music.enabled }, set: { music.setEnabled($0) }))
                     .disabled(music.synthetic)
-                Text("默认关闭。启用时会请求读取 Music 当前歌曲与播放位置的自动化权限；不会打开 Music 或控制播放。额度提示始终优先。")
+                Text("默认关闭。播放时显示紧凑歌词，暂停时收起；悬停可保持详情，额度提示结束后返回歌词。启用时会请求读取 Music 当前歌曲与播放位置的自动化权限；不会打开 Music 或控制播放。")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if music.enabled {
                     Text(music.statusText).font(.system(size: 11)).foregroundStyle(.secondary)

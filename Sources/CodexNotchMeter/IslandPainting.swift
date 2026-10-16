@@ -5,7 +5,8 @@ import QuartzCore
 import NotchCore
 
 /// One immutable input for the surface, outline and clipping path of a paint pass.
-/// Geometry and all reveal curves are the v0.1.7 values; this changes their submission.
+/// Body and rail share geometry and one synchronous submission; only the body
+/// reveal follows its remaining distance to idle, keeping the shrinking shell visible.
 struct IslandVisualFrame {
     let progress: Double
     let viewport: CGSize
@@ -17,7 +18,7 @@ struct IslandVisualFrame {
         self.progress = progress; self.viewport = viewport; self.noticeID = noticeID
         contour = IslandContour(rect: geometry.contourRect(progress: progress), progress: progress,
             cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
-        surfaceOpacity = baseline ? min(1, progress * 3) : IslandReveal.surface(progress)
+        surfaceOpacity = baseline ? min(1, progress * 3) : geometry.surfaceOpacity(progress: progress)
         railOpacity = baseline ? max(0, 1 - progress * 4) : IslandReveal.rail(progress)
     }
     var bodyPath: Path { contourPath(contour, inset: 0, closed: true) }
@@ -80,18 +81,20 @@ struct IslandPaintView: View {
         }
     }
 }
-/// The previous layer composition is retained only as a synthetic middle-frame
-/// reference. It is never used in the normal application or timer path.
+/// The prior layer composition is a synthetic parity reference using the current
+/// opacity. legacySurface separately recreates the old early fade as a negative control.
+/// Neither path is used in the normal application or timer driver.
 @MainActor
-private struct PreviousPaintComposition: View {
+private struct ReferencePaintComposition: View {
     @ObservedObject var model: MeterModel
     let geometry: IslandGeometry
     let progress: Double
+    let legacySurface: Bool
     var body: some View {
         let rect = geometry.contourRect(progress: progress)
         let shape = IslandSilhouette(progress: progress, drawingRect: rect,
             cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
-        Color.clear.overlay { shape.fill(.black.opacity(IslandReveal.surface(progress))) }
+        Color.clear.overlay { shape.fill(.black.opacity(legacySurface ? IslandReveal.smooth(progress * 3) : geometry.surfaceOpacity(progress: progress))) }
             .overlay {
                 RailView(model: model, drawingRect: rect, progress: progress,
                     cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height,
@@ -104,16 +107,22 @@ private struct PreviousPaintComposition: View {
 
 @MainActor
 enum IslandPaintParity {
-    static func check(current: NativeContourBitmap, model: MeterModel, geometry: IslandGeometry, progress: Double) -> Bool {
-        guard model.demo, CommandLine.arguments.contains("--collapse-test") else { return false }
+    static func captureReference(model: MeterModel, geometry: IslandGeometry, progress: Double,
+                                 scale: Int, topRowFirst: Bool, legacySurface: Bool) -> NativeContourBitmap? {
+        guard model.demo, CommandLine.arguments.contains("--collapse-test") else { return nil }
         let frame = geometry.frame(progress: progress)
         let panel = TopEdgePanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false; panel.isOpaque = false; panel.backgroundColor = .clear; panel.ignoresMouseEvents = true
         defer { panel.close() }
-        let host = IslandHostingView(rootView: PreviousPaintComposition(model: model, geometry: geometry, progress: progress))
+        let host = IslandHostingView(rootView: ReferencePaintComposition(model: model, geometry: geometry,
+            progress: progress, legacySurface: legacySurface))
         host.sizingOptions = []; if #available(macOS 14.0, *) { host.safeAreaRegions = [] }
         panel.contentView = host; panel.setFrame(frame, display: true); panel.orderFrontRegardless()
-        guard let reference = NativeContourBitmap.capture(host, scale: current.scale, topRowFirst: current.topRowFirst, padToWholePixels: true),
+        return NativeContourBitmap.capture(host, scale: scale, topRowFirst: topRowFirst, padToWholePixels: true)
+    }
+    static func check(current: NativeContourBitmap, model: MeterModel, geometry: IslandGeometry, progress: Double) -> Bool {
+        guard let reference = captureReference(model: model, geometry: geometry, progress: progress,
+            scale: current.scale, topRowFirst: current.topRowFirst, legacySurface: false),
               reference.size == current.size else { return false }
         let rect = geometry.contourRect(progress: progress)
         let side = rect.minX + CGFloat(12 * progress), depth = rect.height / 2
@@ -133,7 +142,7 @@ enum IslandPaintParity {
         }
         let difference = count > 0 ? total / Double(count) : Double.infinity
         let valid = count >= 100 && energy > 8 && difference < 0.035
-        SmokeDiagnostics.mark("paint composition parity theme=\(model.theme.rawValue) scale=\(current.scale) progress=\(progress) samples=\(count) premultipliedDifference=\(difference) valid=\(valid)")
+        SmokeDiagnostics.mark("paint composition parity current-surface theme=\(model.theme.rawValue) scale=\(current.scale) progress=\(progress) samples=\(count) premultipliedDifference=\(difference) valid=\(valid)")
         return valid
     }
 }

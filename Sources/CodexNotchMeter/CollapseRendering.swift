@@ -7,7 +7,8 @@ import NotchCore
 @MainActor
 final class CollapseRenderHarness: NSObject {
     private let model: MeterModel
-    private let geometry: IslandGeometry
+    private var geometry: IslandGeometry
+    private let originalGeometry: IslandGeometry
     private let completion: (Bool) -> Void
     private var controller: IslandPanelController?
     private var timer: Timer?
@@ -21,12 +22,15 @@ final class CollapseRenderHarness: NSObject {
     private var firstClosedPixels: [Int: [Double]] = [:]
     private var rowOrientation: [Int: Bool] = [:]
     private var replayTheme = 0
+    private var replayVariant = 0
     private var replayIndex = 0
     private var replayPixels: [Int: [[Double]]] = [:]
     private var intercepted = false
     private var captureCount = 0
     private let progressPoints: [Double] = [0.50, 0.30, 0.10, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0]
     private var themes: [MeterTheme] { MeterTheme.allCases }
+    private var replayGeometryLabel: String { ["default", "shortest", "tallest"][replayVariant] }
+    private var replayPoints: [Double] { replayVariant == 0 ? progressPoints : [0.001, 0.0005, 0] }
     private var isBaseline: Bool { cycle == 0 }
     private var isFallback: Bool { cycle == themes.count + 1 }
     private var isInterruption: Bool { cycle >= themes.count + 2 }
@@ -37,7 +41,7 @@ final class CollapseRenderHarness: NSObject {
         return "drained-\(themes[cycle - 1].rawValue)"
     }
     init(model: MeterModel, geometry: IslandGeometry, completion: @escaping (Bool) -> Void) {
-        self.model = model; self.geometry = geometry; self.completion = completion
+        self.model = model; self.geometry = geometry; self.originalGeometry = geometry; self.completion = completion
         super.init()
     }
     func start() {
@@ -179,12 +183,13 @@ final class CollapseRenderHarness: NSObject {
                 replayPixels[scale, default: []].append(pixels)
             }
             replayIndex += 1
-            if replayIndex < progressPoints.count {
-                island.setContourTestProgress(progressPoints[replayIndex]); next(20, at: CACurrentMediaTime())
+            if replayIndex < replayPoints.count {
+                island.setContourTestProgress(replayPoints[replayIndex]); next(20, at: CACurrentMediaTime())
             } else {
-                inspectReplay()
-                replayTheme += 1
-                if replayTheme < themes.count { startReplay() }
+                if replayVariant == 0 { inspectReplay(); replayTheme += 1 }
+                else { inspectExtremeReplay(); replayVariant += 1 }
+                if replayVariant == 0, replayTheme == themes.count { replayVariant = 1; replayTheme = 0 }
+                if replayVariant < 3 { startReplay() }
                 else { finish(passed) }
             }
         default: break
@@ -201,13 +206,29 @@ final class CollapseRenderHarness: NSObject {
     }
     private func startReplay() {
         controller?.stop(); replayIndex = 0; replayPixels = [:]
+        if replayVariant > 0 {
+            let base = originalGeometry, frame = base.screen, hardware = base.notch
+            guard let notch = NotchGeometry.calculate(screen: frame, topInset: Double(hardware.height),
+                auxiliaryLeft: CGRect(x: frame.minX, y: hardware.minY, width: hardware.minX - frame.minX, height: hardware.height),
+                auxiliaryRight: CGRect(x: hardware.maxX, y: hardware.minY, width: frame.maxX - hardware.maxX, height: hardware.height)) else {
+                finish(false); return
+            }
+            // Cross the shortest/tallest content endpoints with the opposite depth
+            // correction, exercising the smallest/largest remaining bottom travel.
+            geometry = IslandGeometry(notch: notch, screen: frame, backingScale: base.backingScale,
+                horizontalAdjustment: base.horizontalAdjustment,
+                shapeCalibration: ContourCalibration(width: base.shapeCalibration.width,
+                    depth: replayVariant == 1 ? 6 : -6, corner: base.shapeCalibration.corner),
+                contentHeight: replayVariant == 1 ? 132 : 340)
+        }
         model.theme = themes[replayTheme]; model.setContourFixture(left: 83, right: 38)
+        SmokeDiagnostics.mark("collapse replay fixture=\(replayGeometryLabel) contentHeight=\(geometry.contentHeight) depthCorrection=\(geometry.shapeCalibration.depth) offlineReplay=true scanout=false")
         controller = IslandPanelController(model: model, geometry: geometry, startPolling: false,
             reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
-        controller?.setContourTestProgress(progressPoints[0]); next(20, at: CACurrentMediaTime())
+        controller?.setContourTestProgress(replayPoints[0]); next(20, at: CACurrentMediaTime())
     }
     private var canvas: CGRect {
-        let frame = geometry.frame(progress: 0.5)
+        let frame = geometry.frame(progress: replayVariant == 0 ? 0.5 : 0.001)
         return CGRect(x: floor(frame.minX) - 2, y: floor(frame.minY) - 2,
             width: ceil(frame.maxX) - floor(frame.minX) + 4,
             height: ceil(frame.maxY) - floor(frame.minY) + 4)
@@ -218,33 +239,37 @@ final class CollapseRenderHarness: NSObject {
         for scale in [1, 2] {
             guard let topFirst = rowOrientation[scale],
                   let bitmap = NativeContourBitmap.capture(view, scale: scale, topRowFirst: topFirst, padToWholePixels: true) else { continue }
-            if phase == 20 && replayIndex < 2 {
+            if phase == 20 && replayVariant == 0 && replayIndex < 2 {
                 passed = IslandPaintParity.check(current: bitmap, model: model, geometry: geometry,
                     progress: progressPoints[replayIndex]) && passed
             }
             let expectedWidth = Int(ceil(view.bounds.width * CGFloat(scale)))
             let expectedHeight = Int(ceil(view.bounds.height * CGFloat(scale)))
             guard bitmap.representation.pixelsWide == expectedWidth, bitmap.representation.pixelsHigh == expectedHeight else { continue }
-            let frame = island.panel.frame, area = canvas
-            let width = Int(area.width * CGFloat(scale)), height = Int(area.height * CGFloat(scale))
-            // Sample in one global point-space canvas, preserving the camera/top anchor.
-            // Pixel centers include +0.5; moving native viewport origins are not ignored.
-            var values = [Double](repeating: 0, count: width * height * 4)
-            for y in 0..<height {
-                let globalY = area.maxY - (CGFloat(y) + 0.5) / CGFloat(scale)
-                for x in 0..<width {
-                    let globalX = area.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
-                    let xx = Int(floor((globalX - frame.minX) * CGFloat(scale)))
-                    let yy = Int(floor((frame.maxY - globalY) * CGFloat(scale)))
-                    guard xx >= 0, yy >= 0, xx < bitmap.representation.pixelsWide, yy < bitmap.representation.pixelsHigh else { continue }
-                    let pixel = bitmap.pixel(x: xx, y: yy), offset = (y * width + x) * 4
-                    values[offset] = pixel.r * pixel.a; values[offset + 1] = pixel.g * pixel.a
-                    values[offset + 2] = pixel.b * pixel.a; values[offset + 3] = pixel.a
-                }
-            }
-            captureCount += 1; result[scale] = values
+            captureCount += 1
+            result[scale] = commonCanvas(bitmap, frame: island.panel.frame)
         }
         return result
+    }
+    /// Both production and rendered negative controls use this exact global canvas.
+    private func commonCanvas(_ bitmap: NativeContourBitmap, frame: CGRect) -> [Double] {
+        let scale = bitmap.scale, area = canvas
+        let width = Int(area.width * CGFloat(scale)), height = Int(area.height * CGFloat(scale))
+        // Pixel centers include +0.5; moving native viewport origins are not ignored.
+        var values = [Double](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            let globalY = area.maxY - (CGFloat(y) + 0.5) / CGFloat(scale)
+            for x in 0..<width {
+                let globalX = area.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
+                let xx = Int(floor((globalX - frame.minX) * CGFloat(scale)))
+                let yy = Int(floor((frame.maxY - globalY) * CGFloat(scale)))
+                guard xx >= 0, yy >= 0, xx < bitmap.representation.pixelsWide, yy < bitmap.representation.pixelsHigh else { continue }
+                let pixel = bitmap.pixel(x: xx, y: yy), offset = (y * width + x) * 4
+                values[offset] = pixel.r * pixel.a; values[offset + 1] = pixel.g * pixel.a
+                values[offset + 2] = pixel.b * pixel.a; values[offset + 3] = pixel.a
+            }
+        }
+        return values
     }
     private func normalizedDifference(_ first: [Double], _ second: [Double], reference: [Double]) -> Double {
         guard first.count == second.count, second.count == reference.count else { return .infinity }
@@ -313,7 +338,7 @@ final class CollapseRenderHarness: NSObject {
                 let gx = canvas.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
                 guard gx >= side - 3, gx <= side + 6 else { continue }
                 let index = (y * width + x) * 4
-                if first == nil, pixels[index + 3] > IslandReveal.surface(progress) * 0.5 { first = Double(gx) }
+                if first == nil, pixels[index + 3] > geometry.surfaceOpacity(progress: progress) * 0.5 { first = Double(gx) }
                 let chroma = max(pixels[index], max(pixels[index + 1], pixels[index + 2]))
                     - min(pixels[index], min(pixels[index + 1], pixels[index + 2]))
                 colorWeight += chroma; colorX += Double(gx) * chroma
@@ -329,9 +354,148 @@ final class CollapseRenderHarness: NSObject {
         return abs(measurement.body) <= 1 / Double(scale)
             && abs(measurement.rail) <= 0.6 / Double(scale)
     }
+    /// Recover the drawing contour in one global top-down space, independently of
+    /// the production opacity API and native viewport rounding.
+    private func globalContour(progress: Double) -> IslandContour {
+        let frame = geometry.frame(progress: progress), rect = geometry.contourRect(progress: progress)
+        return IslandContour(rect: CGRect(x: frame.minX + rect.minX,
+            y: geometry.screen.maxY - frame.maxY + rect.minY, width: rect.width, height: rect.height),
+            progress: progress, cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
+    }
+    private func measuredContourResidual(progress: Double) -> Double {
+        let current = globalContour(progress: progress), idle = globalContour(progress: 0)
+        return Double([
+            abs(current.rect.maxY - idle.rect.maxY),
+            abs(current.rect.minX + current.shoulder - idle.rect.minX - idle.shoulder),
+            abs(current.rect.maxX - current.shoulder - idle.rect.maxX + idle.shoulder),
+            abs(current.bounds.minX - idle.bounds.minX), abs(current.bounds.maxX - idle.bounds.maxX),
+            abs(current.corner - idle.corner), abs(current.upperCorner - idle.upperCorner)
+        ].max() ?? .infinity)
+    }
+    private func expectedBodyAlpha(residual: Double) -> Double {
+        let t = min(1, max(0, residual / 4))
+        return t * t * (3 - 2 * t)
+    }
+    private struct BodyCoverage {
+        var count = 0
+        var sum = 0.0
+        var minimum = 1.0
+        var maximum = 0.0
+        var color = 0.0
+        var mean: Double { count > 0 ? sum / Double(count) : .infinity }
+        func matches(_ expected: Double, scale: Int) -> Bool {
+            count >= 32 * scale && abs(mean - expected) <= 0.012
+                && minimum >= expected - 0.015 && maximum <= expected + 0.015 && color <= 0.015
+        }
+    }
+    /// Body-only samples stay over 4.25pt inside the rail. Middle samples use a
+    /// two-point band immediately below the camera, so hidden camera pixels cannot
+    /// make an already-vanished visible black body pass. Endpoint samples inspect
+    /// the broad central interior, which must be exactly transparent at idle.
+    private func bodyCoverage(_ pixels: [Double], scale: Int, progress: Double, outsideCamera: Bool) -> BodyCoverage {
+        let area = canvas, contour = globalContour(progress: progress)
+        let width = Int(area.width * CGFloat(scale)), height = Int(area.height * CGFloat(scale))
+        var result = BodyCoverage()
+        guard pixels.count == width * height * 4 else { return result }
+        for y in 0..<height {
+            let gy = area.maxY - (CGFloat(y) + 0.5) / CGFloat(scale)
+            let depth = geometry.screen.maxY - gy
+            if outsideCamera {
+                guard gy < geometry.notch.minY - 0.25, gy >= geometry.notch.minY - 2.25,
+                      depth < contour.rect.maxY - 4.25 else { continue }
+            } else {
+                guard depth > contour.rect.minY + 4.25, depth < contour.rect.maxY - 4.25 else { continue }
+            }
+            for x in 0..<width {
+                let gx = area.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
+                if outsideCamera {
+                    guard abs(gx - geometry.notch.midX) <= min(32, geometry.notch.width / 4),
+                          !geometry.notch.contains(CGPoint(x: gx, y: gy)) else { continue }
+                } else {
+                    guard gx > contour.rect.minX + contour.shoulder + contour.corner + 4.25,
+                          gx < contour.rect.maxX - contour.shoulder - contour.corner - 4.25 else { continue }
+                }
+                let offset = (y * width + x) * 4, alpha = pixels[offset + 3]
+                result.count += 1; result.sum += alpha
+                result.minimum = min(result.minimum, alpha); result.maximum = max(result.maximum, alpha)
+                result.color = max(result.color, max(pixels[offset], max(pixels[offset + 1], pixels[offset + 2])))
+            }
+        }
+        return result
+    }
+    private func inspectBodyCoupling(scenes: [[Double]], scale: Int) {
+        for index in 2...4 {
+            let progress = progressPoints[index], residual = measuredContourResidual(progress: progress)
+            let expected = expectedBodyAlpha(residual: residual)
+            let current = bodyCoverage(scenes[index], scale: scale, progress: progress, outsideCamera: true)
+            guard let orientation = rowOrientation[scale],
+                  let reference = IslandPaintParity.captureReference(model: model, geometry: geometry, progress: progress,
+                    scale: scale, topRowFirst: orientation, legacySurface: true) else {
+                passed = false
+                SmokeDiagnostics.mark("collapse coupled-body theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) referenceCapture=false valid=false")
+                continue
+            }
+            captureCount += 1
+            let oldPixels = commonCanvas(reference, frame: geometry.frame(progress: progress))
+            let old = bodyCoverage(oldPixels, scale: scale, progress: progress, outsideCamera: true)
+            let oldT = min(1, progress * 3), oldExpected = oldT * oldT * (3 - 2 * oldT)
+            let legacyRendered = old.count == current.count && old.matches(oldExpected, scale: scale)
+            let legacyRejected = legacyRendered && !old.matches(expected, scale: scale) && expected - old.mean > 0.5
+            let residualAgrees = abs(residual - geometry.contourResidual(progress: progress)) < 0.0000001
+            let valid = residualAgrees && expected >= 0.95 && current.matches(expected, scale: scale) && legacyRejected
+            passed = valid && passed
+            SmokeDiagnostics.mark("collapse coupled-body theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) contourResidualPoints=\(residual) expectedAlpha=\(expected) samples=\(current.count) meanAlpha=\(current.mean) minAlpha=\(current.minimum) maxAlpha=\(current.maximum) oldRenderedAlpha=\(old.mean) legacyRendered=\(legacyRendered) legacyRejected=\(legacyRejected) valid=\(valid) outsideCamera=true offlineReplay=true scanout=false")
+        }
+    }
+    private func inspectBodyEndpoint(scenes: [[Double]], scale: Int) {
+        guard scenes.count == 3 else { passed = false; return }
+        for (index, progress) in [0.001, 0.0005, 0.0].enumerated() {
+            let residual = measuredContourResidual(progress: progress)
+            let expected = expectedBodyAlpha(residual: residual)
+            let body = bodyCoverage(scenes[index], scale: scale, progress: progress, outsideCamera: false)
+            let maximumAllowed = progress == 0 ? 0 : (progress == 0.001 ? 0.026 : 0.008)
+            let transparentIdle = progress != 0 || (body.minimum == 0 && body.maximum == 0 && body.mean == 0)
+            let valid = abs(residual - geometry.contourResidual(progress: progress)) < 0.0000001
+                && residual <= 0.3510001 && abs(body.mean - expected) <= 0.006
+                && body.matches(expected, scale: scale) && body.maximum <= maximumAllowed && transparentIdle
+            passed = valid && passed
+            SmokeDiagnostics.mark("collapse body-endpoint fixture=\(replayGeometryLabel) theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) contourResidualPoints=\(residual) expectedAlpha=\(expected) samples=\(body.count) meanAlpha=\(body.mean) maxAlpha=\(body.maximum) transparentIdle=\(transparentIdle) valid=\(valid) offlineReplay=true scanout=false")
+        }
+    }
+    private func inspectExtremeReplay() {
+        for scale in [1, 2] {
+            guard let scenes = replayPixels[scale], scenes.count == 3, let idle = scenes.last else { passed = false; continue }
+            inspectBodyEndpoint(scenes: scenes, scale: scale)
+            let visibleIdle = outsideHardware(idle, scale: scale)
+            let residuals = scenes.map { normalizedDifference(outsideHardware($0, scale: scale), visibleIdle, reference: visibleIdle) }
+            let idleBounds = paintedBounds(visibleIdle, scale: scale)
+            let terminalBounds = scenes.allSatisfy { pixels in
+                guard let first = paintedBounds(outsideHardware(pixels, scale: scale), scale: scale), let second = idleBounds else { return false }
+                return abs(first.minX - second.minX) <= 1 / CGFloat(scale)
+                    && abs(first.maxX - second.maxX) <= 1 / CGFloat(scale)
+                    && abs(first.minY - second.minY) <= 1 / CGFloat(scale)
+                    && abs(first.maxY - second.maxY) <= 1 / CGFloat(scale)
+            }
+            let terminalAxes = [geometry.notch.minX - 1, geometry.notch.maxX + 1].allSatisfy { axis in
+                guard let reference = sideAxis(idle, scale: scale, near: axis) else { return false }
+                return scenes.allSatisfy { pixels in
+                    guard let current = sideAxis(pixels, scale: scale, near: axis) else { return false }
+                    return abs(current - reference) <= 0.12 / Double(scale)
+                }
+            }
+            // Retain the default replay's existing terminal tolerances, including
+            // the same outside-camera exclusion and one-physical-pixel bound budget.
+            let valid = residuals[0] <= 0.12 && residuals[1] <= 0.08 && residuals[2] == 0
+                && residuals[1] <= residuals[0] + 0.015 && terminalBounds && terminalAxes
+            passed = valid && passed
+            SmokeDiagnostics.mark("collapse extreme-tail fixture=\(replayGeometryLabel) scale=\(scale) outsideExclusionDifferences=\(residuals) terminalBounds=\(terminalBounds) terminalAxes=\(terminalAxes) valid=\(valid) offlineReplay=true scanout=false")
+        }
+    }
     private func inspectReplay() {
         for scale in [1, 2] {
             guard let scenes = replayPixels[scale], scenes.count == progressPoints.count, let idle = scenes.last else { passed = false; continue }
+            inspectBodyCoupling(scenes: scenes, scale: scale)
+            inspectBodyEndpoint(scenes: Array(scenes.suffix(3)), scale: scale)
             let visibleIdle = outsideHardware(idle, scale: scale)
             var residuals: [Double] = []
             var visibleResiduals: [Double] = []
@@ -441,7 +605,7 @@ final class CollapseRenderHarness: NSObject {
     }
     private func finish(_ result: Bool) {
         stop()
-        print(result ? "COLLAPSE_OK: close-update drain, normal-run-loop bounds and separate common-canvas tail pixels passed; synthetic only" : "COLLAPSE_FAILED: close endpoint evidence failed")
+        print(result ? "COLLAPSE_OK: close-update drain, coupled body coverage, rendered old-fade rejection and common-canvas tail pixels passed; synthetic offline replay, not scanout" : "COLLAPSE_FAILED: close endpoint evidence failed")
         SmokeDiagnostics.mark("collapse own-view captures=\(captureCount) hardwareScanout=false physicalFeelUnverified=true")
         completion(result)
     }
