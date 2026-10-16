@@ -60,6 +60,7 @@ final class MusicRenderHarness: NSObject {
                 try await self.run()
                 self.finish(true)
             } catch {
+                self.dumpSyntheticFailureState()
                 if let failure = error as? Failure { SmokeDiagnostics.mark("music failed: \(failure.label)") }
                 else { SmokeDiagnostics.mark("music cancelled or fixture operation failed") }
                 self.finish(false)
@@ -68,6 +69,7 @@ final class MusicRenderHarness: NSObject {
     }
 
     private func run() async throws {
+        try verifyOCRMatchingControls()
         let primary = makeFixture()
         let model = MeterModel(demo: true, music: primary.controller)
         self.model = model
@@ -617,6 +619,7 @@ final class MusicRenderHarness: NSObject {
         panel.panel.appearance = NSAppearance(named: .darkAqua)
         try await dwell(0.15)
         let returnPixels = try await compactOCR(panel)
+        print("MUSIC_RETURN_OCR_DIAGNOSTIC: lyricVisible=\(contains(returnPixels, fixture.controller.line)) lineNonempty=\(!fixture.controller.line.isEmpty) quotaAbsent=\(!contains(returnPixels, "79%")) titleVisible=\(contains(returnPixels, "HARBOR A")) darkAppearance=\(panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)")
         try require(contains(returnPixels, fixture.controller.line) && !fixture.controller.line.isEmpty
             && !contains(returnPixels, "79%") && contains(returnPixels, "HARBOR A")
             && panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
@@ -663,6 +666,7 @@ final class MusicRenderHarness: NSObject {
         guard let pausedPixels = await MusicRasterOCR.recognize(hoverRaster.image) else {
             throw Failure(label: "bounded paused-details OCR failed")
         }
+        print("MUSIC_PAUSED_OCR_DIAGNOSTIC: observations=\(String(reflecting: pausedPixels)) lyricAbsent=\(!contains(pausedPixels, Self.firstLine)) titleAbsent=\(!contains(pausedPixels, "HARBOR A")) quotaVisible=\(contains(pausedPixels, "Codex")) layoutValid=\(panel.verifyExpandedLayout(includePixels: false))")
         passivePaintChecks += 1
         try verifyNoLegacyLabel(pausedPixels)
         try require(!contains(pausedPixels, Self.firstLine) && !contains(pausedPixels, "HARBOR A")
@@ -1133,8 +1137,44 @@ final class MusicRenderHarness: NSObject {
     }
     private func decimal(_ value: Double) -> String { String(format: "%.3f", value) }
     private func contains(_ observations: [String], _ expected: String) -> Bool {
-        func normalized(_ value: String) -> String { value.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
-        return normalized(observations.joined(separator: " ")).contains(normalized(expected))
+        // Vision can split or join glyph groups without changing their letters.
+        // Normalize only case and Unicode whitespace, never spelling/numbers.
+        func normalized(_ value: String) -> String { value.lowercased().filter { !$0.isWhitespace } }
+        let needle = normalized(expected)
+        return !needle.isEmpty && normalized(observations.joined(separator: " ")).contains(needle)
+    }
+    private func verifyOCRMatchingControls() throws {
+        let cases: [([String], String, Bool)] = [
+            (["「 HARBORA"], "HARBOR A", true),
+            (["HARBOR", "A"], "HARBOR A", true),
+            (["harbor\u{00A0}a"], "HARBOR A", true),
+            (["H A R B O R\tA"], "HARBOR A", true),
+            (["HARBOR B"], "HARBOR A", false),
+            (["HARBOR"], "HARBOR A", false),
+            ([], "HARBOR A", false),
+            (["HARBOR A"], "", false),
+            (["HARBOR A"], " \n\t", false),
+            (["Amber windows", "welcome the rain"], Self.localLine, true),
+            ([Self.firstLine], Self.localLine, false),
+            (["80 % + 79 %"], "79%", true),
+            (["80% + 78%"], "79%", false),
+            (["80% + 79"], "79%", false),
+        ]
+        for (index, value) in cases.enumerated() {
+            try require(contains(value.0, value.1) == value.2, "exact-character OCR normalization control \(index)")
+        }
+        print("MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true")
+    }
+    private func dumpSyntheticFailureState() {
+        // Only original in-memory fixtures enter this harness. These read-only
+        // operands make later failures diagnosable before orderly retirement.
+        for (index, value) in fixtures.enumerated() where value.controller.synthetic {
+            let controller = value.controller
+            print("MUSIC_FAILURE_SOURCE: fixture=\(index) enabled=\(controller.enabled) playing=\(controller.isPlayingForPresentation) title=\(String(reflecting: controller.trackTitle)) line=\(String(reflecting: controller.line)) status=\(String(reflecting: controller.statusText)) local=\(controller.hasLocalLyrics) readCursor=\(value.readCursor) importCursor=\(value.importCursor) snapshot=\(String(reflecting: controller.syntheticPlaybackSnapshot))")
+        }
+        for (index, panel) in passivePanels.enumerated() {
+            print("MUSIC_FAILURE_PANEL: panel=\(index) owner=\(String(reflecting: panel.smokeExpansionOwner)) progress=\(panel.smokeProgress) target=\(panel.smokeTargetProgress) motion=\(panel.smokeMotionRunning) interacting=\(panel.isInteracting) musicTarget=\(panel.smokeMusicTargetActive) musicVisible=\(panel.smokeMusicVisible) noticeTarget=\(panel.smokeNoticeTargetActive) noticeVisible=\(panel.smokeNoticeVisible) armed=\(String(reflecting: panel.smokeNoticeArmedAt)) probe=\(String(reflecting: panel.motionProbe))")
+        }
     }
     private func makeGeometry() -> IslandGeometry? {
         let frame = screen.frame, width: CGFloat = 220, inset: CGFloat = 32
