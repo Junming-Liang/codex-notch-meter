@@ -1,6 +1,14 @@
-# v1.0.0 Apple Music lyrics: optional integration and safety contract
+# v1.0.0-beta.1 Apple Music lyrics: setup and safety contract
 
-Status: local implementation draft, synthetic core/native fixtures and source review in progress. This is not part of the v0.1.9 quota-notification repair or its release. No Music access, Automation prompt, network lyric request, provider enrollment, or user-machine validation has been performed.
+Status: beta release candidate. The feature source passed [diagnostic Run #34](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38872606427), including 284 passing synthetic tests and 108 native Music-fixture checks. The beta metadata-only head still requires all release gates. A separate anonymous request for the provider’s documented public example succeeded after a transient HTTP 503 and a backed-off retry; only schema, metadata matching and lyric presence/counts were retained. It did not exercise the shipped Swift transport. Actual Music.app reads, Automation/TCC approval and macOS-version streaming compatibility remain unverified. v0.1.9 remains available independently.
+
+## Beta setup / 测试版使用
+
+1. 自行打开 Music 并播放歌曲。在本应用“设置 → Apple Music 歌词”中开启“在展开详情中显示 Apple Music 歌词”；阅读说明后按意愿批准自动化访问。若需要重试，使用“请求 Music 授权…”。
+2. 可为当前歌曲导入 UTF-8 LRC / 文本。也可单独开启 LRCLIB 在线匹配：它会接收歌名、歌手、专辑和时长，返回社区歌词。该选项默认关闭，社区歌词不是 Apple 官方歌词。
+3. 悬停刘海或打开菜单栏详情查看歌词；额度提示仍优先。没有歌词、权限拒绝或歌曲信息不可用会显示对应状态；请勿据此假定所有流媒体歌曲受支持。
+
+Open Music yourself and play a track. Enable the lyrics setting and choose whether to grant Automation. Import a local UTF-8 LRC/text file for that track, or separately consent to sending its title, artist, album and duration to LRCLIB. Hover the notch or open menu-bar details to view lyrics. Missing lyrics, unavailable metadata and denied permission remain explicit states. This beta is ad-hoc signed and unnotarized; actual authorization and streaming behavior need user testing.
 
 ## Product boundary
 
