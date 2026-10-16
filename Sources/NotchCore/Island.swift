@@ -3,6 +3,29 @@ import Foundation
 import CoreGraphics
 #endif
 
+/// One presentation owner resolves the existing island's target. Playback never
+/// owns a second window or animation clock, and cannot replace an active notice.
+public enum IslandExpansionOwner: Equatable, Sendable {
+    case idle, music, quotaNotice, details
+
+    public static func resolve(hoverExpanded: Bool, noticeActive: Bool,
+                               musicEligible: Bool, passiveMusicAllowed: Bool) -> Self {
+        if hoverExpanded { return .details }
+        if noticeActive { return .quotaNotice }
+        if musicEligible && passiveMusicAllowed { return .music }
+        return .idle
+    }
+
+    public func target(compactProgress: Double) -> Double {
+        switch self {
+        case .idle: return 0
+        case .details: return 1
+        case .music, .quotaNotice:
+            return compactProgress.isFinite ? min(1, max(0, compactProgress)) : 0
+        }
+    }
+}
+
 /// Pointer hysteresis is independent of animation, accounts, and the current display.
 public struct IslandHoverState: Equatable, Sendable {
     public private(set) var isExpanded = false
@@ -144,6 +167,33 @@ public struct IslandGeometry: Equatable, Sendable {
     public var updateProgress: Double {
         let updateHeight = min(expandedContourFrame.height - 20, notch.height + 78)
         return Double(max(0.15, min(0.8, (updateHeight - contourFrame.height) / (expandedContourFrame.height - contourFrame.height))))
+    }
+    /// Maximum side/bottom/turn displacement from idle in one global point space.
+    /// Native window pixel rounding is deliberately excluded from this paint input.
+    public func contourResidual(progress: Double) -> Double {
+        guard progress.isFinite else { return 0 }
+        func contour(_ p: Double) -> IslandContour {
+            let frame = drawingFrame(progress: p)
+            return IslandContour(rect: CGRect(x: frame.minX, y: 0, width: frame.width, height: frame.height),
+                progress: p, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height)
+        }
+        let current = contour(progress), idle = contour(0)
+        let distances = [
+            abs(current.rect.height - idle.rect.height),
+            abs(current.rect.minX + current.shoulder - idle.rect.minX - idle.shoulder),
+            abs(current.rect.maxX - current.shoulder - idle.rect.maxX + idle.shoulder),
+            abs(current.bounds.minX - idle.bounds.minX), abs(current.bounds.maxX - idle.bounds.maxX),
+            abs(current.corner - idle.corner), abs(current.upperCorner - idle.upperCorner)
+        ]
+        guard distances.allSatisfy({ $0.isFinite }) else { return 0 }
+        return Double(distances.max() ?? 0)
+    }
+    /// Keep the same shrinking body visible until its contour is within four points
+    /// of idle. The C1 fade is reversible and shares geometry, not another timer.
+    /// The unchanged <0.001 spring snap leaves <2.2% alpha at the tallest card.
+    public func surfaceOpacity(progress: Double) -> Double {
+        let t = min(1, max(0, contourResidual(progress: progress) / 4))
+        return t * t * (3 - 2 * t)
     }
     public func hasSameAnchor(as other: IslandGeometry) -> Bool {
         screen == other.screen && notch == other.notch && horizontalAdjustment == other.horizontalAdjustment
