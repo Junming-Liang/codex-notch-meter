@@ -364,13 +364,15 @@ final class CollapseRenderHarness: NSObject {
     }
     private func measuredContourResidual(progress: Double) -> Double {
         let current = globalContour(progress: progress), idle = globalContour(progress: 0)
-        return Double([
-            abs(current.rect.maxY - idle.rect.maxY),
-            abs(current.rect.minX + current.shoulder - idle.rect.minX - idle.shoulder),
-            abs(current.rect.maxX - current.shoulder - idle.rect.maxX + idle.shoulder),
-            abs(current.bounds.minX - idle.bounds.minX), abs(current.bounds.maxX - idle.bounds.maxX),
-            abs(current.corner - idle.corner), abs(current.upperCorner - idle.upperCorner)
-        ].max() ?? .infinity)
+        let bottom: CGFloat = abs(current.rect.maxY - idle.rect.maxY)
+        let leftSide: CGFloat = abs(current.rect.minX + current.shoulder - idle.rect.minX - idle.shoulder)
+        let rightSide: CGFloat = abs(current.rect.maxX - current.shoulder - idle.rect.maxX + idle.shoulder)
+        let leftBound: CGFloat = abs(current.bounds.minX - idle.bounds.minX)
+        let rightBound: CGFloat = abs(current.bounds.maxX - idle.bounds.maxX)
+        let lowerCorner: CGFloat = abs(current.corner - idle.corner)
+        let upperCorner: CGFloat = abs(current.upperCorner - idle.upperCorner)
+        let distances: [CGFloat] = [bottom, leftSide, rightSide, leftBound, rightBound, lowerCorner, upperCorner]
+        return Double(distances.max() ?? CGFloat.infinity)
     }
     private func expectedBodyAlpha(residual: Double) -> Double {
         let t = min(1, max(0, residual / 4))
