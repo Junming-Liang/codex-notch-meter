@@ -41,6 +41,7 @@ def receipts_valid(stdout: str) -> bool:
     states = re.findall(r'^MUSIC_STATE_OK: kind=(unknown|stopped) freshSample=true previousLine=true cleared=true$', stdout, re.MULTILINE)
     cleanup = one(r'^MUSIC_CLEANUP_OK: controllers=(\d+) pendingRequests=0 panelStopped=true$')
     fixed = (
+        'MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true',
         'MUSIC_STARTUP_OK: enabledBeforeStart=true readsBeforeStart=0 startupPrompt=false',
         'MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true',
         'MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject',
@@ -133,6 +134,7 @@ MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0
 MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true
 MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true
 MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true
+MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true
 MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true
 MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true
 MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true
