@@ -32,6 +32,10 @@ class DictionaryTests(unittest.TestCase):
         for tag, mapping in (('property', dictionary.PROPERTIES), ('enumerator', dictionary.STATES)):
             for name, code in mapping.items():
                 ET.SubElement(suite, tag, name=name, code=code)
+        track = ET.SubElement(suite, 'class', name='track', code='cTrk')
+        ET.SubElement(track, 'element', type='artwork')
+        artwork = ET.SubElement(suite, 'class', name='artwork', code='cArt')
+        ET.SubElement(artwork, 'property', name='raw data', code='pRaw')
         self.xml = ET.tostring(tree)
 
     def write_info(self):
@@ -164,13 +168,46 @@ class DictionaryTests(unittest.TestCase):
             dictionary.inspect_app(self.app)
 
     def test_missing_and_conflicting_public_codes_rejected(self):
-        for original in (b'pTrk', b'pPIS', b'kPSP', b'kPSS'):
+        for original in (b'pTrk', b'pPIS', b'kPSP', b'kPSS', b'cTrk', b'cArt', b'pRaw'):
             with self.subTest(original=original):
                 self.install().write_bytes(self.xml.replace(original, b'xxxx'))
                 with self.assertRaisesRegex(RuntimeError, 'unavailable or conflicting'):
                     dictionary.inspect_app(self.app)
         self.install().write_bytes(self.xml.replace(b'</suite>', b'<property name="current track" code="xxxx" /></suite>'))
         with self.assertRaisesRegex(RuntimeError, 'conflicting'):
+            dictionary.inspect_app(self.app)
+
+    def test_artwork_property_must_belong_to_artwork_class(self):
+        tree = ET.fromstring(self.xml)
+        suite = tree.find('suite')
+        artwork = next(node for node in suite.findall('class') if node.get('name') == 'artwork')
+        raw = artwork.find('property')
+        artwork.remove(raw)
+        suite.append(raw)
+        self.install().write_bytes(ET.tostring(tree))
+        with self.assertRaisesRegex(RuntimeError, 'artwork property'):
+            dictionary.inspect_app(self.app)
+
+    def test_conflicting_artwork_class_or_raw_code_rejected(self):
+        for extra in (b'<class name="artwork" code="xxxx" />',
+                      b'<class name="artwork" code="cArt"><property name="raw data" code="xxxx" /></class>'):
+            self.install().write_bytes(self.xml.replace(b'</suite>', extra + b'</suite>'))
+            with self.assertRaisesRegex(RuntimeError, 'conflicting'):
+                dictionary.inspect_app(self.app)
+
+    def test_artwork_element_must_belong_to_track_class(self):
+        for replacement in (b'', b'<element type="other" />'):
+            self.install().write_bytes(self.xml.replace(b'<element type="artwork" />', replacement))
+            with self.assertRaisesRegex(RuntimeError, 'track artwork element'):
+                dictionary.inspect_app(self.app)
+
+    def test_missing_track_class_is_rejected(self):
+        tree = ET.fromstring(self.xml)
+        suite = tree.find('suite')
+        track = next(node for node in suite.findall('class') if node.get('name') == 'track')
+        suite.remove(track)
+        self.install().write_bytes(ET.tostring(tree))
+        with self.assertRaisesRegex(RuntimeError, 'class code unavailable or conflicting: track'):
             dictionary.inspect_app(self.app)
 
     def test_malformed_xml_root_and_entity_rejected(self):

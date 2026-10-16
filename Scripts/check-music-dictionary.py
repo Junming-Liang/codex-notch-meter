@@ -23,6 +23,8 @@ PROPERTIES = {
     'duration': 'pDur', 'persistent ID': 'pPIS',
 }
 STATES = {'playing': 'kPSP', 'paused': 'kPSp', 'stopped': 'kPSS'}
+ARTWORK_CLASSES = {'track': 'cTrk', 'artwork': 'cArt'}
+ARTWORK_PROPERTIES = {'raw data': 'pRaw'}
 
 
 def checked_path(path: Path, root: Path, directory: bool = False) -> Path:
@@ -87,11 +89,22 @@ def verify_dictionary(data: bytes) -> None:
     tree = ET.fromstring(data)
     if tree.tag != 'dictionary':
         raise RuntimeError('Unexpected scripting dictionary root')
-    for element, expected_codes in (('property', PROPERTIES), ('enumerator', STATES)):
+    for element, expected_codes in (('property', PROPERTIES), ('enumerator', STATES),
+                                    ('class', ARTWORK_CLASSES)):
         for name, expected in expected_codes.items():
             found = {node.get('code') for node in tree.iter(element) if node.get('name') == name}
             if found != {expected}:
                 raise RuntimeError(f'Public Music {element} code unavailable or conflicting: {name}')
+    artworks = [node for node in tree.iter('class') if node.get('name') == 'artwork']
+    for name, expected in ARTWORK_PROPERTIES.items():
+        found = {node.get('code') for artwork in artworks for node in artwork.findall('property')
+                 if node.get('name') == name}
+        if found != {expected}:
+            raise RuntimeError(f'Public Music artwork property code unavailable or conflicting: {name}')
+    tracks = [node for node in tree.iter('class') if node.get('name') == 'track']
+    if not tracks or not all(any(element.get('type') == 'artwork' for element in track.findall('element'))
+                            for track in tracks):
+        raise RuntimeError('Public Music track artwork element unavailable')
 
 
 def inspect_app(app: Path) -> dict:
@@ -116,7 +129,7 @@ def main() -> int:
         print(f'Music dictionary inspection failed: {error}', file=sys.stderr)
         return 1
     print('MUSIC_DICTIONARY_RESOURCE: ' + json.dumps(receipt, sort_keys=True))
-    print('MUSIC_DICTIONARY_OK: public property/state codes verified; Music launched=false; Automation requested=false')
+    print('MUSIC_DICTIONARY_OK: public property/state/artwork codes verified; Music launched=false; Automation requested=false')
     return 0
 
 

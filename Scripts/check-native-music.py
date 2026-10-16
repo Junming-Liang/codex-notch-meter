@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 
-RUN_TIMEOUT_SECONDS = 110  # Native watchdog: 100 s; each own-view OCR has a 3 s cap.
+RUN_TIMEOUT_SECONDS = 160  # Native watchdog: 150 s; each own-view OCR has a 3 s cap.
 
 
 def receipts_valid(stdout: str) -> bool:
@@ -27,7 +27,10 @@ def receipts_valid(stdout: str) -> bool:
     stale_empty = one(r'^MUSIC_STALE_EMPTY_OK: age=' + number + r' document=unavailable titleEmpty=true lineEmpty=true$')
     paint = one(r'^MUSIC_PAINT_OK: view=CompactDetailView originalLine=true width=(\d+) height=(\d+) scale=' + number + r'$')
     aggregate = one(r'^MUSIC_OK: checks=(\d+) elapsed=' + number + r' synthetic=true localViewPixels=true scanout=false$')
-    auto_stale = one(r'^MUSIC_AUTO_STALE_OK: age=' + number + r' document=unavailable previouslyPainted=true owner=idle$')
+    auto_stale = one(r'^MUSIC_CLOSED_STALE_OK: age=' + number + r' document=unavailable lyricBodyPainted=false accessoryCleared=true owner=idle$')
+    preview_stale = one(r'^MUSIC_PREVIEW_STALE_OK: age=' + number + r' previouslyPainted=true currentEmpty=true nextEmpty=true owner=idle$')
+    preview_layout = one(r'^MUSIC_PREVIEW_LAYOUT_OK: pairHeight=' + number + r' singleHeight=' + number + r' longHeight=' + number + r' compactWidth=' + number + r' hoverWidth=' + number + r' safeDepth=' + number + r' missingNextShrinks=true$')
+    closed_notice = one(r'^MUSIC_GESTURE_CLOSED_NOTICE_OK: hold=' + number + r' expected=2 owner=idle selected=false fixedCorridor=true stationaryPointer=true noResizeGesture=true$')
     auto_priority = one(r'^MUSIC_AUTO_PRIORITY_OK: hold=' + number + r' expected=6 paintBeforeArm=true playingUpdates=(\d+) lyricUpdates=(\d+) dwellUnchanged=true motionUnchanged=true samePanel=true$')
     auto_paint = one(r'^MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=true lyricAfter=true appearances=aqua,darkAqua width=(\d+) height=(\d+) scale=' + number + r' localViewPixels=true scanout=false$')
     auto_pause = one(r'^MUSIC_AUTO_PAUSE_NOTICE_OK: hold=' + number + r' expected=4 dwellUnchanged=true lyricEmpty=true owner=idle$')
@@ -41,36 +44,48 @@ def receipts_valid(stdout: str) -> bool:
     states = re.findall(r'^MUSIC_STATE_OK: kind=(unknown|stopped) freshSample=true previousLine=true cleared=true$', stdout, re.MULTILINE)
     cleanup = one(r'^MUSIC_CLEANUP_OK: controllers=(\d+) pendingRequests=0 panelStopped=true$')
     fixed = (
-        'MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true',
-        'MUSIC_STARTUP_OK: enabledBeforeStart=true readsBeforeStart=0 startupPrompt=false',
-        'MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true',
-        'MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject',
         'MUSIC_SOURCE_OK: reason=timedOut lineEmpty=true titleEmpty=true',
         'MUSIC_DENIED_OK: explicitRetryPrompt=true followupPrompt=false idle=3.15 noAutomaticRetry=true',
+        'MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject',
+        'MUSIC_STARTUP_OK: enabledBeforeStart=true readsBeforeStart=0 startupPrompt=false',
+        'MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true',
+        'MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true',
+        'MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true',
+        'MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true appearances=aqua,darkAqua',
+        'MUSIC_MINIMUM_FOOTER_OK: contentHeight=132 quotaRows=1,8 appearances=aqua,darkAqua observations=4 longLyric=true quitContained=true clickRouting=true ownViewPixels=true',
         'MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0',
         'MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true',
         'MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true',
-        'MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true',
-        'MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true',
-        'MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true',
-        'MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true',
         'MUSIC_RESUME_OK: wakePrompt=false stopTerminal=true',
-        'MUSIC_AUTO_EMPTY_OK: noHover=true owner=music document=unavailable statusToken=LRC ownViewOCR=true passive=true',
-        'MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true',
-        'MUSIC_LABEL_OK: compactOCR=4 expandedOCR=2 legacyWordAbsent=true',
+        'MUSIC_PREVIEW_PAINT_OK: cases=6 appearances=aqua,darkAqua currentNext=true nextCleared=true longCurrentRows=2 exactText=true leftAligned=true typeHierarchy=true nextGray=true localViewPixels=true scanout=false',
+        'MUSIC_PREVIEW_TRANSITIONS_OK: boundary=true backwardSeek=true forwardSeek=true gap=true gapReturnSelected=true newTrackModeRetained=true beforeFirst=true loading=true instrumental=true plainUnsynchronized=true stale=true ownViewOCR=8',
+        'MUSIC_GESTURE_EMPTY_OK: fullCrossing=true noLyrics=true selected=false owner=idle statusAbsent=true ownViewOCR=true passive=true',
+        'MUSIC_GESTURE_MATCH_OK: requestReturned=true exactDocument=true defaultClosed=true hardwareDepth=true fullCrossing=true owner=music hoverSeparate=true',
+        'MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true',
         'MUSIC_AUTO_STEADY_OK: polls=2 lyricUpdates=2 motionUnchanged=true sameFrame=true',
+        'MUSIC_GESTURE_REVERSE_OK: fullCrossing=true selected=false ownViewLyricAbsent=true playbackPreserved=true reopened=true',
+        'MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true',
         'MUSIC_AUTO_SUPPRESS_OK: gates=settings,menu suppressed=idle reenabled=music playbackPreserved=true',
+        'MUSIC_LABEL_OK: nativeOCR=23 previewOCR=14 legacyWordAbsent=true',
         'MUSIC_AUTO_REVERSAL_OK: realPolling=true suppressionReversed=true pauseDuringMotion=true finite=true finalOwner=idle',
-        'MUSIC_AUTO_RECREATE_OK: inheritedPlaying=true oldPanelStopped=true noNewSample=true',
+        'MUSIC_GESTURE_RECREATE_OK: inheritedSelected=true oldPanelStopped=true noNewSample=true',
         'MUSIC_AUTO_RETIRE_OK: disable=idle sleep=idle permission=idle stoppedPlayback=idle controllerStop=idle wakePrompt=false',
-        'MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true',
+        'MUSIC_GESTURE_HOVER_OFF_OK: centerEntry=true selected=false owner=details quitVisible=true lyricAbsentOCR=true titleAbsentOCR=true quotaVisibleOCR=true returnedIdle=true naturalPaint=true sampledPointer=true',
+        'MUSIC_GESTURE_NEGATIVE_OK: center=true vertical=true jitter=true buttonDown=true trackReset=true pauseReset=true freshCrossingWorks=true realRecognizer=true sampledButtonState=true',
+        'MUSIC_ARTWORK_DECODER_OK: originalPNG=true originalJPEG=true exactRGBA=true rejects=6 noFiles=true noNetwork=true',
+        'MUSIC_CLOSED_ACCESSORIES_OK: originalRGBA=true decoder-to-display=true artworkPixels=true quadrants=4 playingGlyph=true hardwareDepth=true rawContourUnchanged=true',
+        'MUSIC_GESTURE_RAPID_OK: sequence=open-close-open inFlightReversal=true finite=true finalClose=true',
         'MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true',
+        'MUSIC_LOOKUP_IDLE_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch nativePanels=4 owner=idle motionFrames=0',
+        'MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true',
+        'MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true',
     )
     lines = stdout.splitlines()
     singleton_prefixes = {line.split(':', 1)[0] for line in fixed} | {
         'MUSIC_DISABLED_OK', 'MUSIC_CONSENT_OK', 'MUSIC_TIMELINE_OK', 'MUSIC_STALE_OK',
         'MUSIC_STALE_EMPTY_OK', 'MUSIC_PAINT_OK', 'MUSIC_OK', 'MUSIC_CLEANUP_OK',
-        'MUSIC_AUTO_STALE_OK', 'MUSIC_AUTO_PRIORITY_OK', 'MUSIC_AUTO_PAINT_OK',
+        'MUSIC_CLOSED_STALE_OK', 'MUSIC_PREVIEW_STALE_OK', 'MUSIC_PREVIEW_LAYOUT_OK',
+        'MUSIC_GESTURE_CLOSED_NOTICE_OK', 'MUSIC_AUTO_PRIORITY_OK', 'MUSIC_AUTO_PAINT_OK',
         'MUSIC_AUTO_PAUSE_NOTICE_OK', 'MUSIC_AUTO_REDUCED_OK', 'MUSIC_LOOKUP_COOLDOWN_OK', 'MUSIC_AUTO_CLOSE_PAINT_OK',
     }
     if any(sum(line.startswith(prefix + ':') for line in lines) != 1 for prefix in singleton_prefixes):
@@ -79,11 +94,11 @@ def receipts_valid(stdout: str) -> bool:
         return False
     if not all(lines.count(receipt) == 1 for receipt in fixed):
         return False
-    if len(states) != 2 or set(states) != {'unknown', 'stopped'} or cleanup is None or int(cleanup) < 18:
+    if len(states) != 2 or set(states) != {'unknown', 'stopped'} or cleanup is None or int(cleanup) < 20:
         return False
-    if not all((disabled, consent, timeline, stale, stale_empty, paint, aggregate, auto_stale, auto_priority, auto_paint, auto_pause, auto_reduced, cooldown, close_paint)):
+    if not all((disabled, consent, timeline, stale, stale_empty, paint, aggregate, auto_stale, auto_priority, auto_paint, auto_pause, auto_reduced, cooldown, close_paint, preview_stale, preview_layout, closed_notice)):
         return False
-    if not (3.10 <= float(disabled) <= 100 and 0.95 <= float(consent) <= 5
+    if not (3.10 <= float(disabled) <= 6 and 0.95 <= float(consent) <= 5
             and 0.30 <= float(timeline) <= 5 and 5 <= float(stale) <= 7
             and 5 <= float(stale_empty) <= 7):
         return False
@@ -92,17 +107,23 @@ def receipts_valid(stdout: str) -> bool:
     hold, playing_updates, lyric_updates = auto_priority
     if not (6 <= float(hold) <= 7.5 and int(playing_updates) >= 2 and int(lyric_updates) >= 2
             and 4 <= float(auto_pause) <= 5.5 and 2 <= float(auto_reduced) <= 3.5
-            and 5 <= float(auto_stale) <= 7 and 3 <= float(cooldown) < 60):
+            and 5 <= float(auto_stale) <= 7 and 5 <= float(preview_stale) <= 7
+            and 2 <= float(closed_notice) <= 3.5 and 3 <= float(cooldown) < 60):
+        return False
+    pair, single, long, compact, hover, depth = map(float, preview_layout)
+    if not (compact == 360 and hover == 400 and depth == 32
+            and 19 <= pair - single <= 21 and 21 <= long - single <= 23
+            and abs(single - (depth + 64)) <= 1 and abs(pair - (depth + 84)) <= 1):
         return False
     auto_width, auto_height, auto_scale = map(float, auto_paint)
-    if not (1 <= auto_scale <= 3 and 300 <= auto_width / auto_scale <= 500
+    if not (1 <= auto_scale <= 3 and 360 <= auto_width / auto_scale <= 362
             and 70 <= auto_height / auto_scale <= 180):
         return False
     width, height, scale = map(float, paint)
-    if not (width >= 300 and height >= 250 and 1 <= scale <= 3):
+    if not (1 <= scale <= 3 and 400 <= width / scale <= 402 and 250 <= height / scale <= 450):
         return False
     checks, elapsed = aggregate
-    if int(checks) < 100 or not 40 <= float(elapsed) <= 100:
+    if int(checks) < 100 or not 40 <= float(elapsed) <= 150:
         return False
     if len(retirements) != 3 or {kind for kind, _ in retirements} != {'disable', 'sleep', 'stop'}:
         return False
@@ -124,45 +145,59 @@ MUSIC_CONSENT_OK: enablePrompt=true ordinaryPrompt=false pollGap=1.020 preOptInL
 MUSIC_TIMELINE_OK: forwardSeek=true backwardSeek=true pausedCleared=0.360
 MUSIC_STALE_OK: age=5.040 freshness=5 lineEmpty=true titleEmpty=true
 MUSIC_STALE_EMPTY_OK: age=5.060 document=unavailable titleEmpty=true lineEmpty=true
-MUSIC_PAINT_OK: view=CompactDetailView originalLine=true width=700 height=640 scale=2.000
-MUSIC_STARTUP_OK: enabledBeforeStart=true readsBeforeStart=0 startupPrompt=false
-MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true
-MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject
-MUSIC_SOURCE_OK: reason=timedOut lineEmpty=true titleEmpty=true
-MUSIC_DENIED_OK: explicitRetryPrompt=true followupPrompt=false idle=3.15 noAutomaticRetry=true
-MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0
-MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true
-MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true
-MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true
-MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true
-MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true
-MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true
-MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true
-MUSIC_RESUME_OK: wakePrompt=false stopTerminal=true
+MUSIC_PAINT_OK: view=CompactDetailView originalLine=true width=800 height=600 scale=2.000
 MUSIC_RETIRE_OK: kind=disable readerCancelled=true lookupCancelled=true importCancelled=true visibleCleared=true lateRejected=true quiet=3.151
 MUSIC_RETIRE_OK: kind=sleep readerCancelled=true lookupCancelled=true importCancelled=true visibleCleared=true lateRejected=true quiet=3.152
 MUSIC_RETIRE_OK: kind=stop readerCancelled=true lookupCancelled=true importCancelled=true visibleCleared=true lateRejected=true quiet=3.153
 MUSIC_STATE_OK: kind=unknown freshSample=true previousLine=true cleared=true
 MUSIC_STATE_OK: kind=stopped freshSample=true previousLine=true cleared=true
-MUSIC_AUTO_EMPTY_OK: noHover=true owner=music document=unavailable statusToken=LRC ownViewOCR=true passive=true
-MUSIC_AUTO_STALE_OK: age=5.030 document=unavailable previouslyPainted=true owner=idle
+MUSIC_CLOSED_STALE_OK: age=5.030 document=unavailable lyricBodyPainted=false accessoryCleared=true owner=idle
 MUSIC_AUTO_PRIORITY_OK: hold=6.020 expected=6 paintBeforeArm=true playingUpdates=5 lyricUpdates=5 dwellUnchanged=true motionUnchanged=true samePanel=true
-MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=true lyricAfter=true appearances=aqua,darkAqua width=700 height=240 scale=2.000 localViewPixels=true scanout=false
+MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=true lyricAfter=true appearances=aqua,darkAqua width=722 height=192 scale=2.000 localViewPixels=true scanout=false
 MUSIC_AUTO_PAUSE_NOTICE_OK: hold=4.030 expected=4 dwellUnchanged=true lyricEmpty=true owner=idle
-MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true
-MUSIC_LABEL_OK: compactOCR=4 expandedOCR=2 legacyWordAbsent=true
 MUSIC_AUTO_CLOSE_PAINT_OK: intermediateFrames=8 opacityDecreased=true opaqueBefore4pt=true idleOpacity=0 naturalPaint=true
-MUSIC_AUTO_STEADY_OK: polls=2 lyricUpdates=2 motionUnchanged=true sameFrame=true
-MUSIC_AUTO_SUPPRESS_OK: gates=settings,menu suppressed=idle reenabled=music playbackPreserved=true
-MUSIC_AUTO_REVERSAL_OK: realPolling=true suppressionReversed=true pauseDuringMotion=true finite=true finalOwner=idle
-MUSIC_AUTO_RECREATE_OK: inheritedPlaying=true oldPanelStopped=true noNewSample=true
-MUSIC_AUTO_RETIRE_OK: disable=idle sleep=idle permission=idle stoppedPlayback=idle controllerStop=idle wakePrompt=false
 MUSIC_AUTO_REDUCED_OK: hold=2.010 expected=2 sequence=music-notice-music-idle motionFrames=0 passive=true
-MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true
-MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true
 MUSIC_LOOKUP_COOLDOWN_OK: observed=7.150 retryAfter=60 polls=3 lookupCalls=1 synthetic=true
-MUSIC_CLEANUP_OK: controllers=18 pendingRequests=0 panelStopped=true
-MUSIC_OK: checks=250 elapsed=78.000 synthetic=true localViewPixels=true scanout=false
+MUSIC_CLEANUP_OK: controllers=20 pendingRequests=0 panelStopped=true
+MUSIC_PREVIEW_LAYOUT_OK: pairHeight=116.000 singleHeight=96.000 longHeight=118.000 compactWidth=360.000 hoverWidth=400.000 safeDepth=32.000 missingNextShrinks=true
+MUSIC_PREVIEW_STALE_OK: age=5.510 previouslyPainted=true currentEmpty=true nextEmpty=true owner=idle
+MUSIC_GESTURE_CLOSED_NOTICE_OK: hold=2.020 expected=2 owner=idle selected=false fixedCorridor=true stationaryPointer=true noResizeGesture=true
+MUSIC_SOURCE_OK: reason=timedOut lineEmpty=true titleEmpty=true
+MUSIC_DENIED_OK: explicitRetryPrompt=true followupPrompt=false idle=3.15 noAutomaticRetry=true
+MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject
+MUSIC_STARTUP_OK: enabledBeforeStart=true readsBeforeStart=0 startupPrompt=false
+MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true
+MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true
+MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true
+MUSIC_LONG_LAYOUT_OK: view=DetailView quotaRows=8 longLyric=true footerUnchanged=true quitContained=true compactQuit=true appearances=aqua,darkAqua
+MUSIC_PICKER_OK: staleAtoB=blocked staleAtoBtoA=blocked importerCalls=0
+MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true
+MUSIC_IMPORT_OK: reversedImports=2 cancelledOld=true localWinsOverLateOnline=true
+MUSIC_RESUME_OK: wakePrompt=false stopTerminal=true
+MUSIC_PREVIEW_PAINT_OK: cases=6 appearances=aqua,darkAqua currentNext=true nextCleared=true longCurrentRows=2 exactText=true leftAligned=true typeHierarchy=true nextGray=true localViewPixels=true scanout=false
+MUSIC_PREVIEW_TRANSITIONS_OK: boundary=true backwardSeek=true forwardSeek=true gap=true gapReturnSelected=true newTrackModeRetained=true beforeFirst=true loading=true instrumental=true plainUnsynchronized=true stale=true ownViewOCR=8
+MUSIC_GESTURE_EMPTY_OK: fullCrossing=true noLyrics=true selected=false owner=idle statusAbsent=true ownViewOCR=true passive=true
+MUSIC_GESTURE_MATCH_OK: requestReturned=true exactDocument=true defaultClosed=true hardwareDepth=true fullCrossing=true owner=music hoverSeparate=true
+MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true
+MUSIC_AUTO_STEADY_OK: polls=2 lyricUpdates=2 motionUnchanged=true sameFrame=true
+MUSIC_GESTURE_REVERSE_OK: fullCrossing=true selected=false ownViewLyricAbsent=true playbackPreserved=true reopened=true
+MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true
+MUSIC_AUTO_SUPPRESS_OK: gates=settings,menu suppressed=idle reenabled=music playbackPreserved=true
+MUSIC_LABEL_OK: nativeOCR=23 previewOCR=14 legacyWordAbsent=true
+MUSIC_AUTO_REVERSAL_OK: realPolling=true suppressionReversed=true pauseDuringMotion=true finite=true finalOwner=idle
+MUSIC_GESTURE_RECREATE_OK: inheritedSelected=true oldPanelStopped=true noNewSample=true
+MUSIC_AUTO_RETIRE_OK: disable=idle sleep=idle permission=idle stoppedPlayback=idle controllerStop=idle wakePrompt=false
+MUSIC_ARTWORK_DECODER_OK: originalPNG=true originalJPEG=true exactRGBA=true rejects=6 noFiles=true noNetwork=true
+MUSIC_CLOSED_ACCESSORIES_OK: originalRGBA=true decoder-to-display=true artworkPixels=true quadrants=4 playingGlyph=true hardwareDepth=true rawContourUnchanged=true
+MUSIC_GESTURE_RAPID_OK: sequence=open-close-open inFlightReversal=true finite=true finalClose=true
+MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true
+MUSIC_LOOKUP_IDLE_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch nativePanels=4 owner=idle motionFrames=0
+MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true
+MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true
+MUSIC_MINIMUM_FOOTER_OK: contentHeight=132 quotaRows=1,8 appearances=aqua,darkAqua observations=4 longLyric=true quitContained=true clickRouting=true ownViewPixels=true
+MUSIC_GESTURE_NEGATIVE_OK: center=true vertical=true jitter=true buttonDown=true trackReset=true pauseReset=true freshCrossingWorks=true realRecognizer=true sampledButtonState=true
+MUSIC_GESTURE_HOVER_OFF_OK: centerEntry=true selected=false owner=details quitVisible=true lyricAbsentOCR=true titleAbsentOCR=true quotaVisibleOCR=true returnedIdle=true naturalPaint=true sampledPointer=true
+MUSIC_OK: checks=400 elapsed=115.000 synthetic=true localViewPixels=true scanout=false
 SMOKE_OK: synthetic orderly shutdown
 '''
     cases = 1
@@ -183,11 +218,31 @@ SMOKE_OK: synthetic orderly shutdown
         ('motionUnchanged=true', 'motionUnchanged=false'), ('samePanel=true', 'samePanel=false'),
         ('lyricAfter=true', 'lyricAfter=false'), ('quota80to79=true', 'quota80to79=false'),
         ('appearances=aqua,darkAqua', 'appearances=darkAqua'), ('pausedLyricAbsentOCR=true', 'pausedLyricAbsentOCR=false'),
-        ('width=700 height=240', 'width=10 height=240'), ('scale=2.000', 'scale=0'),
+        ('width=722 height=192', 'width=10 height=192'), ('scale=2.000', 'scale=0'),
         ('observed=7.150', 'observed=0.1'), ('observed=7.150', 'observed=60.1'),
         ('cooldownPreserved=true', 'cooldownPreserved=false'), ('lookupCalls=1', 'lookupCalls=2'),
-        ('controllers=18', 'controllers=12'), ('elapsed=78.000', 'elapsed=100.001'),
-        ('checks=250', 'checks=10'), ('scanout=false', 'scanout=true'),
+        ('controllers=20', 'controllers=19'), ('elapsed=115.000', 'elapsed=150.001'),
+        ('checks=400', 'checks=10'), ('scanout=false', 'scanout=true'),
+        ('age=5.510', 'age=4.999'), ('hold=2.020', 'hold=1.999'),
+        ('pairHeight=116.000', 'pairHeight=96.000'), ('singleHeight=96.000', 'singleHeight=116.000'),
+        ('longHeight=118.000', 'longHeight=96.000'), ('compactWidth=360.000', 'compactWidth=340.000'),
+        ('hoverWidth=400.000', 'hoverWidth=360.000'), ('safeDepth=32.000', 'safeDepth=0'),
+        ('longCurrentRows=2', 'longCurrentRows=1'), ('nextCleared=true', 'nextCleared=false'),
+        ('nextGray=true', 'nextGray=false'), ('leftAligned=true', 'leftAligned=false'),
+        ('nativeOCR=23', 'nativeOCR=20'), ('previewOCR=14', 'previewOCR=0'),
+        ('fullCrossing=true', 'fullCrossing=false'), ('defaultClosed=true', 'defaultClosed=false'),
+        ('hoverSeparate=true', 'hoverSeparate=false'), ('noResizeGesture=true', 'noResizeGesture=false'),
+        ('inheritedSelected=true', 'inheritedSelected=false'), ('inFlightReversal=true', 'inFlightReversal=false'),
+        ('artworkPixels=true', 'artworkPixels=false'), ('playingGlyph=true', 'playingGlyph=false'),
+        ('decoder-to-display=true', 'decoder-to-display=false'), ('quadrants=4', 'quadrants=2'),
+        ('originalJPEG=true', 'originalJPEG=false'), ('rejects=6', 'rejects=0'),
+        ('currentEmpty=true', 'currentEmpty=false'), ('nextEmpty=true', 'nextEmpty=false'),
+        ('contentHeight=132', 'contentHeight=260'), ('quotaRows=1,8', 'quotaRows=8'),
+        ('buttonDown=true', 'buttonDown=false'), ('trackReset=true', 'trackReset=false'),
+        ('pauseReset=true', 'pauseReset=false'), ('sampledButtonState=true', 'sampledButtonState=false'),
+        ('lyricAbsentOCR=true', 'lyricAbsentOCR=false'), ('titleAbsentOCR=true', 'titleAbsentOCR=false'),
+        ('quotaVisibleOCR=true', 'quotaVisibleOCR=false'), ('returnedIdle=true', 'returnedIdle=false'),
+        ('sampledPointer=true', 'sampledPointer=false'),
     )
     for before, after in changes:
         cases += 1
