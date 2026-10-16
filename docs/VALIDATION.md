@@ -2,6 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v1.0.0 optional lyrics candidate: native validation pending
+
+The current source adds default-off, read-only Music.app sampling, a separately consented LRCLIB lookup, bounded local LRC/text import and a lyric row inside the existing scrollable detail content. The quota protocol, refresh frequency, contour geometry/stroke and motion remain unchanged.
+
+Local source/syntax checks and installer safety simulations can be run without macOS. New pure fixtures cover original LRC text/timeline, metadata validation, bounded read/cancellation and provider policy. The new native fixture injects every IPC/network/file boundary, checks actual own-view lyric pixels, track/permission/stale lifecycle, picker revision, quota-notice priority and Quit layout. All retained native and package gates still apply. These Swift/native tests have not yet executed for this candidate; no pass is claimed here.
+
+A separate read-only CI step inspects Music's installed public scripting dictionary and property codes. It does not launch Music, request Automation, read a music library or contact a lyrics provider. Actual Music/TCC behavior, provider availability/content correctness, macOS-version streaming compatibility and physical appearance remain unverified. See [the integration and safety contract](MUSIC-LYRICS.md).
+
 ## v0.1.9 observed notification compatibility results
 
 [Diagnostic run #30](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38864370658) and [release run #31](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38865243130) passed on 2026-10-16. The immutable release tag points to [`4dbfe2e9faa8dfa5283869603326176f7e20cc77`](https://github.com/Junming-Liang/codex-notch-meter/commit/4dbfe2e9faa8dfa5283869603326176f7e20cc77), tree `8fe431a77cdaf3a43060a86513f75fccb8902ef5`.
