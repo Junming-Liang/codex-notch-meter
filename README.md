@@ -1,12 +1,12 @@
 <div align="center">
   <img src="docs/assets/icon.svg" width="88" height="88" alt="Codex Notch Meter 标志" />
   <h1>Codex Notch Meter</h1>
-  <p><strong>让 Codex 剩余额度，安静地待在 Mac 刘海边。</strong></p>
-  <p>原生 macOS 菜单栏工具 · 只读额度 · 不打断工作</p>
+  <p><strong>Codex 额度与 Apple Music 歌词，融入 Mac 顶边。</strong></p>
+  <p>原生 macOS 菜单栏工具 · 只读额度 · 可选歌词</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg">下载 Beta Universal DMG</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip">ZIP 备用下载</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg">下载 Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -24,17 +24,19 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v1.0.0-beta.1 已发布。** 新增默认关闭的 Apple Music 歌词测试功能，保留 v0.1.9 的额度提示修复。只需要额度功能时，也可继续下载 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
+> **v1.0.0 正式版。** 播放时自动展示紧凑歌词，暂停时收起；额度变化提示保持优先，结束后返回当前播放状态。保留 [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 与仅需额度功能时可用的 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
 
 显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
-## v1.0.0 源码候选
+## Apple Music 歌词
 
-正在验证播放自动展开、暂停隐藏、额度提示结束后返回歌词，以及黑色主体同步收缩。歌词匹配增加同一 LRCLIB 服务的保守候选查询，并区分临时服务错误和真正无匹配。当前下载仍为已发布 Beta；正式候选的原生结果尚待确认，详见[验证说明](docs/VALIDATION.md)。
+- 播放时自动展开紧凑歌词；暂停、停止或播放信息过期时隐藏音乐内容并收起
+- 额度变化提示临时优先，按所选 2 / 4 / 6 秒停留后返回仍在播放的歌词；悬停可保持普通额度详情
+- 支持本地 LRC / 文本，以及单独授权的 LRCLIB 社区歌词匹配；歌词功能与在线匹配默认关闭
+- 先精确匹配，再进行有界候选查询；规整已知影视出处等展示后缀，保留现场、混音、翻唱和语言版本区别
+- 临时网络错误与真正无匹配分别显示；歌词覆盖率和不同系统的流媒体兼容性仍有限
 
-## v1.0.0-beta.1 测试版
-
-可选 Apple Music 歌词默认关闭，启用后在原有展开详情中显示；支持本地 LRC，并可单独同意向 LRCLIB 发送歌曲信息进行社区歌词匹配。最终 Beta 源码已通过完整发布检查。请先自行打开 Music 并播放歌曲，再在设置中启用歌词。实际 Music 授权和流媒体读取尚未实机验证；完整试用步骤、社区歌词来源与限制见[集成说明](docs/MUSIC-LYRICS.md)。
+使用步骤见下方[启用歌词](#4-启用歌词可选)，接口、安全边界与验证情况见[歌词说明](docs/MUSIC-LYRICS.md)。
 
 ## 目录
 
@@ -50,17 +52,17 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v1.0.0-beta.1 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256)
+1. 下载 [v1.0.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg.sha256)
 2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
 3. 从“应用程序”打开已安装的副本，再推出 DMG
 
-也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
-Universal 产物包含 Apple Silicon 与 Intel 版本。功能源码在诊断运行中通过 284 项合成测试（另有 1 项按设计跳过）；最终 Beta 发布运行重复通过全部必需门槛，包括 108 项原生歌词合成检查、双架构打包、签名、原有额度/像素/动效检查、官方 helper 只读发现和 DMG 验证。DMG 与 ZIP 各提供独立 SHA-256 文件；精确源码与验证边界见[验证说明](docs/VALIDATION.md)。
+Universal 产物包含 Apple Silicon 与 Intel 版本。发布工作流要求合成测试、双架构打包、原有额度/像素/动效检查、歌词生命周期、官方 helper 只读发现和 DMG 验证全部通过。DMG 与 ZIP 各提供独立 SHA-256 文件；最终源码、实际结果与验证边界见[验证说明](docs/VALIDATION.md)。
 
-**签名说明：**预览版使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
+**签名说明：**发布产物使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。macOS 可能阻止下载产物启动，因此不能保证下载后在所有 Mac 上直接打开。项目不提供关闭 Gatekeeper 或绕过安全检查的命令；遇到拦截时可选择[从源码构建](#从源码构建)。不需要付费 Apple 开发者账户。
 
 ## 功能
 
@@ -108,7 +110,15 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。功能源码在诊断运
 
 如实物仍有轻微偏差，可使用同页的“水平微调”：减号向左、加号向右，每次 0.5 pt，默认 0，支持重置。设置仅在本机按内建屏幕保存；系统安全区并非实物边缘的精密测量。
 
-### 4. 保持轻量
+### 4. 启用歌词（可选）
+
+1. 自行打开 Music 并播放歌曲，在“设置 → Apple Music 歌词”开启“播放时自动展开 Apple Music 歌词”
+2. 阅读说明后自行选择是否允许 Music 自动化访问；应用只读取当前歌曲与播放位置，不控制播放
+3. 为当前歌曲导入本地 UTF-8 LRC / 文本，或单独开启“使用 LRCLIB 在线匹配歌词”
+
+在线匹配会向 `lrclib.net` 发送歌名、歌手、专辑和时长，不发送 Apple 账户、令牌或额度。本地导入不上传；社区歌词不是 Apple 官方歌词，没有时间戳的文本会标为未同步。若服务暂不可用，应用遵守退避并显示对应状态，不能保证每首歌都有匹配结果。
+
+### 5. 保持轻量
 
 展开岛和菜单栏详情底部均有明确的“退出”；右键菜单栏也可退出。设置获得焦点时支持 ⌘Q，不会截获其他应用的快捷键。设置中可以隐藏刘海进度线，保留菜单栏。正常退出会等待本应用启动的账户读取子进程完成清理。
 
@@ -126,7 +136,7 @@ Universal 产物包含 Apple Silicon 与 Intel 版本。功能源码在诊断运
 
 ## 隐私与连接方式
 
-生产代码仅使用以下账户接口，通过自身 `codex app-server` 子进程的标准输入输出通信：
+额度读取仅使用以下账户接口，通过自身 `codex app-server` 子进程的标准输入输出通信：
 
 ```text
 initialize → initialized
@@ -138,7 +148,8 @@ account/rateLimits/read
 - 不发送模型任务，不启动对话，不执行登录或退出
 - 不打开或解析凭据文件、访问令牌、聊天历史、会话记录或私有数据库
 - 不直接调用私有 HTTP API，不上传额度，不收集遥测
-- 不保存原始账户响应或额度历史；本地只保留显示/皮肤偏好、额度组及可选 CLI 路径
+- 不保存原始账户响应或额度历史；本地保留显示/皮肤、歌词开关、额度组及可选 CLI 路径等设置
+- 可选歌词通过公开 Apple Events 读取已运行的 Music；只有单独同意在线匹配后，才向 LRCLIB 发送上述歌曲字段。歌词与播放状态保存在内存，关闭功能或退出会清理
 
 Codex CLI 本身仍负责自己的认证、凭据刷新、日志、缓存及网络行为。“只读”描述的是本应用发出的请求，并不保证 Codex 子进程不会读写其自身文件。完整边界见[隐私说明](PRIVACY.md)。
 
@@ -187,8 +198,9 @@ swift test
 ## 已知限制
 
 - Codex 账户接口会演进；旧版本、未登录或不返回额度的账户会明确报错
-- 缺少 Apple Developer ID 签名与公证，预览产物不能承诺在所有 Mac 上无提示启动
+- 缺少 Apple Developer ID 签名与公证，发布产物不能承诺在所有 Mac 上无提示启动
 - 托管 macOS CI 可以验证构建与模拟测试，不能代替真实刘海、悬停、全屏、外接显示器和真实账户验证
+- 歌词来自本地文件或 LRCLIB 社区；不是 Apple 官方歌词，无法保证全部歌曲、Music 授权或流媒体组合。已有用户报告 Beta 歌词可用，不能替代跨设备验证
 - 当前界面以简体中文为主；英文说明见 [README.en.md](README.en.md)
 - 强制退出、进程崩溃或系统断电不属于正常退出清理保证
 

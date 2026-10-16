@@ -1,9 +1,9 @@
 <div align="center">
   <img src="docs/assets/icon.svg" width="88" height="88" alt="Codex Notch Meter logo" />
   <h1>Codex Notch Meter</h1>
-  <p><strong>Your remaining Codex allowance, quietly beside the MacBook notch.</strong></p>
-  <p>Native macOS · Read-only quotas · No interruption</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg">Download Beta Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><strong>Codex allowance and Apple Music lyrics, at the top of your Mac.</strong></p>
+  <p>Native macOS · Read-only quotas · Optional lyrics</p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg">Download Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,31 +12,33 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v1.0.0-beta.1 is available.** Adds default-off Apple Music lyrics for testing and retains the v0.1.9 quota-notification repair. The earlier quota-focused [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) remains available.
+**v1.0.0 formal release.** Playing opens compact lyrics; pausing closes them. Quota-change notices take temporary priority and then return to current playback. [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) and the quota-focused [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) remain available.
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
-## v1.0.0 source candidate
+## Apple Music lyrics
 
-Automatic compact lyrics, pause hiding, quota-notice return priority and coupled body closing are under native validation. Matching adds bounded same-provider LRCLIB search and persistent transient-error status. Download links still point to the released beta; see [validation status](docs/VALIDATION.md).
+- Fresh playback automatically opens compact lyrics; pause, stop or stale playback information hides music and closes its passive view
+- Quota-change notices take priority for the selected 2/4/6-second hold, then return to music if it is still playing; hover can retain ordinary quota details
+- Local LRC/text import and separately consented LRCLIB community matching; Music support and online matching both default off
+- Exact lookup followed by bounded candidate search; known film/TV attribution suffixes may normalize, while live/remix/cover/language recording distinctions remain
+- Temporary network failures and confirmed no-match results stay distinct; coverage and streaming compatibility remain limited
 
-## v1.0.0-beta.1 test release
-
-Optional Apple Music lyrics appear inside the existing expanded details. The feature is off by default, supports local LRC, and requires separate consent before sending track metadata to LRCLIB for community lyrics. The final beta source passed all required release gates. Open Music yourself, play a track, then enable lyrics in Settings. Actual Music authorization and streaming reads remain unverified; see the [setup, community-source details and limits](docs/MUSIC-LYRICS.md).
+See [Enable lyrics](#enable-lyrics-optional) below and the [lyrics integration contract](docs/MUSIC-LYRICS.md).
 
 ## Download
 
-1. Download the [v1.0.0-beta.1 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256)
+1. Download the [v1.0.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0/CodexNotchMeter-1.0.0-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 
-Universal packages contain Apple Silicon and Intel binaries. The feature diagnostic passed 284 synthetic tests with one intentional skip. The final beta release repeated all required gates, including 108 native synthetic lyrics checks, universal packaging/signatures, retained quota/pixel/motion checks, official-helper discovery and DMG inspection. Each archive has a separate SHA-256 checksum file. Exact source and evidence limits are recorded in [validation status](docs/VALIDATION.md).
+Universal packages contain Apple Silicon and Intel binaries. The release workflow requires synthetic tests, universal packaging, retained quota/pixel/motion checks, lyrics lifecycle checks, official-helper discovery and DMG inspection. Each archive has a separate SHA-256 checksum. Exact final source, observed results and evidence limits are recorded in [validation status](docs/VALIDATION.md).
 
-**Signing:** previews are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
+**Signing:** published builds are ad-hoc signed, without an Apple Developer ID or notarization. macOS may block downloaded builds, so launch on every Mac cannot be guaranteed. The project provides no Gatekeeper-disable or security-bypass commands. Building from source is an alternative. No paid Apple developer account is required.
 
 ## Features
 
@@ -66,6 +68,14 @@ The child inherits the runtime environment, including existing `CODEX_HOME`. The
 
 The current native interface is primarily Simplified Chinese. Right-click the menu-bar item for Refresh, Settings and Quit. Ordinary Quit waits for owned account-reading subprocesses to be cleaned up.
 
+## Enable lyrics (optional)
+
+1. Open Music yourself and play a track. Enable automatic Apple Music lyrics in Settings.
+2. Read the explanation and choose whether to grant Music Automation access. The app reads the current song and position; it does not control playback.
+3. Import a local UTF-8 LRC/text file for the current track, or separately enable LRCLIB online matching.
+
+Online matching sends title, artist, album and duration to `lrclib.net`, without Apple account data, tokens or quota values. Local imports are not uploaded. Community lyrics are not Apple's official lyrics; text without timestamps is labeled unsynced. Temporary failures follow backoff and retain their status. Not every song has a reliable match.
+
 ## Startup and appearance
 
 After copying the app into Applications, open Settings to request Launch at Login. macOS may require approval or reject the ad-hoc signature; actual login/reboot behavior remains unverified. No enrollment happens automatically.
@@ -88,9 +98,9 @@ Dates use the Mac's local time zone. Failed automatic checks back off to at most
 
 ## Privacy
 
-The only production protocol operations are `initialize`, `initialized`, `account/read` with `refreshToken: false`, and `account/rateLimits/read`. The app starts its own short-lived `codex app-server` subprocess, then closes and awaits it.
+The quota protocol operations are `initialize`, `initialized`, `account/read` with `refreshToken: false`, and `account/rateLimits/read`. The app starts its own short-lived `codex app-server` subprocess, then closes and awaits it.
 
-No model work, login/logout, credential-file parsing, conversation/session reads, private HTTP endpoints, telemetry, raw account logs, or persistent quota history. Only UI preferences, quota-group selection and an optional executable path are stored locally.
+No model work, login/logout, credential-file parsing, conversation/session reads, private HTTP endpoints, telemetry, raw account logs, or persistent quota history. UI/skin preferences, lyrics toggles, quota-group selection and an optional executable path are stored locally. Optional lyrics use public Apple Events to read the already-running Music app. Only separate online consent permits the listed song fields to reach LRCLIB. Lyrics and playback state stay in memory and are cleared when disabled or stopped.
 
 Codex itself owns its normal authentication, refresh, logging, caching and network behavior. The meter's read-only request policy is not a promise that the CLI never reads or writes its own files. Read [PRIVACY.md](PRIVACY.md).
 
@@ -132,6 +142,8 @@ Tests use synthetic data and local fake subprocesses; no account, credentials, C
 See [CONTRIBUTING.md](CONTRIBUTING.md). Never post credentials, raw account responses or private configuration in issues.
 
 ## Limitations
+
+Lyrics come from local files or the LRCLIB community, not Apple’s official lyrics. Coverage, Music Automation and streaming combinations cannot be guaranteed; a user’s successful beta report does not establish cross-device compatibility.
 
 The Codex account interface evolves. Native CI cannot validate a physical notch, real hover/focus behavior, external displays or a live account. Ad-hoc builds are not notarized. Force quit, crashes and power loss are outside orderly-shutdown cleanup guarantees. See the [acceptance checklist](docs/VALIDATION.md).
 
