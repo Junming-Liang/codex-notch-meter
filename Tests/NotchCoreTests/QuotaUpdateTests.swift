@@ -684,7 +684,10 @@ final class QuotaUpdateTests: XCTestCase {
         var diagnostic = ""
         dump(next, to: &diagnostic)
         XCTAssertFalse(diagnostic.contains(privateValue))
-        XCTAssertEqual(Set(Mirror(reflecting: event).children.compactMap(\.label)), Set(["kind", "windows", "observedAt", "fetchedAt", "previousFetchedAt"]))
+        let fields = Mirror(reflecting: event).children
+        XCTAssertEqual(Set(fields.compactMap(\.label)),
+                       Set(["kind", "windows", "observedAt", "fetchedAt", "previousFetchedAt", "invalidatesPreviousNotices"]))
+        XCTAssertEqual(fields.first { $0.label == "invalidatesPreviousNotices" }?.value as? Bool, false)
         XCTAssertEqual(event.windows.first?.hasNumericChange, true)
         XCTAssertFalse(String(reflecting: event.changedWindow()).contains(privateValue))
         XCTAssertEqual(Set(Mirror(reflecting: try XCTUnwrap(event.changedWindow())).children.compactMap(\.label)),
