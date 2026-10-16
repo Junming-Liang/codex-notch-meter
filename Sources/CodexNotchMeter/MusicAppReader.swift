@@ -155,10 +155,10 @@ private enum MusicAppleEvents {
     private static func property(_ propertyCode: OSType,
                                  container: NSAppleEventDescriptor = .null()) throws -> NSAppleEventDescriptor {
         let record = NSAppleEventDescriptor.record()
-        record.setDescriptor(NSAppleEventDescriptor(typeCode: cProperty), forKeyword: keyAEDesiredClass)
-        record.setDescriptor(NSAppleEventDescriptor(enumCode: formPropertyID), forKeyword: keyAEKeyForm)
-        record.setDescriptor(NSAppleEventDescriptor(typeCode: propertyCode), forKeyword: keyAEKeyData)
-        record.setDescriptor(container, forKeyword: keyAEContainer)
+        record.setDescriptor(NSAppleEventDescriptor(typeCode: OSType(cProperty)), forKeyword: AEKeyword(keyAEDesiredClass))
+        record.setDescriptor(NSAppleEventDescriptor(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
+        record.setDescriptor(NSAppleEventDescriptor(typeCode: propertyCode), forKeyword: AEKeyword(keyAEKeyData))
+        record.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
         guard let specifier = record.coerce(toDescriptorType: typeObjectSpecifier) else {
             throw MusicReadFailure.invalidResponse
         }
@@ -209,7 +209,7 @@ private enum MusicAppleEvents {
         // Check the error number, never the potentially private error message.
         var errorNumber: Int32 = 0
         var actualType: DescType = 0
-        var actualSize: Size = 0
+        var actualSize: Int = 0 // The SDK imports the legacy C Size parameter as Int.
         let errorStatus = AEGetParamPtr(&reply, keyErrorNumber, typeSInt32, &actualType,
                                         &errorNumber, MemoryLayout<Int32>.size, &actualSize)
         if errorStatus == noErr {
