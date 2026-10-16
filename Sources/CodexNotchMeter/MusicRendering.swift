@@ -521,8 +521,12 @@ final class MusicRenderHarness: NSObject {
             && !fixture.controller.hasLocalLyrics && fixture.controller.statusText.contains("LRC"),
             "fresh playing source opens the compact body even without a lyric document")
         let statusPixels = try await compactOCR(panel, languages: ["zh-Hans", "en-US"])
-        try require(contains(statusPixels, "Synthetic A") && contains(statusPixels, "LRC")
-            && !contains(statusPixels, Self.firstLine), "no-document compact pixels show the song and honest import status")
+        let titleVisible = contains(statusPixels, "Synthetic A")
+        let importStatusVisible = contains(statusPixels, "LRC")
+        let obsoleteLyricVisible = contains(statusPixels, Self.firstLine)
+        print("MUSIC_AUTO_EMPTY_DIAGNOSTIC: titleVisible=\(titleVisible) importStatusVisible=\(importStatusVisible) obsoleteLyricVisible=\(obsoleteLyricVisible)")
+        try require(titleVisible && importStatusVisible && !obsoleteLyricVisible,
+                    "no-document compact pixels show the song and honest import status")
         print("MUSIC_AUTO_EMPTY_OK: noHover=true owner=music document=unavailable statusToken=LRC ownViewOCR=true passive=true")
 
         // Hold the next ordinary read. The real five-second source timer must
@@ -851,9 +855,25 @@ final class MusicRenderHarness: NSObject {
             && naturalPaintMatches(panel, progress: panel.geometry.updateProgress, after: 0),
             "compact own-view capture follows independently observed native readiness")
         let raster = try ownViewImage(panel, progress: panel.geometry.updateProgress)
+        // This harness owns only original synthetic song/text fixtures. Keep the
+        // unchanged native-size capture available when OCR fails, without ever
+        // capturing the screen, Music.app or a live user's metadata.
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = String(format: "compact-%02d.png", passivePaintChecks + 1)
+        guard let png = NSBitmapImageRep(cgImage: raster.image).representation(using: .png, properties: [:]) else {
+            throw Failure(label: "cannot encode synthetic compact own-view evidence")
+        }
+        try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
         guard let observations = await MusicRasterOCR.recognize(raster.image, languages: languages) else {
             throw Failure(label: "bounded compact Music OCR failed")
         }
+        let diagnostic: [String: Any] = ["fixture": "original-synthetic-only", "image": filename,
+            "width": raster.width, "height": raster.height, "progress": panel.smokeProgress,
+            "scale": screen.backingScaleFactor, "observations": observations,
+            "appearance": panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "unknown"]
+        let diagnosticJSON = try JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys])
+        print("MUSIC_COMPACT_OCR_DIAGNOSTIC: \(String(decoding: diagnosticJSON, as: UTF8.self))")
         passivePaintChecks += 1
         try verifyNoLegacyLabel(observations)
         return observations

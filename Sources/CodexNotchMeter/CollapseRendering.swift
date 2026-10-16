@@ -247,9 +247,27 @@ final class CollapseRenderHarness: NSObject {
             let expectedHeight = Int(ceil(view.bounds.height * CGFloat(scale)))
             guard bitmap.representation.pixelsWide == expectedWidth, bitmap.representation.pixelsHigh == expectedHeight else { continue }
             captureCount += 1
+            if phase == 20, replayVariant == 0, [0.3, 0.02].contains(replayPoints[replayIndex]) {
+                saveDiagnosticBitmap(bitmap, name: "current-\(themes[replayTheme].rawValue)-p\(replayPoints[replayIndex])-\(scale)x")
+            }
             result[scale] = commonCanvas(bitmap, frame: island.panel.frame)
         }
         return result
+    }
+    /// Optional, bounded artifacts contain only this synthetic own-view replay.
+    private func saveDiagnosticBitmap(_ bitmap: NativeContourBitmap, name: String) {
+        guard let directory = ProcessInfo.processInfo.environment["CODEX_COLLAPSE_ARTIFACT_DIR"] else { return }
+        do {
+            let folder = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard let png = bitmap.representation.representation(using: .png, properties: [:]) else {
+                SmokeDiagnostics.mark("collapse diagnostic PNG name=\(name) encoded=false"); return
+            }
+            try png.write(to: folder.appendingPathComponent(name + ".png"))
+            SmokeDiagnostics.mark("collapse diagnostic PNG name=\(name) saved=true ownViewOnly=true scanout=false")
+        } catch {
+            SmokeDiagnostics.mark("collapse diagnostic PNG name=\(name) saved=false error=\(error)")
+        }
     }
     /// Both production and rendered negative controls use this exact global canvas.
     private func commonCanvas(_ bitmap: NativeContourBitmap, frame: CGRect) -> [Double] {
@@ -349,6 +367,29 @@ final class CollapseRenderHarness: NSObject {
         return (bodyEdges.reduce(0, +) / Double(bodyEdges.count) - Double(side),
             colorX / colorWeight - Double(side + 2))
     }
+    /// Diagnostic only: retain the original detector, including its center-based
+    /// first-alpha threshold, while exposing every sample in each failing side row.
+    private func logPairedSideRows(_ pixels: [Double], scale: Int, progress: Double) {
+        let native = geometry.frame(progress: progress), rect = geometry.contourRect(progress: progress)
+        let side = native.minX + rect.minX + CGFloat(12 * progress), depth = rect.height / 2
+        let width = Int(canvas.width * CGFloat(scale)), height = Int(canvas.height * CGFloat(scale))
+        let halfPixel = 0.5 / CGFloat(scale), threshold = geometry.surfaceOpacity(progress: progress) * 0.5
+        guard pixels.count == width * height * 4 else { return }
+        for y in 0..<height {
+            let gy = canvas.maxY - (CGFloat(y) + 0.5) / CGFloat(scale)
+            guard abs(native.maxY - gy - depth) <= 3 else { continue }
+            var samples: [String] = []
+            for x in 0..<width {
+                let gx = canvas.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
+                guard gx >= side - 3, gx <= side + 6 else { continue }
+                let i = (y * width + x) * 4
+                let chroma = max(pixels[i], max(pixels[i + 1], pixels[i + 2]))
+                    - min(pixels[i], min(pixels[i + 1], pixels[i + 2]))
+                samples.append("x:\(gx),footprint:[\(gx - halfPixel),\(gx + halfPixel)],alpha:\(pixels[i + 3]),chroma:\(chroma)")
+            }
+            SmokeDiagnostics.mark("collapse paired-alpha-row theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) expectedSide=\(side) threshold=\(threshold) globalY=\(gy) yFootprint=[\(gy - halfPixel),\(gy + halfPixel)] samples=\(samples) diagnosticOnly=true scanout=false")
+        }
+    }
     private func coherentSide(_ measurement: (body: Double, rail: Double)?, scale: Int) -> Bool {
         guard let measurement else { return false }
         return abs(measurement.body) <= 1 / Double(scale)
@@ -384,6 +425,9 @@ final class CollapseRenderHarness: NSObject {
         var minimum = 1.0
         var maximum = 0.0
         var color = 0.0
+        var chroma = 0.0
+        var sampleBounds = CGRect.null
+        var rows: [String] = []
         var mean: Double { count > 0 ? sum / Double(count) : .infinity }
         func matches(_ expected: Double, scale: Int) -> Bool {
             count >= 32 * scale && abs(mean - expected) <= 0.012
@@ -408,6 +452,7 @@ final class CollapseRenderHarness: NSObject {
             } else {
                 guard depth > contour.rect.minY + 4.25, depth < contour.rect.maxY - 4.25 else { continue }
             }
+            var rowCount = 0, rowSum = 0.0, rowMinimum = 1.0, rowMaximum = 0.0, rowColor = 0.0, rowChroma = 0.0
             for x in 0..<width {
                 let gx = area.minX + (CGFloat(x) + 0.5) / CGFloat(scale)
                 if outsideCamera {
@@ -420,7 +465,20 @@ final class CollapseRenderHarness: NSObject {
                 let offset = (y * width + x) * 4, alpha = pixels[offset + 3]
                 result.count += 1; result.sum += alpha
                 result.minimum = min(result.minimum, alpha); result.maximum = max(result.maximum, alpha)
-                result.color = max(result.color, max(pixels[offset], max(pixels[offset + 1], pixels[offset + 2])))
+                let color = max(pixels[offset], max(pixels[offset + 1], pixels[offset + 2]))
+                let chroma = color - min(pixels[offset], min(pixels[offset + 1], pixels[offset + 2]))
+                result.color = max(result.color, color); result.chroma = max(result.chroma, chroma)
+                if outsideCamera {
+                    let pixelSize = 1 / CGFloat(scale), halfPixel = pixelSize / 2
+                    result.sampleBounds = result.sampleBounds.union(CGRect(x: gx - halfPixel, y: gy - halfPixel,
+                        width: pixelSize, height: pixelSize))
+                    rowCount += 1; rowSum += alpha; rowMinimum = min(rowMinimum, alpha); rowMaximum = max(rowMaximum, alpha)
+                    rowColor = max(rowColor, color); rowChroma = max(rowChroma, chroma)
+                }
+            }
+            if outsideCamera, rowCount > 0 {
+                let halfPixel = 0.5 / CGFloat(scale), railInnerDepth = contour.rect.maxY - 4
+                result.rows.append("depth:\(depth),globalY:\(gy),depthFootprint:[\(depth - halfPixel),\(depth + halfPixel)],railFootprintGap:\(railInnerDepth - depth - halfPixel),count:\(rowCount),mean:\(rowSum / Double(rowCount)),min:\(rowMinimum),max:\(rowMaximum),color:\(rowColor),chroma:\(rowChroma)")
             }
         }
         return result
@@ -438,6 +496,9 @@ final class CollapseRenderHarness: NSObject {
                 continue
             }
             captureCount += 1
+            if progress == 0.02 {
+                saveDiagnosticBitmap(reference, name: "legacy-\(themes[replayTheme].rawValue)-p\(progress)-\(scale)x")
+            }
             let oldPixels = commonCanvas(reference, frame: geometry.frame(progress: progress))
             let old = bodyCoverage(oldPixels, scale: scale, progress: progress, outsideCamera: true)
             let oldT = min(1, progress * 3), oldExpected = oldT * oldT * (3 - 2 * oldT)
@@ -446,6 +507,9 @@ final class CollapseRenderHarness: NSObject {
             let residualAgrees = abs(residual - geometry.contourResidual(progress: progress)) < 0.0000001
             let valid = residualAgrees && expected >= 0.95 && current.matches(expected, scale: scale) && legacyRejected
             passed = valid && passed
+            if progress == 0.02 {
+                SmokeDiagnostics.mark("collapse body-band-samples theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) globalFootprintBounds=\(current.sampleBounds) oldGlobalFootprintBounds=\(old.sampleBounds) oldMinimum=\(old.minimum) oldMaximum=\(old.maximum) oldMaxColor=\(old.color) oldMaxChroma=\(old.chroma) currentRows=\(current.rows) oldRows=\(old.rows) diagnosticOnly=true scanout=false")
+            }
             SmokeDiagnostics.mark("collapse coupled-body theme=\(themes[replayTheme].rawValue) scale=\(scale) progress=\(progress) contourResidualPoints=\(residual) expectedAlpha=\(expected) samples=\(current.count) meanAlpha=\(current.mean) minAlpha=\(current.minimum) maxAlpha=\(current.maximum) oldRenderedAlpha=\(old.mean) legacyRendered=\(legacyRendered) legacyRejected=\(legacyRejected) valid=\(valid) outsideCamera=true offlineReplay=true scanout=false")
         }
     }
@@ -550,6 +614,9 @@ final class CollapseRenderHarness: NSObject {
             var paired = true
             for index in 0...1 {
                 let measurement = pairedSide(scenes[index], scale: scale, progress: progressPoints[index])
+                if !coherentSide(measurement, scale: scale) {
+                    logPairedSideRows(scenes[index], scale: scale, progress: progressPoints[index])
+                }
                 // Shift RGB by three points while leaving the body's alpha unchanged:
                 // this recreates a rail/body phase disagreement in the same detector.
                 var fault = scenes[index]
