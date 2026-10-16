@@ -92,7 +92,7 @@ public enum LRCLIBLookup {
     public static let requestTimeout: TimeInterval = 10
     public static let minimumRequestGap: TimeInterval = 0.3
     public static let durationTolerance: TimeInterval = 2
-    public static let userAgent = "CodexNotchMeter/1.0.0 (https://github.com/Junming-Liang/codex-notch-meter)"
+    public static let userAgent = "CodexNotchMeter/1.0.0-beta.1 (https://github.com/Junming-Liang/codex-notch-meter)"
 
     public static func request(track: LyricsLookupTrack, consent: Bool) throws -> LyricsLookupRequest {
         guard consent else { throw LyricsLookupError.consentRequired }
