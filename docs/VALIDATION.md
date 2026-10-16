@@ -1,3 +1,9 @@
+# v0.1.8 candidate: verification pending
+
+This source follows the released v0.1.7 baseline. It gates notices on verified numeric changes, adds persisted 2/4/6-second dwell (standard 4), and paints body/rail synchronously from one frame with reference-informed motion pacing. New native checks require exact paint revision/readiness, real selected dwell durations, silent unchanged/initial/failure cases, secondary-only changes, replacement/hover/Reduce Motion cleanup, actual opening/closing paint callbacks, and paired body/rail 1x/2x pixels that reject a displaced rail. All previous geometry, stroke, skin, display, close, login-safety, discovery and installer gates remain required.
+
+No v0.1.8 native compilation, test success, release or physical-feel result is claimed here. The historical results below apply to their named versions.
+
 # Validation status
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
