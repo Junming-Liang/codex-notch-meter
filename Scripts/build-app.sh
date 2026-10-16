@@ -5,7 +5,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "App packaging requires macOS and Xcode Command Line Tools." >&2
   exit 1
 fi
-version="0.1.9"
+version="1.0.0"
+release_version="1.0.0-beta.1"
 args=(-c release --product CodexNotchMeter)
 path_args=(-c release --show-bin-path)
 if [[ "${1:-}" == "--universal" ]]; then
@@ -29,12 +30,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleExecutable</key><string>CodexNotchMeter</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleVersion</key><string>12</string>
+<key>CodexNotchMeterReleaseVersion</key><string>$release_version</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSPrefersDisplaySafeAreaCompatibilityMode</key><false/>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>启用 Apple Music 歌词后，读取 Music 当前歌曲与播放位置以显示歌词；不会控制播放或修改音乐资料库。</string>
 <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Codex Notch Meter contributors. MIT License.</string>
 </dict></plist>
 PLIST
@@ -57,7 +60,7 @@ if [[ "${1:-}" == "--universal" ]]; then
   lipo "$app/Contents/MacOS/CodexNotchMeter" -verify_arch arm64 x86_64
   archs="universal"
 fi
-archive="dist/CodexNotchMeter-${version}-${archs}.zip"
+archive="dist/CodexNotchMeter-${release_version}-${archs}.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
 echo "Built $archive (ad-hoc signed; not Developer ID signed or notarized)."

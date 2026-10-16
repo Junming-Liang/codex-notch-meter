@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v0.1.9 developer-preview DMG and ZIP after all checks pass
+        description: Publish v1.0.0-beta.1 beta-preview DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -24,6 +24,10 @@ jobs:
         run: swift --version
       - name: Public source checks
         run: python3 Scripts/check-source.py
+      - name: Synthetic Music dictionary discovery safety tests
+        run: python3 Scripts/test-music-dictionary.py
+      - name: Inspect public Music scripting dictionary without launch
+        run: python3 Scripts/check-music-dictionary.py
       - name: Synthetic unit and subprocess tests
         run: swift test
       - name: Installer safety simulations
@@ -82,6 +86,9 @@ jobs:
       - name: Native compact refresh and promotion gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-updates.py
+      - name: Native optional Music lyrics safety and priority gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: python3 Scripts/check-native-music.py
       - name: Native display compatibility and lifecycle gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-displays.py
@@ -101,10 +108,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-0.1.9-universal.zip
-            dist/CodexNotchMeter-0.1.9-universal.zip.sha256
-            dist/CodexNotchMeter-0.1.9-universal.dmg
-            dist/CodexNotchMeter-0.1.9-universal.dmg.sha256
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.zip
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.dmg
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -131,21 +138,28 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-0.1.9-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-0.1.9-universal.dmg.sha256
+          sha256sum --check CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256
       - name: Publish developer preview
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v0.1.9" --jq '.[] | select(.ref == "refs/tags/v0.1.9") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v0.1.9") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.0.0-beta.1" --jq '.[] | select(.ref == "refs/tags/v1.0.0-beta.1") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.0.0-beta.1") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v0.1.9 tag or release." >&2
+            echo "Refusing to replace an existing v1.0.0-beta.1 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v0.1.9
+          ## Codex Notch Meter v1.0.0-beta.1
+          **Beta 测试版：实际 Music.app 自动化授权与流媒体读取仍待用户自选验证。v0.1.9 保留可下载。**
+          使用：先自行打开 Music 并播放歌曲，在“设置 → Apple Music 歌词”开启“在展开详情中显示 Apple Music 歌词”，按意愿批准自动化请求。可导入当前歌曲的本地 UTF-8 LRC，或单独同意 LRCLIB 在线匹配及歌曲信息传输；悬停刘海或打开菜单栏详情查看歌词。若提示需要权限，可点“请求 Music 授权…”。
+          Setup: open Music yourself and play a song, then enable Apple Music lyrics in Settings and choose whether to grant Automation. Import a local UTF-8 LRC or separately opt into LRCLIB metadata sharing. Lyrics appear inside expanded details; quota notices retain priority.
+          A separate anonymous check of LRCLIB's documented public example succeeded after a temporary HTTP 503 response and one backed-off retry. It verified response schema/metadata and synchronized-lyrics presence without retaining lyric text; it did not exercise this app's Swift transport or real Music/TCC.
+          新增可选 Apple Music 歌词：默认关闭，在设置中启用后读取已运行的 Music 当前歌曲和播放位置，在原有展开详情中显示当前歌词。需要 macOS 自动化授权；不会自动打开 Music 或控制播放。
+          可为当前歌曲导入本地 UTF-8 LRC / 文本；也可单独同意使用 LRCLIB，将歌名、歌手、专辑和时长发送给该服务以匹配社区歌词。在线匹配默认关闭，可随时关闭。没有时间戳的文本明确标为未同步，社区歌词不等于 Apple 官方歌词。
+          歌曲切换、信息过期、权限拒绝或读取失败时清除旧歌词；额度提示始终优先。保留现有外形、位置、描边和动效。Music/TCC 实机授权、应用内真实网络匹配和各系统版本流媒体兼容性尚未验证；部分 macOS 版本可能返回不可用的当前歌曲信息。
           修复可选账号标识或窗口元数据缺失时，额度数字正常更新却没有提示的问题。新鲜、匹配窗口的数值变化仍可显示“额度已更新”和当前余额；只有同账号、同周期的可比读数才显示消耗差值。未变化、初次读取、失败、已知账号切换和仅元数据变化保持安静。提示停留时长可选短2秒/标准4秒/长6秒，默认4秒，从完全展开并完成绘制后开始计时；悬停可保持详情。
           黑色主体与进度轮廓由同一个同步 Canvas、同一不可变几何帧绘制，保留 v0.1.7 外形、位置与3.5/4pt描边。动效节奏参考 DynamicNotchKit 示例，采用约0.415秒达到99%的连续临界阻尼响应；不是逐帧复制或实体设备流畅度保证。
           延续显示兼容性：按实际内建显示能力与系统原始安全区域定位，不按机型硬编码刘海坐标。屏幕布局不变时保留当前面板与动效；模式/缩放/连接变化只替换受影响的面板。睡眠、锁屏会话、隐藏或关闭显示时停止轮廓定时器，恢复时重新读取布局。
@@ -167,19 +181,20 @@ jobs:
           Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The observational baseline uses the old synchronous layout/timer strategy with the same current spring and Canvas, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
           The production display planner/reconciler passed injected native lifecycle checks: identical snapshots preserve controllers, changed geometry/identity retires only affected panels, fresh bounded retries recover from incomplete topology, and suspension/termination rejects stale callbacks. Family-shaped pure geometry profiles and actual own-view pixel/layout checks are synthetic coverage, not physical model, clamshell, mirroring or Spaces tests.
           Compact refresh-state native tests passed for parsed responses with unavailable optional identity/window metadata, generic current-value notices without unverified consumption claims, numeric-change-only eligibility, actual 2/4/6-second painted-endpoint holds, live hover promotion, replacement/retired expiry, Reduce Motion and content-fit Quit layout. Synchronous-paint callbacks and separate 1x/2x paired body/rail pixel probes passed; these are not compositor scanout or physical hand-feel measurements. Automatic circular geometry remains a documented approximation, not measured per-model hardware truth.
+          Optional lyrics tests used original synthetic text and injected IPC/network/file boundaries. They exercised default-off/consent, pause/seek/staleness, retired and wrong-track results, local import selection, real own-view lyric painting, quota priority and Quit layout. CI inspected the installed public Music scripting dictionary without launching Music or requesting Automation; this is not a live Music, TCC or LRCLIB compatibility test. Lyrics remain in memory and the community provider's server license does not grant rights to all submitted lyrics.
           Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
           The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v0.1.9" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v0.1.9 \
+            -f ref="refs/tags/v1.0.0-beta.1" -f sha="$RELEASE_COMMIT" --silent
+          gh release create v1.0.0-beta.1 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v0.1.9 · macOS Developer Preview" \
+            --title "v1.0.0-beta.1 · Apple Music Lyrics Beta" \
             --prerelease \
             --notes-file notes.md \
-            dist/CodexNotchMeter-0.1.9-universal.zip \
-            dist/CodexNotchMeter-0.1.9-universal.zip.sha256 \
-            dist/CodexNotchMeter-0.1.9-universal.dmg \
-            dist/CodexNotchMeter-0.1.9-universal.dmg.sha256
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.zip \
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.zip.sha256 \
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.dmg \
+            dist/CodexNotchMeter-1.0.0-beta.1-universal.dmg.sha256

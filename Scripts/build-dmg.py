@@ -21,14 +21,15 @@ import sys
 import tempfile
 
 
-VERSION = "0.1.9"
+VERSION = "1.0.0"
+RELEASE_VERSION = "1.0.0-beta.1"
 APP_NAME = "Codex Notch Meter.app"
-IMAGE_NAME = f"CodexNotchMeter-{VERSION}-universal.dmg"
+IMAGE_NAME = f"CodexNotchMeter-{RELEASE_VERSION}-universal.dmg"
 INSTRUCTIONS_NAME = "Install - 安装说明.txt"
 MAX_APP_BYTES = 128 * 1024 * 1024
 MAX_IMAGE_BYTES = 256 * 1024 * 1024
 MAX_ENTRIES = 4096
-INSTRUCTIONS = f"""CODEX NOTCH METER  {VERSION}
+INSTRUCTIONS = f"""CODEX NOTCH METER  {RELEASE_VERSION}
 macOS 13+  ·  Apple Silicon + Intel
 
 安装
@@ -130,10 +131,11 @@ def verify_app(app):
         "CFBundleExecutable": "CodexNotchMeter",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": VERSION,
+        "CodexNotchMeterReleaseVersion": RELEASE_VERSION,
         "LSMinimumSystemVersion": "13.0",
     }
     if not isinstance(info, dict) or any(info.get(key) != value for key, value in expected.items()):
-        raise RuntimeError(f"Expected the Codex Notch Meter {VERSION} macOS 13+ app")
+        raise RuntimeError(f"Expected the Codex Notch Meter {RELEASE_VERSION} macOS 13+ app")
     if not isinstance(info.get("CFBundleVersion"), str) or not info["CFBundleVersion"]:
         raise RuntimeError("Application build number is missing")
     executable = app / "Contents/MacOS/CodexNotchMeter"
@@ -213,7 +215,7 @@ def verify_image(image, mount, expected_manifest):
     if app_manifest(app) != expected_manifest:
         raise RuntimeError("Mounted application differs from the original signed app")
     info = verify_app(app)
-    print(f"DMG_VERIFY_OK: {VERSION} (build {info['CFBundleVersion']}); arm64 + x86_64; "
+    print(f"DMG_VERIFY_OK: {RELEASE_VERSION} (bundle {VERSION}, build {info['CFBundleVersion']}); arm64 + x86_64; "
           "ad-hoc signatures; exact /Applications link; UDZO integrity; read-only mount", flush=True)
 
 
@@ -262,7 +264,7 @@ def main():
         (stage / INSTRUCTIONS_NAME).write_bytes(INSTRUCTIONS)
         run([
             "/usr/bin/hdiutil", "create", "-fs", "HFS+", "-format", "UDZO",
-            "-imagekey", "zlib-level=9", "-volname", f"Codex Notch Meter {VERSION}",
+            "-imagekey", "zlib-level=9", "-volname", f"Codex Notch Meter {RELEASE_VERSION}",
             "-srcfolder", stage, image,
         ], timeout=180)
         verify_image(image, mount, manifest)

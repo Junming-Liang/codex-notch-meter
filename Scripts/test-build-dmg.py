@@ -44,8 +44,9 @@ class PackagingTests(unittest.TestCase):
             "CFBundleIdentifier": "org.codexnotchmeter.app",
             "CFBundleExecutable": "CodexNotchMeter",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "0.1.9",
-            "CFBundleVersion": "10",
+            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleVersion": "12",
+            "CodexNotchMeterReleaseVersion": "1.0.0-beta.1",
             "LSMinimumSystemVersion": "13.0",
         }
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
@@ -103,9 +104,22 @@ class PackagingTests(unittest.TestCase):
         self.info["CFBundleShortVersionString"] = "0.1.2"
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
         with mock.patch.object(dmg, "run") as calls:
-            with self.assertRaisesRegex(RuntimeError, "0.1.9"):
+            with self.assertRaisesRegex(RuntimeError, "1.0.0"):
                 dmg.verify_app(self.app)
             calls.assert_not_called()
+
+    def test_missing_or_wrong_beta_identity_rejected_before_native_commands(self):
+        for label in (None, "1.0.0", "1.0.0-beta.2"):
+            with self.subTest(label=label):
+                if label is None:
+                    self.info.pop("CodexNotchMeterReleaseVersion", None)
+                else:
+                    self.info["CodexNotchMeterReleaseVersion"] = label
+                (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
+                with mock.patch.object(dmg, "run") as calls:
+                    with self.assertRaisesRegex(RuntimeError, "Expected the Codex Notch Meter"):
+                        dmg.verify_app(self.app)
+                    calls.assert_not_called()
 
     def test_nonuniversal_rejected(self):
         result = SimpleNamespace(stdout=b"arm64", stderr=b"")

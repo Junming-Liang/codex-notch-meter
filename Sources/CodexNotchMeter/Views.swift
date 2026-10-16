@@ -146,6 +146,7 @@ struct DetailView: View {
             if let snapshot = model.snapshot {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
+                        if model.error == nil { MusicLyricRow(music: model.music) }
                         ForEach(snapshot.buckets) { bucket in
                             VStack(alignment: .leading, spacing: 8) {
                                 if snapshot.buckets.count > 1 {
@@ -402,6 +403,7 @@ struct SettingsView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             } label: { Label("显示", systemImage: "display").font(.system(size: 12, weight: .semibold)) }
+            MusicLyricsSettings(music: model.music)
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("登录时启动", isOn: Binding(get: { login.isEnabled }, set: { login.setEnabled($0) }))
@@ -460,7 +462,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Text("v0.1.9 · 开源预览版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v1.0.0-beta.1 · Beta 测试版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")

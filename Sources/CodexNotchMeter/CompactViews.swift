@@ -33,6 +33,7 @@ struct CompactDetailView: View {
                     if model.error != nil {
                         Text(model.status).font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                     }
+                    if model.error == nil { MusicLyricRow(music: model.music) }
                     if let snapshot = model.snapshot {
                         ForEach(snapshot.buckets) { bucket in
                             if snapshot.buckets.count > 1 {
