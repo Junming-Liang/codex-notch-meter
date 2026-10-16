@@ -13,7 +13,46 @@ concurrency:
   group: macos-build-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-diagnostics:
+    if: ${{ github.ref == 'refs/heads/diagnostic/v1.0.0-native-evidence' && !inputs.publish_release }}
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic-only branch and input
+        env:
+          DIAGNOSTIC_REF: ${{ github.ref }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          test "$DIAGNOSTIC_REF" = refs/heads/diagnostic/v1.0.0-native-evidence
+          test "$PUBLISH_RELEASE" = false
+      - name: Public source checks
+        run: python3 Scripts/check-source.py
+      - name: Build host-architecture app for synthetic diagnostics
+        id: diagnostic-package
+        run: bash Scripts/build-app.sh
+      - name: Strict native compact Music diagnostic
+        if: ${{ always() && steps.diagnostic-package.outcome == 'success' }}
+        run: python3 Scripts/check-native-music.py
+      - name: Strict native close-pixel diagnostic
+        if: ${{ always() && steps.diagnostic-package.outcome == 'success' }}
+        env:
+          CODEX_COLLAPSE_ARTIFACT_DIR: dist/contour-rendering/close-diagnostic
+        run: python3 Scripts/check-native-collapse.py
+      - name: Retain original synthetic own-view evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexNotchMeter-native-diagnostic-evidence
+          path: dist/contour-rendering/**/*.png
+          if-no-files-found: warn
+          retention-days: 7
   build:
+    if: ${{ github.ref != 'refs/heads/diagnostic/v1.0.0-native-evidence' }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -115,6 +154,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   official-desktop:
+    if: ${{ github.ref != 'refs/heads/diagnostic/v1.0.0-native-evidence' }}
     runs-on: macos-15
     timeout-minutes: 8
     steps:
@@ -124,7 +164,7 @@ jobs:
       - name: Read-only signed official desktop helper discovery
         run: python3 Scripts/inspect-official-desktop.py
   release:
-    if: ${{ inputs.publish_release }}
+    if: ${{ inputs.publish_release && github.ref != 'refs/heads/diagnostic/v1.0.0-native-evidence' }}
     needs: [build, official-desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
