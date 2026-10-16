@@ -45,8 +45,8 @@ class PackagingTests(unittest.TestCase):
             "CFBundleExecutable": "CodexNotchMeter",
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "1.0.0",
-            "CFBundleVersion": "12",
-            "CodexNotchMeterReleaseVersion": "1.0.0-beta.1",
+            "CFBundleVersion": "13",
+            "CodexNotchMeterReleaseVersion": "1.0.0",
             "LSMinimumSystemVersion": "13.0",
         }
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
@@ -108,8 +108,8 @@ class PackagingTests(unittest.TestCase):
                 dmg.verify_app(self.app)
             calls.assert_not_called()
 
-    def test_missing_or_wrong_beta_identity_rejected_before_native_commands(self):
-        for label in (None, "1.0.0", "1.0.0-beta.2"):
+    def test_missing_or_wrong_release_identity_rejected_before_native_commands(self):
+        for label in (None, "1.0.0-beta.1", "1.0.1"):
             with self.subTest(label=label):
                 if label is None:
                     self.info.pop("CodexNotchMeterReleaseVersion", None)

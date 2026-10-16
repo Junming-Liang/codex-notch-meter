@@ -93,7 +93,7 @@ struct RailView: View {
         }
         .contentShape(Rectangle()).onHover(perform: hovered)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(window.map { "刘海主额度 · " + windowTitle($0) } ?? "额度不可用")
+        .accessibilityLabel(window.map { "主额度 · " + windowTitle($0) } ?? "额度不可用")
         .accessibilityValue((remaining.map { "剩余 \(Int($0.rounded()))%" } ?? "未知") + (model.degraded ? "，上次读取" : "") + (pending ? "，等待刷新确认" : ""))
     }
 }
@@ -153,7 +153,7 @@ struct DetailView: View {
                                     HStack {
                                         Text(bucket.name).lineLimit(1).font(.system(size: 11, weight: .semibold))
                                         Spacer()
-                                        if bucket.id == model.bucket?.id { Text("刘海显示").font(.system(size: 10)).foregroundStyle(MeterStyle.secondary) }
+                                        if bucket.id == model.bucket?.id { Text("当前额度").font(.system(size: 10)).foregroundStyle(MeterStyle.secondary) }
                                     }.padding(.horizontal, 2)
                                 }
                                 ForEach(bucket.windows) { window in
@@ -243,7 +243,7 @@ struct QuotaRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(windowTitle(window)).font(.system(size: 12, weight: .medium))
-                if selected { Text("刘海显示").font(.system(size: 9)).foregroundStyle(MeterStyle.secondary) }
+                if selected { Text("当前额度").font(.system(size: 9)).foregroundStyle(MeterStyle.secondary) }
                 Spacer()
                 if pending { StatePill(text: "等待确认", color: MeterStyle.amber) }
                 else if degraded { StatePill(text: "上次读取", color: MeterStyle.amber) }
@@ -462,7 +462,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Text("v1.0.0-beta.1 · Beta 测试版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v1.0.0 · 正式版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")

@@ -30,6 +30,10 @@ final class MusicRenderHarness: NSObject {
     private var finished = false
     private weak var initialKey: NSWindow?
     private var checks = 0
+    private var passivePanels: [IslandPanelController] = []
+    private var passivePaintChecks = 0
+    private var legacyLabelChecks = 0
+    private var passiveFrameSamples = 0
     private var paintedChecks = 0
     private var expandedChecks = 0
 
@@ -42,10 +46,10 @@ final class MusicRenderHarness: NSObject {
         guard !started, !finished else { return }
         started = true; startedAt = CACurrentMediaTime(); initialKey = NSApp.keyWindow
         guard CommandLine.arguments.contains("--music-test") else { finish(false); return }
-        let timer = Timer(timeInterval: 43, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: 100, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.finished else { return }
-                SmokeDiagnostics.mark("music bounded 43-second deadline exceeded")
+                SmokeDiagnostics.mark("music bounded 100-second deadline exceeded")
                 self.finish(false)
             }
         }
@@ -56,6 +60,7 @@ final class MusicRenderHarness: NSObject {
                 try await self.run()
                 self.finish(true)
             } catch {
+                self.dumpSyntheticFailureState()
                 if let failure = error as? Failure { SmokeDiagnostics.mark("music failed: \(failure.label)") }
                 else { SmokeDiagnostics.mark("music cancelled or fixture operation failed") }
                 self.finish(false)
@@ -64,6 +69,7 @@ final class MusicRenderHarness: NSObject {
     }
 
     private func run() async throws {
+        try verifyOCRMatchingControls()
         let primary = makeFixture()
         let model = MeterModel(demo: true, music: primary.controller)
         self.model = model
@@ -115,17 +121,17 @@ final class MusicRenderHarness: NSObject {
         try await release(primary, pause, position: 9.9, state: .paused, observedAt: pausedAt)
         try await until("paused sample is applied") { primary.controller.statusText == "已暂停" }
         try await dwell(0.35)
-        try require(primary.controller.line == Self.firstLine, "pause does not advance past the next cue")
-        print("MUSIC_TIMELINE_OK: forwardSeek=true backwardSeek=true pausedHeld=\(decimal(ProcessInfo.processInfo.systemUptime - pausedAt))")
+        try require(primary.controller.line.isEmpty && !primary.controller.isPlayingForPresentation, "pause removes the lyric instead of retaining the previous cue")
+        print("MUSIC_TIMELINE_OK: forwardSeek=true backwardSeek=true pausedCleared=\(decimal(ProcessInfo.processInfo.systemUptime - pausedAt))")
 
         // Hold the next real 3-second paused read in flight. The production
         // freshness timer, rather than an injected stale notification, must clear.
         let heldForExpiry = try await read(primary)
         try require(!heldForExpiry.input && heldForExpiry.startedAt - pause.startedAt >= 2.95,
                     "paused polling uses its real three-second interval")
-        try await until("five-second freshness expiry clears visible lyrics", timeout: 5.5) {
+        try await until("five-second paused-source freshness expiry clears retained metadata", timeout: 5.5) {
             primary.controller.line.isEmpty && primary.controller.trackTitle.isEmpty
-                && primary.controller.statusText == "Music 播放信息已过期"
+                && primary.controller.statusText == "Music 播放信息已过期" && !primary.controller.isPlayingForPresentation
         }
         let expiredAge = ProcessInfo.processInfo.systemUptime - pausedAt
         try require(expiredAge >= LyricsTimeline().freshnessInterval && !primary.controller.canImport,
@@ -134,6 +140,7 @@ final class MusicRenderHarness: NSObject {
         try await until("no-document source also expires its title") {
             noDocument.controller.line.isEmpty && noDocument.controller.trackTitle.isEmpty
                 && noDocument.controller.statusText == "Music 播放信息已过期" && !noDocument.controller.canImport
+                && !noDocument.controller.isPlayingForPresentation
         }
         let noDocumentCalls = await noDocument.reader.calls().count
         try require(noDocumentCalls >= 2 && !noDocument.controller.hasLocalLyrics,
@@ -169,8 +176,10 @@ final class MusicRenderHarness: NSObject {
         try await verifyInvalidPlaybackStates()
         try await verifyTrackRevisionAndLocalReplacement()
         try await verifyRetirement()
+        try await verifyAutomaticPresentation()
+        try await verifyLookupStatusRetention()
         try await verifyCleanup()
-        try require(paintedChecks == 1 && expandedChecks == 2 && checks >= 40,
+        try require(paintedChecks == 1 && passivePaintChecks == 5 && legacyLabelChecks == 6 && expandedChecks == 2 && checks >= 100,
                     "all native paint, geometry and lifecycle observations completed")
     }
 
@@ -196,7 +205,7 @@ final class MusicRenderHarness: NSObject {
         try require(await gate.release(request.id, snapshot(position: 1)), "deliver reader-only synthetic fixture")
         try await until("reader-only default controller receives fresh source") { readerOnly.canImport }
         readerOnly.setOnlineLookupEnabled(true)
-        try await until("uninjected synthetic lookup rejects") { readerOnly.statusText == "在线歌词暂不可用，可导入本地 LRC" }
+        try await until("uninjected synthetic lookup rejects") { readerOnly.lookupState == .rejected && readerOnly.statusText == "歌词响应无法安全使用，可导入本地 LRC" }
         try beginImport(readerOnly, path: "/synthetic-never-opened.lrc")
         try await until("uninjected synthetic importer rejects") {
             readerOnly.statusText == "无法读取所选歌词，请选择有效的 UTF-8 LRC 或文本文件"
@@ -262,6 +271,9 @@ final class MusicRenderHarness: NSObject {
         let island = IslandPanelController(model: model, geometry: geometry, startPolling: false,
             hovered: {}, refresh: {}, settings: {}, quit: {})
         self.island = island
+        // Preserve the old manual-details geometry contract independently of the
+        // new passive ownership path, which has its own real native phase below.
+        island.setMusicPresentationAllowed(false)
         let openedAt = CACurrentMediaTime()
         try require(island.beginSmokeExpansion(), "synthetic pointer opens existing island")
         try await until("expanded normal-run-loop viewport settles") { self.nativeSettled(island, progress: 1, after: openedAt) }
@@ -269,6 +281,7 @@ final class MusicRenderHarness: NSObject {
         try verifyExpanded(island)
         let raster = try ownViewImage(island)
         guard let text = await MusicRasterOCR.recognize(raster.image) else { throw Failure(label: "bounded local lyric OCR failed") }
+        try verifyNoLegacyLabel(text)
         try require(contains(text, Self.firstLine), "original lyric is painted in real CompactDetailView pixels")
         paintedChecks += 1
         print("MUSIC_PAINT_OK: view=CompactDetailView originalLine=true width=\(raster.width) height=\(raster.height) scale=\(decimal(screen.backingScaleFactor))")
@@ -355,7 +368,7 @@ final class MusicRenderHarness: NSObject {
         let a1 = try await read(fixture); try await release(fixture, a1, position: 1)
         let oldA = try await lookup(fixture)
         guard let originalSelection = fixture.controller.importSelectionToken else { throw Failure(label: "missing A file-picker token") }
-        let b = try await read(fixture); try await release(fixture, b, track: "Synthetic B", position: 1)
+        let b = try await read(fixture); try await release(fixture, b, track: "HARBOR B", position: 1)
         let oldB = try await lookup(fixture)
         fixture.controller.importLyrics(from: URL(fileURLWithPath: "/synthetic-old-picker.lrc"), for: originalSelection)
         try await dwell(0.10)
@@ -380,7 +393,7 @@ final class MusicRenderHarness: NSObject {
             return cancelled && returned
         }
         try await dwell(0.10)
-        try require(fixture.controller.line == Self.firstLine && fixture.controller.trackTitle == "Synthetic A",
+        try require(fixture.controller.line == Self.firstLine && fixture.controller.trackTitle == "HARBOR A",
                     "delayed A and B cannot overwrite the replacement A revision")
         print("MUSIC_REVISION_OK: sequence=A-B-A lookups=3 cancelledOld=2 newestLineRetained=true")
 
@@ -450,7 +463,8 @@ final class MusicRenderHarness: NSObject {
             }
         }
         for value in visible {
-            try require(value.controller.line.isEmpty && value.controller.trackTitle.isEmpty && !value.controller.canImport,
+            try require(value.controller.line.isEmpty && value.controller.trackTitle.isEmpty && !value.controller.canImport
+                && !value.controller.isPlayingForPresentation,
                         "retirement immediately clears previously displayed lyric and source")
         }
         for (index, value) in values.enumerated() {
@@ -491,6 +505,494 @@ final class MusicRenderHarness: NSObject {
         print("MUSIC_RESUME_OK: wakePrompt=false stopTerminal=true")
     }
 
+    /// All samples use the real injected reader and production 1 s / 3 s polling.
+    /// Notice holds are the public 6 s and 4 s choices, measured only after the
+    /// existing natural Canvas/readiness gate. No synthetic clock drives motion.
+    private func verifyAutomaticPresentation() async throws {
+        island?.stop()
+        let fixture = makeFixture()
+        let model = MeterModel(demo: true, music: fixture.controller)
+        let panel = try makePassivePanel(model)
+        fixture.controller.start(); fixture.controller.setEnabled(true)
+        let initial = try await read(fixture)
+        let playingAt = CACurrentMediaTime()
+        let observedAt = ProcessInfo.processInfo.systemUptime
+        try await release(fixture, initial, position: 1, observedAt: observedAt)
+        try await waitMusic(panel, after: playingAt)
+        try require(fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty
+            && !fixture.controller.hasLocalLyrics && fixture.controller.statusText.contains("LRC"),
+            "fresh playing source opens the compact body even without a lyric document")
+        let statusPixels = try await compactOCR(panel, languages: ["zh-Hans", "en-US"])
+        let titleVisible = contains(statusPixels, "HARBOR A")
+        let importStatusVisible = contains(statusPixels, "LRC")
+        let obsoleteLyricVisible = contains(statusPixels, Self.firstLine)
+        print("MUSIC_AUTO_EMPTY_DIAGNOSTIC: titleVisible=\(titleVisible) importStatusVisible=\(importStatusVisible) obsoleteLyricVisible=\(obsoleteLyricVisible)")
+        try require(titleVisible && importStatusVisible && !obsoleteLyricVisible,
+                    "no-document compact pixels show the song and honest import status")
+        print("MUSIC_AUTO_EMPTY_OK: noHover=true owner=music document=unavailable statusToken=LRC ownViewOCR=true passive=true")
+
+        // Hold the next ordinary read. The real five-second source timer must
+        // retire a genuinely visible playing body even with no lyric document.
+        let expiredRead = try await read(fixture)
+        try await until("visible no-document playing source expires", timeout: 5.5) {
+            !fixture.controller.isPlayingForPresentation && fixture.controller.trackTitle.isEmpty
+                && fixture.controller.statusText == "Music 播放信息已过期"
+        }
+        let sourceAge = ProcessInfo.processInfo.systemUptime - observedAt
+        try await waitIdle(panel, after: playingAt)
+        try require(sourceAge >= 5 && fixture.controller.line.isEmpty && !fixture.controller.canImport,
+                    "natural source freshness closes the previously painted no-document body")
+        print("MUSIC_AUTO_STALE_OK: age=\(decimal(sourceAge)) document=unavailable previouslyPainted=true owner=idle")
+        let recoveredAt = CACurrentMediaTime()
+        try await release(fixture, expiredRead, position: 1)
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        // An identical visible line must still await this new import's exact
+        // document receipt, rather than accepting the previous local state.
+        try require(fixture.controller.line == Self.firstLine, "same-line import control starts with its expected cue already visible")
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        print("MUSIC_IMPORT_COMPLETION_OK: sameLine=true oldDocumentRejected=true requestReturned=true exactDocument=true expectedCue=true")
+        try await waitMusic(panel, after: recoveredAt)
+        try await dwell(0.10)
+        let songPixels = try await compactOCR(panel)
+        try require(contains(songPixels, Self.firstLine) && !contains(songPixels, "79%")
+            && panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua,
+                    "native compact body paints the original lyric before notice priority")
+        let panelIdentity = ObjectIdentifier(panel.panel)
+        let compactFrame = panel.panel.frame
+        let steadyRetarget = panel.smokeRetarget?.eventTime
+        let steadyFrames = passiveFrameSamples
+        for index in 0..<2 {
+            let fresh = try await read(fixture); try await release(fixture, fresh, position: 1)
+            let expected = index == 0 ? Self.localLine : Self.firstLine
+            try await importDocument(fixture, text: "[00:00]\(expected)")
+            try await dwell(0.05)
+            try require(fixture.controller.line == expected && panel.smokeExpansionOwner == .music
+                && panel.smokeRetarget?.eventTime == steadyRetarget && passiveFrameSamples == steadyFrames
+                && !panel.smokeMotionRunning && panel.panel.frame == compactFrame,
+                "ordinary playing samples and changed lyric content do not restart settled automatic Music motion")
+        }
+        print("MUSIC_AUTO_STEADY_OK: polls=2 lyricUpdates=2 motionUnchanged=true sameFrame=true")
+        let notice = try makeNotice(duration: .long, verifiedContinuity: true)
+        try require(panel.showRefreshNotice(notice), "playing compact body accepts an eligible real quota notice")
+        try await waitNotice(panel, notice: notice)
+        guard let armed = panel.smokeNoticeArmedAt, let painted = panel.smokeNoticePaintReadyAt else {
+            throw Failure(label: "missing native notice readiness times")
+        }
+        let noticeRetarget = panel.smokeRetarget?.eventTime
+        let noticeFrames = passiveFrameSamples
+        let noticePixels = try await compactOCR(panel)
+        try require(contains(noticePixels, "80%") && contains(noticePixels, "79%")
+            && !contains(noticePixels, Self.firstLine) && !contains(noticePixels, "HARBOR A"),
+            "actual compact pixels replace Music with the 80 to 79 percent quota notice")
+        try require(panel.showRefreshNotice(notice), "repeated identical notice is accepted without a new dwell")
+        var playingUpdates = 0
+        var lyricUpdates = 0
+        let deadline = armed + notice.holdDuration + 2
+        while panel.smokeNoticeTargetActive && CACurrentMediaTime() < deadline {
+            if let request = await fixture.reader.calls().first(where: { $0.id > fixture.readCursor }) {
+                fixture.readCursor = request.id
+                try await release(fixture, request, position: 1)
+                playingUpdates += 1
+                let expected = playingUpdates.isMultiple(of: 2) ? Self.firstLine : Self.localLine
+                try await importDocument(fixture, text: "[00:00]\(expected)")
+                try require(fixture.controller.line == expected, "real lyric replacement reaches the controller during notice dwell")
+                lyricUpdates += 1
+            }
+            if panel.smokeNoticeTargetActive {
+                try require(panel.smokeNoticeID == notice.id && panel.smokeNoticeArmedAt == armed
+                    && panel.smokeNoticePaintReadyAt == painted && panel.smokeRetarget?.eventTime == noticeRetarget
+                    && passiveFrameSamples == noticeFrames && panel.panel.frame == compactFrame
+                    && panel.smokeExpansionOwner == .quotaNotice && !panel.smokeMusicTargetActive
+                    && panel.panel.ignoresMouseEvents && !panel.isInteracting,
+                    "repeated playing and lyric publications cannot reset native notice dwell or motion")
+            }
+            try await dwell(0.02)
+        }
+        let held = CACurrentMediaTime() - armed
+        try require(!panel.smokeNoticeTargetActive && held >= notice.holdDuration && held <= notice.holdDuration + 1.5
+            && playingUpdates >= 2 && lyricUpdates >= 2,
+            "real long notice completes all six fully-painted seconds despite repeated Music publications")
+        try await waitMusic(panel, after: armed + notice.holdDuration)
+        try require(ObjectIdentifier(panel.panel) == panelIdentity && panel.panel.frame == compactFrame
+            && !panel.smokeNoticeVisible && fixture.controller.isPlayingForPresentation,
+            "notice expiry returns directly to Music in the same compact native panel")
+        panel.panel.appearance = NSAppearance(named: .darkAqua)
+        try await dwell(0.15)
+        let returnPixels = try await compactOCR(panel)
+        print("MUSIC_RETURN_OCR_DIAGNOSTIC: lyricVisible=\(contains(returnPixels, fixture.controller.line)) lineNonempty=\(!fixture.controller.line.isEmpty) quotaAbsent=\(!contains(returnPixels, "79%")) titleVisible=\(contains(returnPixels, "HARBOR A")) darkAppearance=\(panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)")
+        try require(contains(returnPixels, fixture.controller.line) && !fixture.controller.line.isEmpty
+            && !contains(returnPixels, "79%") && contains(returnPixels, "HARBOR A")
+            && panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
+            "own-view pixels prove Music to quota notice to Music content replacement")
+        print("MUSIC_AUTO_PRIORITY_OK: hold=\(decimal(held)) expected=6 paintBeforeArm=true playingUpdates=\(playingUpdates) lyricUpdates=\(lyricUpdates) dwellUnchanged=true motionUnchanged=true samePanel=true")
+        print("MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=true lyricAfter=true appearances=aqua,darkAqua width=\(Int(compactFrame.width * screen.backingScaleFactor)) height=\(Int(compactFrame.height * screen.backingScaleFactor)) scale=\(decimal(screen.backingScaleFactor)) localViewPixels=true scanout=false")
+
+        // A pause must hide the lyric immediately, while quota priority completes
+        // its already-armed normal dwell before the same panel goes idle.
+        let pausedNotice = try makeNotice(duration: .standard)
+        try require(panel.showRefreshNotice(pausedNotice), "second normal notice begins from playing Music")
+        try await waitNotice(panel, notice: pausedNotice)
+        guard let pausedArm = panel.smokeNoticeArmedAt, let pausedPaint = panel.smokeNoticePaintReadyAt else {
+            throw Failure(label: "missing paused-notice readiness times")
+        }
+        let pausedRetarget = panel.smokeRetarget?.eventTime
+        let pause = try await read(fixture)
+        try await release(fixture, pause, position: 1, state: .paused)
+        try await until("real paused sample revokes passive Music") { !fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty }
+        try require(panel.smokeNoticeTargetActive && panel.smokeNoticeID == pausedNotice.id
+            && panel.smokeNoticeArmedAt == pausedArm && panel.smokeNoticePaintReadyAt == pausedPaint
+            && panel.smokeRetarget?.eventTime == pausedRetarget && !panel.smokeMusicTargetActive,
+            "pause during quota notice does not clear the notice or restart its deadline")
+        try await until("paused notice expires on its original real deadline", timeout: 5) { !panel.smokeNoticeTargetActive }
+        let pausedHold = CACurrentMediaTime() - pausedArm
+        try await waitIdle(panel, after: pausedArm + pausedNotice.holdDuration)
+        try require(pausedHold >= 4 && pausedHold <= 5.5 && fixture.controller.line.isEmpty,
+                    "paused notice completes its normal four-second hold then closes without a lyric flash")
+        print("MUSIC_AUTO_PAUSE_NOTICE_OK: hold=\(decimal(pausedHold)) expected=4 dwellUnchanged=true lyricEmpty=true owner=idle")
+
+        let resumedAt = CACurrentMediaTime()
+        let resume = try await read(fixture); try await release(fixture, resume, position: 1)
+        try await waitMusic(panel, after: resumedAt)
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        try await enterDetails(panel)
+        let hoverPause = try await read(fixture)
+        try await release(fixture, hoverPause, position: 1, state: .paused)
+        try await until("paused hover keeps details ownership but removes Music") {
+            !fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty
+                && panel.smokeExpansionOwner == .details && panel.smokeProgress == 1
+        }
+        try await dwell(0.15)
+        let hoverRaster = try ownViewImage(panel)
+        guard let pausedPixels = await MusicRasterOCR.recognize(hoverRaster.image) else {
+            throw Failure(label: "bounded paused-details OCR failed")
+        }
+        print("MUSIC_PAUSED_OCR_DIAGNOSTIC: observations=\(String(reflecting: pausedPixels)) lyricAbsent=\(!contains(pausedPixels, Self.firstLine)) titleAbsent=\(!contains(pausedPixels, "HARBOR A")) quotaVisible=\(contains(pausedPixels, "Codex")) layoutValid=\(panel.verifyExpandedLayout(includePixels: false))")
+        passivePaintChecks += 1
+        try verifyNoLegacyLabel(pausedPixels)
+        try require(!contains(pausedPixels, Self.firstLine) && !contains(pausedPixels, "HARBOR A")
+            && contains(pausedPixels, "Codex") && panel.verifyExpandedLayout(includePixels: false),
+            "paused expanded details retain quota and footer while Music lyric and title disappear from pixels")
+        try await exitDetails(panel)
+        try await waitIdle(panel, after: resumedAt)
+        let nextResumeAt = CACurrentMediaTime()
+        let nextResume = try await read(fixture); try await release(fixture, nextResume, position: 1)
+        try await waitMusic(panel, after: nextResumeAt)
+        try await enterDetails(panel)
+        try await exitDetails(panel)
+        try await waitMusic(panel, after: nextResumeAt)
+        print("MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true")
+
+        // The coordinator's settings/menu gate is exercised directly; no actual
+        // Settings window, menu, preferences, or user pointer is opened or moved.
+        var closingPaintFrames = 0
+        for reason in ["settings", "menu"] {
+            let fresh = try await read(fixture); try await release(fixture, fresh, position: 1)
+            let suppressedAt = CACurrentMediaTime()
+            let initialOpacity = panel.paintReceipt?.frame.surfaceOpacity ?? 0
+            panel.setMusicPresentationAllowed(false)
+            if reason == "settings" {
+                closingPaintFrames = try await observeClosingPaint(panel, after: suppressedAt, initialOpacity: initialOpacity)
+            }
+            try await waitIdle(panel, after: suppressedAt)
+            try require(fixture.controller.isPlayingForPresentation && !panel.smokeMusicTargetActive,
+                        "\(reason) suppression prevents passive reopening without changing playback")
+            let enabledAt = CACurrentMediaTime()
+            panel.setMusicPresentationAllowed(true)
+            try await waitMusic(panel, after: enabledAt)
+        }
+        print("MUSIC_AUTO_SUPPRESS_OK: gates=settings,menu suppressed=idle reenabled=music playbackPreserved=true")
+        print("MUSIC_AUTO_CLOSE_PAINT_OK: intermediateFrames=\(closingPaintFrames) opacityDecreased=true opaqueBefore4pt=true idleOpacity=0 naturalPaint=true")
+        print("MUSIC_LABEL_OK: compactOCR=4 expandedOCR=2 legacyWordAbsent=true")
+
+        // A pending ordinary read lets a true paused sample arrive during a real
+        // close/open reversal. Poll cadence is never shortened to manufacture it.
+        let reversingRead = try await read(fixture)
+        panel.setMusicPresentationAllowed(false)
+        try await until("real compact closing motion begins") {
+            panel.smokeMotionRunning && panel.smokeProgress > 0 && panel.smokeProgress < panel.geometry.updateProgress
+        }
+        panel.setMusicPresentationAllowed(true)
+        try require(panel.smokeTargetProgress == panel.geometry.updateProgress && panel.smokeMotionRunning,
+                    "reenabling during compact close reverses the existing spring")
+        let reversingAt = CACurrentMediaTime()
+        try await release(fixture, reversingRead, position: 1, state: .paused)
+        try await until("paused sample reverses the reopened target to idle") {
+            !fixture.controller.isPlayingForPresentation && panel.smokeTargetProgress == 0
+        }
+        try require(panel.smokeProgress.isFinite && panel.smokeVelocity.isFinite
+            && panel.smokeProgress >= 0 && panel.smokeProgress <= 1 && panel.smokeRetarget != nil,
+            "pause during reversal preserves bounded finite motion state")
+        try await waitIdle(panel, after: reversingAt)
+        print("MUSIC_AUTO_REVERSAL_OK: realPolling=true suppressionReversed=true pauseDuringMotion=true finite=true finalOwner=idle")
+
+        let recreateRead = try await read(fixture); try await release(fixture, recreateRead, position: 1)
+        try await waitMusic(panel, after: reversingAt)
+        panel.stop()
+        let recreatedAt = CACurrentMediaTime()
+        let recreated = try makePassivePanel(model)
+        try await waitMusic(recreated, after: recreatedAt)
+        try require(panel.smokeStopped && recreated.panel !== panel.panel && fixture.controller.isPlayingForPresentation,
+                    "recreated native panel inherits playing eligibility without awaiting a new sample")
+        print("MUSIC_AUTO_RECREATE_OK: inheritedPlaying=true oldPanelStopped=true noNewSample=true")
+        try await verifyPassiveRetirement(fixture, panel: recreated)
+        try await verifyReducedMotionPresentation()
+    }
+
+    private func verifyPassiveRetirement(_ fixture: MusicFixture, panel: IslandPanelController) async throws {
+        var changedAt = CACurrentMediaTime()
+        await skipExistingReads(fixture)
+        fixture.controller.setActive(false)
+        try await waitIdle(panel, after: changedAt)
+        try require(!fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty, "sleep retires passive Music")
+        fixture.controller.setActive(true)
+        let wake = try await read(fixture)
+        try require(!wake.input, "passive wake remains nonprompting")
+        changedAt = CACurrentMediaTime(); try await release(fixture, wake, position: 1)
+        try await waitMusic(panel, after: changedAt)
+        await skipExistingReads(fixture)
+        changedAt = CACurrentMediaTime(); fixture.controller.setEnabled(false)
+        try await waitIdle(panel, after: changedAt)
+        fixture.controller.setEnabled(true)
+        let enabled = try await read(fixture)
+        changedAt = CACurrentMediaTime(); try await release(fixture, enabled, position: 1)
+        try await waitMusic(panel, after: changedAt)
+        let denied = try await read(fixture)
+        changedAt = CACurrentMediaTime()
+        try require(await fixture.reader.release(denied.id, .unavailable(.permissionDenied)), "deliver passive permission denial")
+        try await waitIdle(panel, after: changedAt)
+        try require(fixture.controller.needsAuthorization && !fixture.controller.isPlayingForPresentation,
+                    "permission denial immediately retires passive Music")
+        fixture.controller.requestAuthorization()
+        let authorized = try await read(fixture)
+        changedAt = CACurrentMediaTime(); try await release(fixture, authorized, position: 1)
+        try await waitMusic(panel, after: changedAt)
+        let stoppedRead = try await read(fixture)
+        changedAt = CACurrentMediaTime()
+        try require(await fixture.reader.release(stoppedRead.id, snapshot(position: 1, state: .stopped)), "deliver stopped playback")
+        try await waitIdle(panel, after: changedAt)
+        try require(!fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty,
+                    "stopped playback removes passive Music")
+        fixture.controller.requestAuthorization()
+        let again = try await read(fixture)
+        changedAt = CACurrentMediaTime(); try await release(fixture, again, position: 1)
+        try await waitMusic(panel, after: changedAt)
+        changedAt = CACurrentMediaTime(); fixture.controller.stop()
+        try await waitIdle(panel, after: changedAt)
+        try require(!fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty, "terminal stop removes passive Music")
+        panel.stop()
+        print("MUSIC_AUTO_RETIRE_OK: disable=idle sleep=idle permission=idle stoppedPlayback=idle controllerStop=idle wakePrompt=false")
+    }
+
+    private func verifyReducedMotionPresentation() async throws {
+        let fixture = makeFixture()
+        let model = MeterModel(demo: true, music: fixture.controller)
+        let panel = try makePassivePanel(model, reducedMotion: true)
+        let frames = passiveFrameSamples
+        fixture.controller.start(); fixture.controller.setEnabled(true)
+        let initial = try await read(fixture)
+        let openedAt = CACurrentMediaTime(); try await release(fixture, initial, position: 1)
+        try await waitMusic(panel, after: openedAt)
+        try require(!panel.smokeMotionRunning && panel.smokeVelocity == 0 && passiveFrameSamples == frames,
+                    "Reduce Motion opens automatic Music without a motion source")
+        let notice = try makeNotice(duration: .short)
+        try require(panel.showRefreshNotice(notice), "Reduce Motion retains quota priority")
+        try await waitNotice(panel, notice: notice)
+        guard let armed = panel.smokeNoticeArmedAt else { throw Failure(label: "Reduce Motion notice never armed") }
+        let refresh = try await read(fixture); try await release(fixture, refresh, position: 1)
+        try await until("Reduce Motion notice completes its normal two-second hold", timeout: 3) { !panel.smokeNoticeTargetActive }
+        let held = CACurrentMediaTime() - armed
+        try await waitMusic(panel, after: armed + notice.holdDuration)
+        let pause = try await read(fixture)
+        let pausedAt = CACurrentMediaTime(); try await release(fixture, pause, position: 1, state: .paused)
+        try await waitIdle(panel, after: pausedAt)
+        try require(held >= 2 && held <= 3.5 && !panel.smokeMotionRunning && panel.smokeVelocity == 0
+            && passiveFrameSamples == frames && fixture.controller.line.isEmpty,
+            "Reduce Motion notice returns to Music then pause reaches idle without animation frames")
+        fixture.controller.stop(); panel.stop()
+        print("MUSIC_AUTO_REDUCED_OK: hold=\(decimal(held)) expected=2 sequence=music-notice-music-idle motionFrames=0 passive=true")
+    }
+
+    private func makePassivePanel(_ model: MeterModel, reducedMotion: Bool = false) throws -> IslandPanelController {
+        guard let geometry = makeGeometry() else { throw Failure(label: "missing automatic Music geometry") }
+        let value = IslandPanelController(model: model, geometry: geometry, startPolling: false,
+            reducedMotionOverride: reducedMotion, motionSample: { [weak self] _ in self?.passiveFrameSamples += 1 },
+            hovered: {}, refresh: {}, settings: {}, quit: {})
+        value.panel.appearance = NSAppearance(named: .aqua)
+        passivePanels.append(value)
+        return value
+    }
+    private func waitMusic(_ panel: IslandPanelController, after: TimeInterval) async throws {
+        try await until("native compact Music settles with fresh natural paint") {
+            self.nativeSettled(panel, progress: panel.geometry.updateProgress, after: after)
+                && panel.smokeExpansionOwner == .music && panel.smokeMusicTargetActive && panel.smokeMusicVisible
+                && !panel.smokeNoticeTargetActive && !panel.isInteracting && panel.panel.ignoresMouseEvents
+                && self.naturalPaintMatches(panel, progress: panel.geometry.updateProgress, after: after)
+        }
+        try require((panel.paintReceipt?.frame.surfaceOpacity ?? 0) > 0,
+                    "native compact Music has a painted body after notice or motion transition")
+    }
+    private func waitIdle(_ panel: IslandPanelController, after: TimeInterval) async throws {
+        try await until("native automatic Music closes to painted idle") {
+            self.nativeSettled(panel, progress: 0, after: after) && panel.smokeExpansionOwner == .idle
+                && !panel.smokeMusicTargetActive && !panel.smokeMusicVisible && !panel.smokeNoticeVisible
+                && panel.panel.ignoresMouseEvents && self.naturalPaintMatches(panel, progress: 0, after: after)
+        }
+        try require(panel.paintReceipt?.frame.surfaceOpacity == 0,
+                    "actual idle paint has no remaining black body opacity")
+    }
+    private func waitNotice(_ panel: IslandPanelController, notice: RefreshNotice) async throws {
+        try await until("native quota priority receives its own natural painted readiness") {
+            guard let armed = panel.smokeNoticeArmedAt, let painted = panel.smokeNoticePaintReadyAt else { return false }
+            return panel.smokeNoticeID == notice.id && panel.smokeNoticeTargetActive
+                && panel.smokeExpansionOwner == .quotaNotice && !panel.smokeMusicTargetActive && painted <= armed
+                && self.nativeSettled(panel, progress: panel.geometry.updateProgress, after: painted - 0.25)
+                && self.naturalPaintMatches(panel, progress: panel.geometry.updateProgress, after: painted)
+        }
+    }
+    private func naturalPaintMatches(_ panel: IslandPanelController, progress: Double, after: TimeInterval) -> Bool {
+        guard let receipt = panel.paintReceipt else { return false }
+        let expected = panel.geometry.frame(progress: progress)
+        return receipt.observed >= after && receipt.frame.progress == progress
+            && receipt.frame.viewport == expected.size && receipt.actualViewport == expected.size
+            && receipt.frame.noticeID == panel.smokeNoticeID
+            && abs(receipt.frame.surfaceOpacity - panel.geometry.surfaceOpacity(progress: progress)) < 0.000001
+    }
+    private func compactOCR(_ panel: IslandPanelController, languages: [String] = ["zh-Hans", "en-US"]) async throws -> [String] {
+        // Readiness is checked before caching. A cache render proves content but
+        // cannot manufacture natural-run-loop or physical-scanout readiness.
+        try require(nativeSettled(panel, progress: panel.geometry.updateProgress, after: 0)
+            && naturalPaintMatches(panel, progress: panel.geometry.updateProgress, after: 0),
+            "compact own-view capture follows independently observed native readiness")
+        let raster = try ownViewImage(panel, progress: panel.geometry.updateProgress)
+        // This harness owns only original synthetic song/text fixtures. Keep the
+        // unchanged native-size capture available when OCR fails, without ever
+        // capturing the screen, Music.app or a live user's metadata.
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = String(format: "compact-%02d.png", passivePaintChecks + 1)
+        guard let png = NSBitmapImageRep(cgImage: raster.image).representation(using: .png, properties: [:]) else {
+            throw Failure(label: "cannot encode synthetic compact own-view evidence")
+        }
+        try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+        guard let observations = await MusicRasterOCR.recognize(raster.image, languages: languages) else {
+            throw Failure(label: "bounded compact Music OCR failed")
+        }
+        let diagnostic: [String: Any] = ["fixture": "original-synthetic-only", "image": filename,
+            "width": raster.width, "height": raster.height, "progress": panel.smokeProgress,
+            "scale": screen.backingScaleFactor, "observations": observations,
+            "appearance": panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "unknown"]
+        let diagnosticJSON = try JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys])
+        print("MUSIC_COMPACT_OCR_DIAGNOSTIC: \(String(decoding: diagnosticJSON, as: UTF8.self))")
+        passivePaintChecks += 1
+        try verifyNoLegacyLabel(observations)
+        return observations
+    }
+    private func verifyNoLegacyLabel(_ observations: [String]) throws {
+        let characters = observations.joined().filter { !$0.isWhitespace }
+        try require(!characters.contains("刘海"), "own-view mixed-language OCR contains no removed legacy island label")
+        legacyLabelChecks += 1
+    }
+    private func observeClosingPaint(_ panel: IslandPanelController, after: TimeInterval, initialOpacity: Double) async throws -> Int {
+        var fadeSequences: Set<UInt64> = []
+        var opaqueSequences: Set<UInt64> = []
+        var opacityMatchesGeometry = true
+        try await until("real Music closing paint reaches idle") {
+            if let paint = panel.paintReceipt, paint.observed >= after,
+               paint.frame.progress > 0 && paint.frame.progress < panel.geometry.updateProgress {
+                let expected = panel.geometry.frame(progress: paint.frame.progress).size
+                if paint.actualViewport == expected && paint.frame.viewport == expected {
+                    let residual = panel.geometry.contourResidual(progress: paint.frame.progress)
+                    let opacity = paint.frame.surfaceOpacity
+                    opacityMatchesGeometry = opacityMatchesGeometry
+                        && abs(opacity - panel.geometry.surfaceOpacity(progress: paint.frame.progress)) < 0.000001
+                    if residual >= 4 {
+                        opaqueSequences.insert(paint.sequence)
+                        opacityMatchesGeometry = opacityMatchesGeometry && opacity == 1
+                    } else if residual > 0 && opacity >= 0 && opacity < initialOpacity {
+                        fadeSequences.insert(paint.sequence)
+                    }
+                }
+            }
+            return panel.smokeProgress == 0 && !panel.smokeMotionRunning
+        }
+        try require(initialOpacity > 0 && !fadeSequences.isEmpty && !opaqueSequences.isEmpty && opacityMatchesGeometry,
+                    "natural Music close remains opaque outside four points and fades with its real contour residual")
+        return fadeSequences.count
+    }
+    private func enterDetails(_ panel: IslandPanelController) async throws {
+        let began = CACurrentMediaTime()
+        panel.smokePointer(inside: true, now: ProcessInfo.processInfo.systemUptime)
+        try await dwell(0.14)
+        panel.smokePointer(inside: true, now: ProcessInfo.processInfo.systemUptime)
+        try await until("real hover promotes automatic Music to native details") {
+            panel.smokeExpansionOwner == .details && self.nativeSettled(panel, progress: 1, after: began)
+        }
+        try require(panel.verifyExpandedLayout(includePixels: false) && panel.verifySmokeClickRouting(),
+                    "automatic Music hover preserves native footer routing")
+    }
+    private func exitDetails(_ panel: IslandPanelController) async throws {
+        panel.smokePointer(inside: false, now: ProcessInfo.processInfo.systemUptime)
+        try await dwell(0.24)
+        panel.smokePointer(inside: false, now: ProcessInfo.processInfo.systemUptime)
+        try require(!panel.isInteracting, "real hover exit hysteresis relinquishes details ownership")
+    }
+
+    private func verifyLookupStatusRetention() async throws {
+        let values = [makeFixture(lookupFailure: .serviceUnavailable(retryAfter: 60)), makeFixture(),
+            makeFixture(), makeFixture(lookupFailure: .identityMismatch)]
+        let states: [LyricsLookupState] = [.serviceUnavailable, .noMatch, .unavailable, .identityMismatch]
+        let labels = ["serviceUnavailable", "noMatch", "unavailable", "identityMismatch"]
+        let statuses = ["歌词服务暂不可用，可稍后重试或导入本地 LRC", "未找到匹配歌词，可导入本地 LRC",
+            "匹配记录暂无可用歌词，可导入本地 LRC", "匹配结果版本不一致，可导入本地 LRC"]
+        let began = CACurrentMediaTime()
+        for value in values {
+            value.controller.start(); value.controller.setOnlineLookupEnabled(true); value.controller.setEnabled(true)
+            let initial = try await read(value); try await release(value, initial, position: 1)
+        }
+        for (index, value) in values.enumerated() {
+            let request = try await lookup(value)
+            // Failure fixtures throw only after this explicit gate completes;
+            // there is no network request and no fabricated successful match.
+            try require(await value.lookup.release(request.id, index == 1 ? .noMatch : .unavailable),
+                        "deliver injected \(labels[index]) lookup result")
+            try await until("distinct lookup outcome is visible") {
+                value.controller.lookupState == states[index] && value.controller.statusText == statuses[index]
+            }
+        }
+        for _ in 0..<3 {
+            for value in values {
+                let request = try await read(value); try await release(value, request, position: 1)
+            }
+            try await dwell(0.04)
+            for (index, value) in values.enumerated() {
+                let lookupCount = await value.lookup.calls().count
+                try require(value.controller.lookupState == states[index] && value.controller.statusText == statuses[index]
+                    && value.controller.isPlayingForPresentation && value.controller.line.isEmpty
+                    && lookupCount == 1,
+                    "same-track real polls preserve \(labels[index]) and do not repeat lookup")
+            }
+        }
+        for value in values.dropFirst() { value.controller.stop() }
+        let transient = values[0]
+        let unavailable = try await read(transient)
+        try require(await transient.reader.release(unavailable.id, .unavailable(.timedOut)), "interrupt Music source during service cooldown")
+        try await until("Music source interruption clears old source") {
+            !transient.controller.isPlayingForPresentation && transient.controller.trackTitle.isEmpty
+        }
+        let recovered = try await read(transient); try await release(transient, recovered, position: 1)
+        try await until("same track recovery restores temporary service status without a lookup") {
+            transient.controller.isPlayingForPresentation && transient.controller.lookupState == .serviceUnavailable
+                && transient.controller.statusText == statuses[0]
+        }
+        try require(await transient.lookup.calls().count == 1, "Music source interruption cannot bypass service cooldown")
+        print("MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true")
+        let observed = CACurrentMediaTime() - began
+        try require(observed >= 3 && observed < 60, "service cooldown observation spans three real polls without waiting or skipping sixty seconds")
+        for value in values { value.controller.stop() }
+        print("MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true")
+        print("MUSIC_LOOKUP_COOLDOWN_OK: observed=\(decimal(observed)) retryAfter=60 polls=3 lookupCalls=1 synthetic=true")
+    }
+
     private func verifyCleanup() async throws {
         for value in fixtures { value.controller.stop() }
         for value in defaultsControllers { value.stop() }
@@ -501,6 +1003,7 @@ final class MusicRenderHarness: NSObject {
         }
         if let gate = defaultReaderGate { await gate.releaseAll(.unavailable(.cancelled)) }
         island?.stop()
+        for panel in passivePanels { panel.stop() }
         let counts = await countsFor(fixtures)
         try await dwell(0.10)
         var outstanding = 0
@@ -509,44 +1012,82 @@ final class MusicRenderHarness: NSObject {
             outstanding += await value.lookup.pendingCount()
             outstanding += await value.importer.pendingCount()
         }
-        try require(outstanding == 0 && island?.smokeStopped == true && detailPanel == nil,
+        try require(outstanding == 0 && island?.smokeStopped == true && passivePanels.allSatisfy(\.smokeStopped) && detailPanel == nil,
                     "all injected continuations and native windows retire before completion")
         try require(await countsFor(fixtures) == counts, "no fixture resumes external work during orderly cleanup")
         print("MUSIC_CLEANUP_OK: controllers=\(fixtures.count) pendingRequests=0 panelStopped=true")
     }
 
-    private func makeFixture() -> MusicFixture {
-        let value = MusicFixture(); fixtures.append(value); return value
+    private func makeFixture(lookupFailure: LyricsLookupError? = nil) -> MusicFixture {
+        let value = MusicFixture(lookupFailure: lookupFailure); fixtures.append(value); return value
     }
     private func timedText() -> String {
         "[00:00]\(Self.firstLine)\n[00:10]\(Self.secondLine)\n[00:20]Morning sails return to the pier"
     }
     private func document(_ text: String) throws -> LyricsDocument { try LRCParser.parse(text) }
-    private func snapshot(track: String = "Synthetic A", position: TimeInterval,
+    private func snapshot(track: String = "HARBOR A", position: TimeInterval,
                           state: MusicPlaybackState = .playing, observedAt: TimeInterval? = nil) -> MusicReadResult {
         guard let identity = MusicTrackIdentity(title: track, artist: "Original Fixture Ensemble", album: "Native Test Harbor", duration: 120),
               let value = MusicPlaybackSnapshot(track: identity, state: state, position: position,
                 observedAt: observedAt ?? ProcessInfo.processInfo.systemUptime) else { return .unavailable(.invalidResponse) }
         return .snapshot(value)
     }
-    private func release(_ value: MusicFixture, _ request: MusicFixtureCall<Bool>, track: String = "Synthetic A",
+    private func release(_ value: MusicFixture, _ request: MusicFixtureCall<Bool>, track: String = "HARBOR A",
                          position: TimeInterval, state: MusicPlaybackState = .playing, observedAt: TimeInterval? = nil) async throws {
-        try require(await value.reader.release(request.id, snapshot(track: track, position: position, state: state, observedAt: observedAt)),
+        let result = snapshot(track: track, position: position, state: state, observedAt: observedAt)
+        guard case .snapshot(let expected) = result else { throw Failure(label: "invalid synthetic read fixture") }
+        try require(await value.reader.release(request.id, result),
                     "release actual pending synthetic Music request")
-        try await until("fresh synthetic track reaches controller") { value.controller.trackTitle == track && value.controller.canImport }
+        do {
+            try await until("exact synthetic read reaches controller") {
+                let returned = await value.reader.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticPlaybackSnapshot == expected
+                    && value.controller.trackTitle == track && value.controller.canImport
+            }
+        } catch {
+            let returned = await value.reader.returnedIDs().contains(request.id)
+            print("MUSIC_READ_DIAGNOSTIC: request=\(request.id) returned=\(returned) expected=\(String(reflecting: expected)) actual=\(String(reflecting: value.controller.syntheticPlaybackSnapshot)) status=\(String(reflecting: value.controller.statusText))")
+            throw error
+        }
     }
     private func beginImport(_ controller: MusicLyricsController, path: String) throws {
         guard let token = controller.importSelectionToken else { throw Failure(label: "no fresh track for synthetic file selection") }
         controller.importLyrics(from: URL(fileURLWithPath: path), for: token)
     }
     private func importDocument(_ value: MusicFixture, text: String) async throws {
-        let result = try document(text)
+        // The parser retains this original metadata, while rendering ignores it.
+        // It identifies application of this operation even if its visible cue is
+        // identical to the previous document. No file is opened by this fixture.
+        let operation = UUID().uuidString
+        let result = try document("[by:fixture-operation-\(operation)]\n\(text)")
+        let expectedLine: String
+        switch result.content {
+        case .synchronized(let cues): expectedLine = cues.first?.text ?? ""
+        case .plain(let lines): expectedLine = lines.first ?? ""
+        default: throw Failure(label: "import helper requires an original visible fixture cue")
+        }
+        let samePriorLine = value.controller.line == expectedLine
         try beginImport(value.controller, path: "/synthetic-only.lrc")
         let request = try await imported(value)
+        try require(value.controller.syntheticLyricsDocument != result,
+                    "previous local document cannot satisfy the new import operation")
         try require(await value.importer.release(request.id, result), "complete injected in-memory import")
-        try await until("local import reaches controller") { value.controller.hasLocalLyrics && value.controller.sourceLabel == "本地歌词" }
-        // Wait for the importing task, not only a previous hasLocalLyrics value.
-        try await until("selected local import completes") { value.controller.statusText != "正在读取所选歌词文件…" }
+        do {
+            try await until("exact local import and expected cue reach controller") {
+                let returned = await value.importer.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticLyricsDocument == result
+                    && value.controller.hasLocalLyrics && value.controller.sourceLabel == "本地歌词"
+                    && value.controller.line == expectedLine
+            }
+        } catch {
+            let returned = await value.importer.returnedIDs().contains(request.id)
+            print("MUSIC_IMPORT_DIAGNOSTIC: request=\(request.id) operation=\(operation) returned=\(returned) documentMatches=\(value.controller.syntheticLyricsDocument == result) samePriorLine=\(samePriorLine) expectedLine=\(String(reflecting: expectedLine)) actualLine=\(String(reflecting: value.controller.line)) status=\(String(reflecting: value.controller.statusText)) playback=\(String(reflecting: value.controller.syntheticPlaybackSnapshot))")
+            throw error
+        }
+        print("MUSIC_IMPORT_RECEIPT: request=\(request.id) operation=\(operation) returned=true documentMatches=true expectedLine=true samePriorLine=\(samePriorLine)")
+    }
+    private func skipExistingReads(_ value: MusicFixture) async {
+        value.readCursor = await value.reader.calls().last?.id ?? value.readCursor
     }
     private func read(_ value: MusicFixture) async throws -> MusicFixtureCall<Bool> {
         let call = try await next(value.reader, after: value.readCursor)
@@ -596,8 +1137,44 @@ final class MusicRenderHarness: NSObject {
     }
     private func decimal(_ value: Double) -> String { String(format: "%.3f", value) }
     private func contains(_ observations: [String], _ expected: String) -> Bool {
-        func normalized(_ value: String) -> String { value.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
-        return normalized(observations.joined(separator: " ")).contains(normalized(expected))
+        // Vision can split or join glyph groups without changing their letters.
+        // Normalize only case and Unicode whitespace, never spelling/numbers.
+        func normalized(_ value: String) -> String { value.lowercased().filter { !$0.isWhitespace } }
+        let needle = normalized(expected)
+        return !needle.isEmpty && normalized(observations.joined(separator: " ")).contains(needle)
+    }
+    private func verifyOCRMatchingControls() throws {
+        let cases: [([String], String, Bool)] = [
+            (["「 HARBORA"], "HARBOR A", true),
+            (["HARBOR", "A"], "HARBOR A", true),
+            (["harbor\u{00A0}a"], "HARBOR A", true),
+            (["H A R B O R\tA"], "HARBOR A", true),
+            (["HARBOR B"], "HARBOR A", false),
+            (["HARBOR"], "HARBOR A", false),
+            ([], "HARBOR A", false),
+            (["HARBOR A"], "", false),
+            (["HARBOR A"], " \n\t", false),
+            (["Amber windows", "welcome the rain"], Self.localLine, true),
+            ([Self.firstLine], Self.localLine, false),
+            (["80 % + 79 %"], "79%", true),
+            (["80% + 78%"], "79%", false),
+            (["80% + 79"], "79%", false),
+        ]
+        for (index, value) in cases.enumerated() {
+            try require(contains(value.0, value.1) == value.2, "exact-character OCR normalization control \(index)")
+        }
+        print("MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true")
+    }
+    private func dumpSyntheticFailureState() {
+        // Only original in-memory fixtures enter this harness. These read-only
+        // operands make later failures diagnosable before orderly retirement.
+        for (index, value) in fixtures.enumerated() where value.controller.synthetic {
+            let controller = value.controller
+            print("MUSIC_FAILURE_SOURCE: fixture=\(index) enabled=\(controller.enabled) playing=\(controller.isPlayingForPresentation) title=\(String(reflecting: controller.trackTitle)) line=\(String(reflecting: controller.line)) status=\(String(reflecting: controller.statusText)) local=\(controller.hasLocalLyrics) readCursor=\(value.readCursor) importCursor=\(value.importCursor) snapshot=\(String(reflecting: controller.syntheticPlaybackSnapshot))")
+        }
+        for (index, panel) in passivePanels.enumerated() {
+            print("MUSIC_FAILURE_PANEL: panel=\(index) owner=\(String(reflecting: panel.smokeExpansionOwner)) progress=\(panel.smokeProgress) target=\(panel.smokeTargetProgress) motion=\(panel.smokeMotionRunning) interacting=\(panel.isInteracting) musicTarget=\(panel.smokeMusicTargetActive) musicVisible=\(panel.smokeMusicVisible) noticeTarget=\(panel.smokeNoticeTargetActive) noticeVisible=\(panel.smokeNoticeVisible) armed=\(String(reflecting: panel.smokeNoticeArmedAt)) probe=\(String(reflecting: panel.motionProbe))")
+        }
     }
     private func makeGeometry() -> IslandGeometry? {
         let frame = screen.frame, width: CGFloat = 220, inset: CGFloat = 32
@@ -624,8 +1201,8 @@ final class MusicRenderHarness: NSObject {
             "native measured Quit remains visible, routed and nonactivating with music")
         expandedChecks += 1
     }
-    private func ownViewImage(_ island: IslandPanelController) throws -> (image: CGImage, width: Int, height: Int) {
-        guard let view = island.panel.contentView, island.smokeProgress == 1,
+    private func ownViewImage(_ island: IslandPanelController, progress: Double = 1) throws -> (image: CGImage, width: Int, height: Int) {
+        guard let view = island.panel.contentView, island.smokeProgress == progress,
               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw Failure(label: "missing own-view bitmap") }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let image = bitmap.cgImage,
@@ -635,18 +1212,24 @@ final class MusicRenderHarness: NSObject {
         }
         return (image, bitmap.pixelsWide, bitmap.pixelsHigh)
     }
-    private func makeNotice() throws -> RefreshNotice {
+    private func makeNotice(duration: NoticeDuration = .long, verifiedContinuity: Bool = false) throws -> RefreshNotice {
         let base = Date().addingTimeInterval(-5), reset = Date().addingTimeInterval(3600)
         func quota(_ used: Double, at date: Date) throws -> QuotaSnapshot {
-            let json = "{\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":\(used),\"windowDurationMins\":300,\"resetsAt\":\(reset.timeIntervalSince1970)}}}"
+            let identity = verifiedContinuity ? "\"accountId\":\"synthetic-music-account\"," : ""
+            let json = "{\(identity)\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":\(used),\"windowDurationMins\":300,\"resetsAt\":\(reset.timeIntervalSince1970)}}}"
             return try QuotaParser.parse(Data(json.utf8), fetchedAt: date)
         }
         var tracker = QuotaUpdateTracker()
         let first = try quota(20, at: base); _ = tracker.record(first, at: base)
         let second = try quota(21, at: Date()), update = tracker.record(second, at: second.fetchedAt)
         guard let notice = RefreshNotice.make(result: update, snapshot: second, preferredBucketID: "codex",
-            preferredWindowID: "codex:primary", duration: .long, receivedAt: second.fetchedAt), notice.isEligible else {
+            preferredWindowID: "codex:primary", duration: duration, receivedAt: second.fetchedAt), notice.isEligible else {
             throw Failure(label: "synthetic changed quota did not form eligible notice")
+        }
+        if verifiedContinuity {
+            guard case let .decreased(points)? = notice.change, abs(points - 1) < 0.001 else {
+                throw Failure(label: "synthetic verified account continuity did not produce the one-point OCR delta")
+            }
         }
         return notice
     }
@@ -655,7 +1238,7 @@ final class MusicRenderHarness: NSObject {
         finished = true
         let elapsed = CACurrentMediaTime() - startedAt
         stop()
-        let valid = success && elapsed <= 43 && paintedChecks == 1 && expandedChecks == 2
+        let valid = success && elapsed <= 100 && paintedChecks == 1 && passivePaintChecks == 5 && legacyLabelChecks == 6 && expandedChecks == 2
         print(valid ? "MUSIC_OK: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true localViewPixels=true scanout=false"
                     : "MUSIC_FAILED: native synthetic music integration contract failed")
         completion(valid)
@@ -664,6 +1247,7 @@ final class MusicRenderHarness: NSObject {
         watchdog?.invalidate(); watchdog = nil
         task?.cancel(); task = nil
         island?.stop()
+        for panel in passivePanels { panel.stop() }
         detailPanel?.orderOut(nil); detailPanel?.close(); detailPanel = nil
         for value in defaultsControllers { value.stop() }
         if let gate = defaultReaderGate { Task { await gate.releaseAll(.unavailable(.cancelled)) } }
@@ -735,13 +1319,17 @@ private final class MusicFixture {
     var readCursor = 0
     var lookupCursor = 0
     var importCursor = 0
-    init() {
+    init(lookupFailure: LyricsLookupError? = nil) {
         let reader = MusicFixtureGate<Bool, MusicReadResult>()
         let lookup = MusicFixtureGate<MusicLookupInput, LyricsLookupResult>()
         let importer = MusicFixtureGate<URL, LyricsDocument>()
         self.reader = reader; self.lookup = lookup; self.importer = importer
         controller = MusicLyricsController(synthetic: true, reader: MusicFixtureReader(gate: reader),
-            lookup: { track, consent in await lookup.invoke(MusicLookupInput(track: track, consent: consent)) },
+            lookup: { track, consent in
+                let result = await lookup.invoke(MusicLookupInput(track: track, consent: consent))
+                if let lookupFailure { throw lookupFailure }
+                return result
+            },
             importer: { url in await importer.invoke(url) })
     }
 }
@@ -749,13 +1337,13 @@ private final class MusicFixture {
 private enum MusicRasterOCR {
     /// Vision text recognition is on-device. A timeout resumes independently of
     /// the worker and cancels its request, leaving the main run loop responsive.
-    static func recognize(_ image: CGImage) async -> [String]? {
+    static func recognize(_ image: CGImage, languages: [String] = ["zh-Hans", "en-US"]) async -> [String]? {
         await withCheckedContinuation { continuation in
             let gate = MusicOCRGate(continuation)
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
-            request.recognitionLanguages = ["en-US"]
+            request.recognitionLanguages = languages
             request.usesCPUOnly = true
             DispatchQueue.global(qos: .userInitiated).async {
                 do {

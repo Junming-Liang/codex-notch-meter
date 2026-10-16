@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import QuartzCore
+import Combine
 import NotchCore
 
 final class TopEdgePanel: NSPanel {
@@ -21,6 +22,7 @@ private final class IslandPresentation: ObservableObject {
     @Published var geometry: IslandGeometry
     @Published var notice: RefreshNotice?
     @Published var showingDetails = true
+    @Published var showingMusic = false
     init(geometry: IslandGeometry) { self.geometry = geometry }
 }
 
@@ -70,7 +72,7 @@ private struct IslandRootView: View {
     let paintStore: IslandPaintStore
     var body: some View {
         let p = presentation.progress
-        let promoting = presentation.notice != nil
+        let promoting = presentation.notice != nil || presentation.showingMusic
         let detailReveal = promoting ? IslandReveal.smooth((p - geometry.updateProgress) / (1 - geometry.updateProgress)) : IslandReveal.details(p)
         GeometryReader { viewport in
             let visual = IslandVisualFrame(geometry: geometry, progress: p, viewport: viewport.size,
@@ -81,7 +83,7 @@ private struct IslandRootView: View {
             IslandPaintView(frame: visual, remaining: remaining, theme: model.theme,
                 colorPhase: model.skinPhase, dimmed: model.degraded || pending, store: paintStore)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(window.map { "刘海主额度 · " + windowTitle($0) } ?? "额度不可用")
+                .accessibilityLabel(window.map { "主额度 · " + windowTitle($0) } ?? "额度不可用")
                 .accessibilityValue((remaining.map { "剩余 \(Int($0.rounded()))%" } ?? "未知") + (model.degraded ? "，上次读取" : "") + (pending ? "，等待刷新确认" : ""))
                 .accessibilityHidden(p > 0.1)
                 .overlay(alignment: .topLeading) {
@@ -94,6 +96,16 @@ private struct IslandRootView: View {
                             .opacity(presentation.showingDetails ? (motionProfile.forcesLayout ? min(1, max(0, (p - 0.35) / 0.5)) : detailReveal) : 0)
                             .allowsHitTesting(p == 1 && presentation.showingDetails)
                             .accessibilityHidden(p < 1)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    if presentation.showingMusic {
+                        MusicCompactView(music: model.music)
+                            .frame(width: 304, height: 62)
+                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - 152,
+                                    y: geometry.notch.height + 8)
+                            .opacity(IslandReveal.smooth(p / geometry.updateProgress) * (presentation.showingDetails ? 1 - detailReveal : 1))
+                            .allowsHitTesting(false).accessibilityHidden(p == 0)
                     }
                 }
                 .overlay(alignment: .topLeading) {
@@ -164,6 +176,13 @@ final class IslandPanelController: NSObject {
     private(set) var smokeNoticeArmedAt: TimeInterval?
     private(set) var smokeNoticePaintReadyAt: TimeInterval?
     private var noticeTargetActive = false
+    private var musicEligible = false
+    private var passiveMusicAllowed: Bool
+    private var musicSubscription: AnyCancellable?
+    private var expansionOwner: IslandExpansionOwner {
+        .resolve(hoverExpanded: hover.isExpanded, noticeActive: noticeTargetActive,
+                 musicEligible: musicEligible, passiveMusicAllowed: passiveMusicAllowed)
+    }
     private var lastMotionTime = CACurrentMediaTime()
     private let motionProfile: IslandMotionProfile
     private let motionSample: ((IslandMotionSample) -> Void)?
@@ -186,6 +205,7 @@ final class IslandPanelController: NSObject {
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
          motionProfile: IslandMotionProfile = .adaptive, drainsClosePresentation: Bool = true, motionSample: ((IslandMotionSample) -> Void)? = nil,
+         musicPresentationAllowed: Bool = true,
          activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
         let motionDiagnostic = model.demo && (CommandLine.arguments.contains("--motion-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")))
@@ -193,6 +213,8 @@ final class IslandPanelController: NSObject {
         self.drainsClosePresentation = model.demo && (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) ? drainsClosePresentation : true
         self.motionSample = motionSample
         self.model = model
+        self.passiveMusicAllowed = musicPresentationAllowed
+        self.musicEligible = model.music.isPlayingForPresentation
         self.presentation = IslandPresentation(geometry: geometry); self.hovered = hovered; self.activityChanged = activityChanged; self.reducedMotionOverride = reducedMotionOverride
         panel = TopEdgePanel(contentRect: geometry.frame(progress: 0), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
@@ -222,6 +244,15 @@ final class IslandPanelController: NSObject {
             let timer = Timer(timeInterval: 1.0 / 30, target: self, selector: #selector(pollPointer(_:)), userInfo: nil, repeats: true)
             RunLoop.main.add(timer, forMode: .common); pointerTimer = timer
         }
+        musicSubscription = model.music.$isPlayingForPresentation.removeDuplicates().sink { [weak self] _ in
+            // @Published sends before its source mutation completes. Queue only
+            // a bounded state edge; identical playback polls do not retarget.
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateMusicEligibility(self.model.music.isPlayingForPresentation)
+            }
+        }
+        if expansionOwner == .music { startMotion() }
     }
     func updateGeometry(_ value: IslandGeometry) {
         guard !stopped, geometry.hasSameAnchor(as: value) else { return }
@@ -238,6 +269,7 @@ final class IslandPanelController: NSObject {
         let hadDetails = displaysColoredDetails
         if (progress == 0 && !noticeTargetActive) || (progress == 1 && hover.isExpanded) {
             if presentation.notice != nil { presentation.notice = nil }
+            if presentation.showingMusic { presentation.showingMusic = false }
             if !presentation.showingDetails { presentation.showingDetails = true }
         }
         if presentation.progress != progress { presentation.progress = progress }
@@ -262,7 +294,7 @@ final class IslandPanelController: NSObject {
         guard !stopped else { return }
         let before = hover.isExpanded
         hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
-            resumeExpanded: (presentation.notice != nil && motion.progress > 0) || ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
+            resumeExpanded: ((presentation.notice != nil || presentation.showingMusic) && motion.progress > 0) || ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         if hover.isExpanded != before {
             if hover.isExpanded { hovered(); cancelNoticeTimers(); noticeTargetActive = false; presentation.showingDetails = true }
             else { noticeTargetActive = false }
@@ -286,7 +318,21 @@ final class IslandPanelController: NSObject {
             lastMotionTime = now
         }
         let integrated = motion
-        motionTargetValue = hover.isExpanded ? 1 : (noticeTargetActive ? geometry.updateProgress : 0)
+        let owner = expansionOwner
+        motionTargetValue = owner.target(compactProgress: geometry.updateProgress)
+        switch owner {
+        case .music:
+            // Notice expiry can return to music at the SAME progress. Retire its
+            // content explicitly rather than waiting for an idle endpoint.
+            presentation.notice = nil
+            presentation.showingDetails = false
+            presentation.showingMusic = true
+        case .quotaNotice:
+            presentation.showingDetails = false
+            presentation.showingMusic = false
+        case .details: presentation.showingDetails = true
+        case .idle: break // Keep the outgoing content through the existing fade.
+        }
         motionTargetExpanded = motionTargetValue > 0
         if motionSample != nil {
             lastRetarget = IslandMotionRetarget(scheduledTime: previousTime, eventTime: now,
@@ -383,6 +429,18 @@ final class IslandPanelController: NSObject {
         motionFrames?.stop(); motionFrames = nil
     }
     var isInteracting: Bool { hover.isExpanded }
+    private func updateMusicEligibility(_ eligible: Bool) {
+        guard !stopped, musicEligible != eligible else { return }
+        let previousOwner = expansionOwner
+        musicEligible = eligible
+        if expansionOwner != previousOwner { startMotion() }
+    }
+    func setMusicPresentationAllowed(_ allowed: Bool) {
+        guard !stopped, passiveMusicAllowed != allowed else { return }
+        let previousOwner = expansionOwner
+        passiveMusicAllowed = allowed
+        if expansionOwner != previousOwner { startMotion() }
+    }
     @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
         guard !stopped, notice.isEligible, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
         if presentation.notice?.id == notice.id && noticeTargetActive { return true }
@@ -453,6 +511,7 @@ final class IslandPanelController: NSObject {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        musicSubscription?.cancel(); musicSubscription = nil
         cancelNoticeTimers()
         pointerTimer?.invalidate(); pointerTimer = nil
         stopMotionFrames()
@@ -536,6 +595,9 @@ final class IslandPanelController: NSObject {
     var displaysColoredDetails: Bool { presentation.progress > 0.35 }
     var paintReceipt: IslandPaintReceipt? { paintStore.latest() }
     var smokeNoticeVisible: Bool { presentation.notice != nil }
+    var smokeMusicVisible: Bool { presentation.showingMusic }
+    var smokeMusicTargetActive: Bool { expansionOwner == .music }
+    var smokeExpansionOwner: IslandExpansionOwner { expansionOwner }
     var smokeNoticeID: UUID? { presentation.notice?.id }
     func verifyRetiredNoticeIsInert() -> Bool {
         guard CommandLine.arguments.contains("--update-test"), let timer = noticeExpiry else { return false }

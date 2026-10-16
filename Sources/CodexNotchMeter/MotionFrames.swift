@@ -150,7 +150,6 @@ enum IslandReveal {
         let t = min(1, max(0, value.isFinite ? value : 0))
         return t * t * (3 - 2 * t)
     }
-    static func surface(_ progress: Double) -> Double { smooth(progress * 3) }
     static func rail(_ progress: Double) -> Double { 1 - smooth(progress) }
     static func details(_ progress: Double) -> Double { smooth((progress - 0.32) / 0.58) }
 }

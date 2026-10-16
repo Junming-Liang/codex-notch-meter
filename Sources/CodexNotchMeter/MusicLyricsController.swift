@@ -4,7 +4,8 @@ import Combine
 import NotchCore
 
 /// Only this optional feature owns Music IPC and lyric lookup. It never invokes
-/// quota refresh or changes island geometry/presentation priority.
+/// quota refresh. Validated playback eligibility is consumed by the island's
+/// single presentation owner; lyric/status strings are never eligibility inputs.
 @MainActor
 final class MusicLyricsController: ObservableObject {
     typealias Lookup = @Sendable (LyricsLookupTrack, Bool) async throws -> LyricsLookupResult
@@ -18,6 +19,8 @@ final class MusicLyricsController: ObservableObject {
     @Published private(set) var sourceLabel = ""
     @Published private(set) var needsAuthorization = false
     @Published private(set) var hasLocalLyrics = false
+    @Published private(set) var isPlayingForPresentation = false
+    @Published private(set) var lookupState = LyricsLookupState.idle
     let synthetic: Bool
 
     private let defaults: UserDefaults?
@@ -35,6 +38,10 @@ final class MusicLyricsController: ObservableObject {
     private var epoch = UUID()
     private var trackRevision = UUID()
     private var lookupGeneration: UInt64?
+    private var lookupAttempts = 0
+    private var lookupRetryAt: TimeInterval?
+    private var lookupNotBefore: TimeInterval = 0
+    private var lookupCooldownState = LyricsLookupState.temporaryFailure
     private var started = false
     private var active = true
     private var stopped = false
@@ -94,6 +101,7 @@ final class MusicLyricsController: ObservableObject {
         onlineLookupEnabled = value
         defaults?.set(value, forKey: "musicLyricsOnlineLookupEnabled")
         lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
+        resetLookupState()
         if !hasLocalLyrics {
             document = .unavailable
             _ = timeline.setLyrics(.unavailable, generation: timeline.generation)
@@ -126,6 +134,11 @@ final class MusicLyricsController: ObservableObject {
     }
 
     var importSelectionToken: UUID? { canImport ? trackRevision : nil }
+
+    // Read-only native-fixture receipts. Real playback never exposes these
+    // probes; they neither publish changes nor alter asynchronous completion.
+    var syntheticPlaybackSnapshot: MusicPlaybackSnapshot? { synthetic ? current : nil }
+    var syntheticLyricsDocument: LyricsDocument? { synthetic ? document : nil }
 
     func importLyrics(from userSelectedURL: URL, for selectionToken: UUID) {
         guard canImport, selectionToken == trackRevision, let track = current?.track else { return }
@@ -160,6 +173,7 @@ final class MusicLyricsController: ObservableObject {
         hasLocalLyrics = false; document = .unavailable; sourceLabel = ""; line = ""
         _ = timeline.setLyrics(.unavailable, generation: timeline.generation)
         lookupGeneration = nil
+        resetLookupState()
         statusText = "可为当前歌曲导入 LRC 歌词"
         beginLookupIfNeeded()
     }
@@ -174,11 +188,17 @@ final class MusicLyricsController: ObservableObject {
     }
 
     private func clearPlayback() {
+        if isPlayingForPresentation { isPlayingForPresentation = false }
         trackRevision = UUID()
         _ = timeline.replaceTrack(at: clock())
         current = nil; document = .unavailable
         trackTitle = ""; line = ""; sourceLabel = ""
         hasLocalLyrics = false; needsAuthorization = false
+        resetLookupState()
+    }
+
+    private func resetLookupState() {
+        lookupAttempts = 0; lookupRetryAt = nil; lookupState = .idle
     }
 
     private func beginPolling(allowPermissionPrompt: Bool) {
@@ -234,6 +254,7 @@ final class MusicLyricsController: ObservableObject {
                 lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
                 importTask?.cancel(); importTask = nil
                 document = .unavailable; hasLocalLyrics = false; sourceLabel = ""; line = ""
+                resetLookupState()
                 // The observed sample predates its receipt; use that observation
                 // as the new generation's earliest valid anchor.
                 timeline = LyricsTimeline()
@@ -252,15 +273,24 @@ final class MusicLyricsController: ObservableObject {
 
     private func beginLookupIfNeeded() {
         guard enabled, onlineLookupEnabled, active, !stopped, !hasLocalLyrics,
-              lookupTask == nil, canImport, let value = current,
-              lookupGeneration != timeline.generation else { return }
+              lookupTask == nil, canImport, let value = current else { return }
+        guard clock() >= lookupNotBefore else {
+            lookupState = lookupCooldownState; statusText = lookupStatusText
+            return
+        }
+        if lookupGeneration == timeline.generation {
+            guard value.state == .playing, let retryAt = lookupRetryAt,
+                  clock() >= retryAt, lookupAttempts < LyricsRetryPolicy.maximumAttempts else { return }
+        }
         let generation = timeline.generation
         lookupGeneration = generation
         guard let track = try? LyricsLookupTrack(title: value.track.title, artist: value.track.artist,
                                                 album: value.track.album, duration: value.track.duration) else {
+            lookupState = .invalidMetadata
             statusText = "歌曲信息不足以可靠匹配在线歌词，可导入本地 LRC"
             return
         }
+        lookupAttempts += 1; lookupRetryAt = nil; lookupState = .loading
         let token = epoch
         let identity = value.track
         let revision = trackRevision
@@ -274,18 +304,44 @@ final class MusicLyricsController: ObservableObject {
                 self.lookupTask = nil
                 switch result {
                 case .matched(let value):
+                    self.lookupState = .matched
                     self.document = value; self.sourceLabel = "LRCLIB 社区歌词"
                     _ = self.timeline.setLyrics(value, generation: generation)
                     self.refreshLine()
-                case .noMatch: self.statusText = "未找到匹配歌词，可导入本地 LRC"
-                case .unavailable: self.statusText = "匹配记录暂无可用歌词，可导入本地 LRC"
+                case .noMatch: self.lookupState = .noMatch; self.statusText = self.lookupStatusText
+                case .unavailable: self.lookupState = .unavailable; self.statusText = self.lookupStatusText
                 }
             } catch {
                 guard let self, !Task.isCancelled, self.epoch == token,
                       self.current?.track == identity, self.trackRevision == revision else { return }
                 self.lookupTask = nil
-                self.statusText = "在线歌词暂不可用，可导入本地 LRC"
+                let reason = (error as? LyricsLookupError) ?? .transportFailure
+                self.lookupState = .failure(reason)
+                if let deadline = LyricsRetryPolicy.cooldownUntil(after: reason,
+                    completedAttempts: self.lookupAttempts, now: self.clock()) {
+                    self.lookupNotBefore = max(self.lookupNotBefore, deadline)
+                    self.lookupCooldownState = self.lookupState
+                }
+                self.lookupRetryAt = LyricsRetryPolicy.nextAttemptAt(after: reason,
+                    completedAttempts: self.lookupAttempts, now: self.clock())
+                self.statusText = self.lookupStatusText
             }
+        }
+    }
+
+    private var lookupStatusText: String {
+        guard onlineLookupEnabled else { return "可为当前歌曲导入 LRC 歌词" }
+        switch lookupState {
+        case .idle: return "等待歌词匹配"
+        case .loading: return "正在向 LRCLIB 匹配歌词…"
+        case .matched, .unavailable: return "匹配记录暂无可用歌词，可导入本地 LRC"
+        case .noMatch: return "未找到匹配歌词，可导入本地 LRC"
+        case .invalidMetadata: return "歌曲信息不足以可靠匹配在线歌词，可导入本地 LRC"
+        case .identityMismatch: return "匹配结果版本不一致，可导入本地 LRC"
+        case .rateLimited: return "歌词服务请求受限，可稍后重试或导入本地 LRC"
+        case .serviceUnavailable: return "歌词服务暂不可用，可稍后重试或导入本地 LRC"
+        case .temporaryFailure: return "在线歌词暂时读取失败，可稍后重试或导入本地 LRC"
+        case .rejected: return "歌词响应无法安全使用，可导入本地 LRC"
         }
     }
 
@@ -299,6 +355,13 @@ final class MusicLyricsController: ObservableObject {
             let age = now - value.observedAt
             if !age.isFinite || age < 0 || age >= timeline.freshnessInterval { selection = .stale }
         }
+        let playing: Bool
+        if enabled, active, !stopped, let value = current {
+            let age = now - value.observedAt
+            playing = value.state == .playing && age.isFinite && age >= 0
+                && age < timeline.freshnessInterval && value.position + age < value.track.duration
+        } else { playing = false }
+        if isPlayingForPresentation != playing { isPlayingForPresentation = playing }
         switch selection {
         case .line(_, let cue): line = cue.text; statusText = current?.state == .paused ? "已暂停" : "同步歌词"
         case .plain(let lines): line = lines.first ?? ""; statusText = "纯文本歌词 · 未同步"
@@ -310,7 +373,13 @@ final class MusicLyricsController: ObservableObject {
         case .waitingForPlayback: line = ""; statusText = "等待播放位置"
         case .unavailable:
             line = ""
-            if lookupTask == nil { statusText = onlineLookupEnabled ? "暂无匹配歌词，可导入本地 LRC" : "可为当前歌曲导入 LRC 歌词" }
+            statusText = lookupStatusText
+        }
+        // Pause hides the music presentation immediately; keep only internal
+        // track/document identity so a fresh resume can select its current cue.
+        if current?.state == .paused {
+            line = ""
+            if !trackTitle.isEmpty { statusText = "已暂停" }
         }
         guard enabled, active, !stopped, let value = current else { return }
         var next = value.observedAt + timeline.freshnessInterval

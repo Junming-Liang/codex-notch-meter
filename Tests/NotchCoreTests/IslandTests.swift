@@ -5,6 +5,134 @@ import CoreGraphics
 @testable import NotchCore
 
 final class IslandTests: XCTestCase {
+    func testMusicPresentationPriorityExhaustively() {
+        for hover in [false, true] {
+            for notice in [false, true] {
+                for music in [false, true] {
+                    for allowed in [false, true] {
+                        let owner = IslandExpansionOwner.resolve(hoverExpanded: hover,
+                            noticeActive: notice, musicEligible: music, passiveMusicAllowed: allowed)
+                        let expected: IslandExpansionOwner = hover ? .details : (notice ? .quotaNotice : (music && allowed ? .music : .idle))
+                        XCTAssertEqual(owner, expected)
+                    }
+                }
+            }
+        }
+    }
+    func testNoticeReturnsToLatestPlaybackStateWithoutAnotherGeometry() {
+        let compact = 0.4
+        let notice = IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: true,
+            musicEligible: true, passiveMusicAllowed: true)
+        let music = IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: false,
+            musicEligible: true, passiveMusicAllowed: true)
+        let paused = IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: false,
+            musicEligible: false, passiveMusicAllowed: true)
+        XCTAssertEqual(notice.target(compactProgress: compact), music.target(compactProgress: compact))
+        XCTAssertEqual(paused.target(compactProgress: compact), 0)
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: true,
+            musicEligible: false, passiveMusicAllowed: true), .quotaNotice)
+    }
+    func testPauseUnderHoverKeepsOnlyManualDetailsOwner() {
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: true, noticeActive: false,
+            musicEligible: false, passiveMusicAllowed: true), .details)
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: false,
+            musicEligible: false, passiveMusicAllowed: true), .idle)
+    }
+    func testPassiveSuppressionDoesNotStealNoticeOrManualOwnership() {
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: false,
+            musicEligible: true, passiveMusicAllowed: false), .idle)
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: false, noticeActive: true,
+            musicEligible: true, passiveMusicAllowed: false), .quotaNotice)
+        XCTAssertEqual(IslandExpansionOwner.resolve(hoverExpanded: true, noticeActive: false,
+            musicEligible: true, passiveMusicAllowed: false), .details)
+    }
+    func testCompactOwnerTargetsFailClosedForNonfiniteValues() {
+        for owner in [IslandExpansionOwner.music, .quotaNotice] {
+            for value in [Double.nan, .infinity, -.infinity] {
+                XCTAssertEqual(owner.target(compactProgress: value), 0)
+            }
+            XCTAssertEqual(owner.target(compactProgress: -1), 0)
+            XCTAssertEqual(owner.target(compactProgress: 2), 1)
+        }
+    }
+    func testAutomaticTargetReversalsPreserveExistingSpring() {
+        var motion = IslandMotion()
+        let target = IslandExpansionOwner.music.target(compactProgress: 0.4)
+        for _ in 0..<8 { motion.advance(target: target, elapsed: 1.0 / 60, reduceMotion: false) }
+        let before = motion
+        motion.advance(target: 0, elapsed: 0, reduceMotion: false)
+        XCTAssertEqual(motion, before)
+        for next in [0.0, target, 1.0, target, 0.0] {
+            for _ in 0..<120 { motion.advance(target: next, elapsed: 1.0 / 60, reduceMotion: false) }
+            XCTAssertTrue(motion.isSettled(at: next))
+        }
+    }
+    func testAutomaticCompactTargetsRespectReduceMotion() {
+        var motion = IslandMotion()
+        for owner in [IslandExpansionOwner.music, .quotaNotice, .details, .music, .idle] {
+            let target = owner.target(compactProgress: 0.4)
+            motion.advance(target: target, elapsed: 0, reduceMotion: true)
+            XCTAssertTrue(motion.isSettled(at: target))
+        }
+    }
+    func testShrinkingBodyRemainsVisibleUntilNearIdleAcrossContentAndCalibration() {
+        for height in [CGFloat(132), 180, 340] {
+            for depth in [-6.0, 0, 6] {
+                let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+                let camera = CGRect(x: 609.25, y: 868, width: 221.5, height: 32)
+                let geometry = IslandGeometry(notch: NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero),
+                    screen: screen, shapeCalibration: ContourCalibration(depth: depth), contentHeight: height)
+                for p in [0.10, 0.05, 0.02] {
+                    let distance = geometry.contourResidual(progress: p)
+                    let t = min(1, distance / 4)
+                    XCTAssertEqual(geometry.surfaceOpacity(progress: p), t * t * (3 - 2 * t), accuracy: 1e-12)
+                    let oldT = min(1, p * 3)
+                    let oldAlpha = oldT * oldT * (3 - 2 * oldT)
+                    XCTAssertGreaterThan(geometry.surfaceOpacity(progress: p), oldAlpha + 0.5)
+                }
+                XCTAssertEqual(geometry.surfaceOpacity(progress: 0), 0)
+                XCTAssertEqual(geometry.surfaceOpacity(progress: 1), 1)
+                XCTAssertLessThan(geometry.surfaceOpacity(progress: 0.001), 0.022)
+                XCTAssertLessThan(geometry.surfaceOpacity(progress: 0.0005), 0.006)
+                let alphas = (0...1000).map { geometry.surfaceOpacity(progress: Double($0) / 1000) }
+                for index in 1..<alphas.count { XCTAssertGreaterThanOrEqual(alphas[index], alphas[index - 1]) }
+            }
+        }
+    }
+    func testBodyFadeUsesGlobalGeometryAndIsIndependentOfWindowPixelRounding() {
+        func geometry(origin: CGPoint, scale: CGFloat) -> IslandGeometry {
+            let screen = CGRect(origin: origin, size: CGSize(width: 1440, height: 900))
+            let camera = CGRect(x: screen.minX + 511.25, y: screen.maxY - 32.25, width: 219, height: 32.25)
+            return IslandGeometry(notch: NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero),
+                screen: screen, backingScale: scale, horizontalAdjustment: 0.5,
+                shapeCalibration: ContourCalibration(width: -16, depth: -6, corner: 6), contentHeight: 340)
+        }
+        let reference = geometry(origin: .zero, scale: 1)
+        for origin in [CGPoint.zero, CGPoint(x: -2048.25, y: 900.5), CGPoint(x: 17.75, y: -1400.25)] {
+            for scale in [CGFloat(1), 1.5, 2] {
+                let candidate = geometry(origin: origin, scale: scale)
+                for p in [0.0, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.1, 0.5, 1] {
+                    XCTAssertEqual(candidate.contourResidual(progress: p), reference.contourResidual(progress: p), accuracy: 1e-9)
+                    XCTAssertEqual(candidate.surfaceOpacity(progress: p), reference.surfaceOpacity(progress: p), accuracy: 1e-9)
+                }
+            }
+        }
+    }
+    func testBodyFadeReversalHasNoDirectionStateAndInvalidProgressIsTransparent() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let camera = CGRect(x: 610, y: 868, width: 220, height: 32)
+        let geometry = IslandGeometry(notch: NotchGeometry(notch: camera, leftPanel: .zero, rightPanel: .zero), screen: screen)
+        let path = [0.0, 0.001, 0.005, 0.02, 0.1, 0.5]
+        XCTAssertEqual(path.map { geometry.surfaceOpacity(progress: $0) }, Array(path.reversed().map { geometry.surfaceOpacity(progress: $0) }.reversed()))
+        for p in [Double.nan, .infinity, -.infinity, -1] { XCTAssertEqual(geometry.surfaceOpacity(progress: p), 0) }
+        // C1 at idle: the first finite difference tends to zero, unlike a step.
+        XCTAssertLessThan(geometry.surfaceOpacity(progress: 1e-7) / 1e-7, 0.01)
+        var motion = IslandMotion()
+        motion.advance(target: 0.4, elapsed: 0, reduceMotion: true)
+        XCTAssertEqual(geometry.surfaceOpacity(progress: motion.progress), 1)
+        motion.advance(target: 0, elapsed: 0, reduceMotion: true)
+        XCTAssertEqual(geometry.surfaceOpacity(progress: motion.progress), 0)
+    }
     func testHoverRequiresDwellAndCancelsFlyby() {
         var state = IslandHoverState()
         state.update(inside: true, now: 0)

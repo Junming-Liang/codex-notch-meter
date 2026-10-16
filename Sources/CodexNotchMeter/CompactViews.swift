@@ -73,7 +73,7 @@ struct CompactDetailView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
                 Text(windowTitle(window)).font(.system(size: 11))
-                if window.id == model.primaryWindow?.id { Text("刘海").font(.system(size: 8)).foregroundStyle(.secondary) }
+                if window.id == model.primaryWindow?.id { Text("主额度").font(.system(size: 8)).foregroundStyle(.secondary) }
                 Spacer()
                 Text(window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "—")
                     .font(.system(size: 21, weight: .semibold)).monospacedDigit()
