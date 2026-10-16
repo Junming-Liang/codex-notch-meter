@@ -31,7 +31,9 @@ for guard in ('URLSessionConfiguration.ephemeral', 'config.httpCookieStorage = n
     if guard not in lyrics_transport:
         failures.append(f'Optional lyrics transport safety guard missing: {guard}')
 lyrics_policy = (root / 'Sources/NotchCore/LyricsLookup.swift').read_text()
-for guard in ('guard consent else', 'components.host = "lrclib.net"', 'components.path = "/api/get"'):
+for guard in ('guard consent else', 'components.host = "lrclib.net"', 'parts.percentEncodedPath == "/api/get"',
+              'parts.percentEncodedPath == "/api/search"', 'maximumRequestsPerLookup = 3',
+              'guard let url = components.url, isAllowed(url: url)'):
     if guard not in lyrics_policy:
         failures.append(f'Optional lyrics request safety guard missing: {guard}')
 rpc = (root / 'Sources/NotchCore/RPC.swift').read_text()
@@ -48,16 +50,16 @@ if len(versions) != 1 or len(releases) != 1 or len(builds) != 1:
     failures.append('Application bundle/release version and build must be uniquely declared')
 else:
     expected_version, expected_release, expected_build = versions[0], releases[0], builds[0]
-    # This candidate is explicitly beta-only. A numeric final tag cannot pass
-    # by being parsed as the prefix of the intended prerelease identifier.
-    if not re.fullmatch(re.escape(expected_version) + r'-beta\.[1-9][0-9]*', expected_release):
-        failures.append('Release must be a beta of the numeric bundle version')
+    # The formal release identity must exactly equal its numeric bundle version.
+    # A beta tag/archive cannot pass by being parsed only through its numeric prefix.
+    if expected_release != expected_version:
+        failures.append('Formal release must match the numeric bundle version exactly')
     if app_build.count('<key>CFBundleShortVersionString</key><string>$version</string>') != 1:
         failures.append('Bundle short version must use the numeric version')
     if app_build.count('<key>CodexNotchMeterReleaseVersion</key><string>$release_version</string>') != 1:
-        failures.append('Bundle release identity must use the explicit beta version')
+        failures.append('Bundle release identity must use the explicit release version')
     if app_build.count('archive="dist/CodexNotchMeter-${release_version}-${archs}.zip"') != 1:
-        failures.append('Archive name must use the explicit beta version')
+        failures.append('Archive name must use the explicit release version')
     version_pins = [
         ('Scripts/build-dmg.py', r'^VERSION = "([^"\n]+)"$', expected_version),
         ('Scripts/build-dmg.py', r'^RELEASE_VERSION = "([^"\n]+)"$', expected_release),
@@ -68,7 +70,7 @@ else:
         ('Sources/NotchCore/LyricsLookup.swift', r'CodexNotchMeter/([^ "\n]+) ', expected_release),
         ('Tests/NotchCoreTests/LyricsLookupTests.swift', r'contains\("CodexNotchMeter/([^ "\n]+) "\)', expected_release),
         ('Sources/NotchCore/RPC.swift', r'"version": "([^"\n]+)"', expected_release),
-        ('Sources/CodexNotchMeter/Views.swift', r'Text\("v([^ "\n]+) · Beta 测试版"\)', expected_release),
+        ('Sources/CodexNotchMeter/Views.swift', r'Text\("v([^ "\n]+) · 正式版"\)', expected_release),
         ('.github/workflows/macos.yml', r'CodexNotchMeter-([0-9][A-Za-z0-9.+-]*)-universal', expected_release),
         ('.github/workflows/macos.yml', r'(?:refs/tags/v|release create v|tag_name == "v|description: Publish v|## Codex Notch Meter v|--title "v)([0-9][A-Za-z0-9.+-]*)', expected_release),
     ]
@@ -82,9 +84,9 @@ else:
     for required in ('IMAGE_NAME = f"CodexNotchMeter-{RELEASE_VERSION}-universal.dmg"',
                      '"CodexNotchMeterReleaseVersion": RELEASE_VERSION,'):
         if dmg_build.count(required) != 1:
-            failures.append('DMG identity must use the explicit beta version')
-    if (root / '.github/workflows/macos.yml').read_text().count('            --prerelease \\') != 1:
-        failures.append('Beta release must retain the GitHub prerelease flag')
+            failures.append('DMG identity must use the explicit release version')
+    if '--prerelease' in (root / '.github/workflows/macos.yml').read_text():
+        failures.append('Formal release must not retain the prerelease flag')
 subprocess.run(['bash', '-n', str(root / 'Scripts/build-app.sh')], check=True)
 summary = {'swift_source_files': len(sources), 'swift_test_files': len(list((root / 'Tests').rglob('*.swift'))),
            'static_checks': 'FAIL' if failures else 'PASS', 'failures': failures,
