@@ -62,9 +62,9 @@ Fresh continuous snapshots with an actual numeric quota change can target an int
 
 Numerical changes use percentage points only when the existing response supplies comparable account/window/reset identity and fresh timestamps. Initial, unknown, reset, increased, failed and unchanged reads have truthful alternative wording. Account identity never enters presentation or artifacts. Fixed precision and a `<0.01` label avoid false zero-consumption text.
 
-### v0.1.8 motion and notice follow-up (native verification pending)
+### v0.1.8 motion and notice follow-up (released)
 
-The body and full-U rail now submit through one synchronous Canvas using one immutable progress/contour/viewport value. The outline is composited as one opacity group, gradients retain full-viewport coordinates, and the old v0.1.7 path/frame/3.5pt color/4pt black widths remain unchanged. Paint callbacks write only a non-observable receipt. Native motion observations and independent pixel probes must both pass; neither proves compositor scanout.
+The body and full-U rail now submit through one synchronous Canvas using one immutable progress/contour/viewport value. The outline is composited as one opacity group, gradients retain full-viewport coordinates, and the old v0.1.7 path/frame/3.5pt color/4pt black widths remain unchanged. Paint callbacks write only a non-observable receipt. Native motion observations and independent pixel probes passed in release run #28; neither proves compositor scanout. See [validation results](VALIDATION.md).
 
 The requested reference is [DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit/tree/cd0b3e52d537db115ad3a9d89601f20e0bee8d27), inspected 2026-10-16. Its source defaults to a 0.4 s bouncy opening and 0.4 s smooth closing; its 75-frame/20 fps README GIF independently shows roughly 0.35–0.45 s of main size change. The current source can postdate that GIF. Our bounded critically damped solver changes from 18 to 16 rad/s, giving an analytical 99% response near 0.415 s with continuous position/velocity on reversal. This is reference-informed pacing, not the same spring, copied source, a new dependency or a physical smoothness guarantee.
 

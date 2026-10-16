@@ -1,10 +1,10 @@
 # 安装、登录时启动与皮肤
 
-## v0.1.7 开发预览
+## v0.1.8 开发预览
 
-[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.7/CodexNotchMeter-0.1.7-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.7)
+[下载 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.dmg) · [ZIP 备用下载](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.zip) · [发布说明](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.8)
 
-本版仅加厚轮廓描边，路径与位置不变；五款皮肤的圆角旧/新宽度覆盖对比已通过。原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
+本版仅在额度数值变化时显示提示，停留可选 2 / 4 / 6 秒，默认 4 秒，从完全展开后开始计时；本体与进度轮廓同帧绘制，路径、位置及 3.5 / 4 pt 描边不变。原生编译、五款皮肤/动效检查、原始边界像素对齐与微调检查和 DMG 只读挂载验证已通过；登录项只进行了模拟状态转换与真实 API 只读检查。实际注册、用户批准及重新登录/重启后的启动尚未验证。完整证据见[验证说明](VALIDATION.md)。
 
 ## 安装
 
@@ -44,6 +44,10 @@ v0.1.6 在 macOS 14+ 使用随显示器刷新的几何更新，macOS 13 使用�
 
 几何动效与彩虹颜色时钟分开，后者仍最高 15 fps，不增加额度读取。云端原生时序与实际窗口/呈现层边界检查已通过；这不代表已在每种 Mac 或实际 macOS 13 上验证手感。
 
+## 额度变化提示
+
+“设置 → 显示”可关闭额度变化提示，或设置“提示停留时长”：短 2 秒、标准 4 秒、长 6 秒。默认标准；停留从完全展开后的实际绘制开始，鼠标移入转为详情并保持打开。首读、未变化、读取失败和仅时间戳等元数据变化不会弹出。减少量使用百分点，只有连续、可比较的账户及窗口读数才计算；重置不当作消耗。
+
 ## 水平微调
 
 默认按系统报告的刘海安全区域对齐，不自动左移。若实物仍有轻微偏差，可在“设置 → 显示 → 水平微调”使用减号向左、加号向右；单位是 macOS 逻辑点，每次 0.5 pt，最多 ±8 pt，靠近屏幕边界时进一步限制。可随时“重置”回到 0。
@@ -67,6 +71,8 @@ Five skins are available. Mint is static by default; choosing Rainbow opts into 
 Version 0.1.5 provides default-zero per-built-in-display horizontal calibration in logical points, with 0.5pt steps, bounds and Reset. Public display UUIDs are local preference keys only; no serial-number lookup or identifier upload occurs. Actual physical alignment still needs observation.
 
 Version 0.1.5 adds display-linked hover geometry on macOS 14+ and a transition-only main-queue fallback for macOS 13. Mid-collapse reentry preserves position and velocity; prewarmed details remain non-sizing. Reduce Motion snaps to the target. Native timing checks passed on the hosted newer OS; physical smoothness and actual macOS 13 runtime remain unverified. The separate rainbow clock stays capped at 15 fps.
+
+Version 0.1.8 only shows a notice for actual numeric quota changes. Notice Hold offers 2/4/6 seconds, default 4, measured after the expanded paint is ready; hovering holds details open. Unchanged, initial, failed and metadata-only reads stay silent. Body and rail use one drawing pass with reference-informed pacing, preserving the existing shape and stroke widths.
 
 ## 显示兼容性 / Display compatibility
 

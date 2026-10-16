@@ -1,12 +1,28 @@
-# v0.1.8 candidate: verification pending
-
-This source follows the released v0.1.7 baseline. It gates notices on verified numeric changes, adds persisted 2/4/6-second dwell (standard 4), and paints body/rail synchronously from one frame with reference-informed motion pacing. New native checks require exact paint revision/readiness, real selected dwell durations, silent unchanged/initial/failure cases, secondary-only changes, replacement/hover/Reduce Motion cleanup, actual opening/closing paint callbacks, and paired body/rail 1x/2x pixels that reject a displaced rail. All previous geometry, stroke, skin, display, close, login-safety, discovery and installer gates remain required.
-
-No v0.1.8 native compilation, test success, release or physical-feel result is claimed here. The historical results below apply to their named versions.
-
 # Validation status
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
+
+## v0.1.8 observed notice and shared-paint results
+
+[Release run #28](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38845967956) passed on 2026-10-16. The immutable release tag points to [`2ef62ff647a02683f27f797fd4c421ffcb828e54`](https://github.com/Junming-Liang/codex-notch-meter/commit/2ef62ff647a02683f27f797fd4c421ffcb828e54), tree `c76260321435176ee186514ce904dde55b97f78c`.
+
+Only fresh, comparable numeric changes create a notice. Initial, unchanged, failed and metadata-only reads are silent; a changed secondary window is selected instead of showing an unchanged primary. A changed reset-cycle value uses reset wording rather than a consumption claim. Settings persist Short 2s / Standard 4s / Long 6s, default 4s, separately from motion duration. Native tests passed all three real holds from fresh full-size paint, replacement and duplicate-ID behavior, hover priority, Reduce Motion, retired callbacks and preference isolation.
+
+The unchanged v0.1.7 body and full-U rail now draw in one synchronous Canvas from the same immutable geometry/progress frame. Gradient coordinates, grouped opacity, accessibility, calibration, shape and 3.5pt color / 4pt black widths are preserved. Actual paint-callback checks and separate native 1x/2x paired-side pixels passed, including a displaced-rail negative control and comparison with the prior composition.
+
+The reference-informed critically damped motion reached 99% of open/close travel in 0.3986–0.4177s on the hosted runner. Callback p95 was 25.59ms for the view display link and 27.72ms for the dispatch fallback; sampled view-update lag was zero in both. Reversal preserved position/velocity. These are callback/view observations, not display FPS, compositor scanout, an exact DynamicNotchKit spring or a physical smoothness guarantee.
+
+Run #27 failed two native test oracles: Reduce Motion had already painted idle before a later inspection demanded another paint, and view-update age could include a settled frame's idle time. The two-file harness repair uses the scheduled expiry boundary and the first request replacing the acknowledged frame, with fail-closed history controls and the unchanged 120ms lag limit. Run #28 passed; its raw and corrected lag were both zero, so it does not retrospectively establish the cause of the specific Run #27 fallback sample.
+
+All required workflow gates passed: 202 synthetic tests plus one opt-in official-artifact skip in that job, a separate successful official test, universal builds/plist/ad-hoc signature, native smoke/skins/stroke/alignment/motion/close/update/display, 21 installer safety simulations, read-only DMG inspection and archive checksums. CI uses synthetic quota data, never enrolls login items and never executes the downloaded official helper.
+
+### Download identity
+
+- [Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.dmg): 1,769,352 bytes; advertised SHA-256 `741a95380a8219681dd1ad78a6050515041d36ae05db6f887289fd6806b20385`
+- [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v0.1.8/CodexNotchMeter-0.1.8-universal.zip): 1,744,836 bytes; advertised SHA-256 `dea5bf4fae63219c200ed5d467569f672a0f9b2a9009023946c539d22c957b71`
+- Both separate checksum files are 102 bytes. Public asset identity and gated release checks agree; no independent downloaded-byte rehash is claimed.
+
+Physical fit/feel, human PNG review, actual macOS 13 runtime and real login/reboot remain unverified. Forced 2x captures are offscreen scale evidence. The preview remains ad-hoc signed and unnotarized; macOS may block it. Historical results below apply only to their named versions.
 
 ## v0.1.7 observed thicker-contour results
 
