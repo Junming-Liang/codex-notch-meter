@@ -2,7 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v1.0.0-beta.1 candidate: tested feature source, final metadata run pending
+## v1.0.0-beta.1 observed release results
+
+[Release Run #35](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38876321184) passed all required gates on 2026-10-16. The beta tag pins source `289f8f115e58a6dcbd6311f0d451f15846a61c07`, tree `08cf5a8a7ad32a44efbcafad8408a062a0310f86`. Directly read current-run receipts confirm 108 native synthetic Music checks in 33.090 seconds, the actual beta DMG identity/readonly inspection and both archive checksums. Detailed unit/package/official receipts and retained-gate completion from Run #34 apply to the unchanged runtime implementation; Run #35 repeats the full gated workflow successfully.
+
+- [Universal beta DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.dmg): 2,374,805 bytes; SHA-256 `c21eedb0d844cc9a3b4822bc14553869cf9512daa2b0f03d8f05596e84dbc5eb`
+- [Universal beta ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.0-beta.1/CodexNotchMeter-1.0.0-beta.1-universal.zip): 2,342,575 bytes; SHA-256 `e35dc8952ba9eaf082fbf6fe0d5de51b67456f30ac52136f36cec525effd1b69`
+
+Both archives have matching `.sha256` sidecars. The actual DMG inspector digest matches public asset metadata. Published archive bytes were not independently downloaded and rehashed. No final `v1.0.0` release was created; v0.1.9 remains available.
 
 The current source adds default-off, read-only Music.app sampling, a separately consented LRCLIB lookup, bounded local LRC/text import and a lyric row inside the existing scrollable detail content. The quota protocol, refresh frequency, contour geometry/stroke and motion remain unchanged.
 
@@ -16,7 +23,7 @@ A separate read-only CI step inspects Music's installed public scripting diction
 
 A separate read-only check on 2026-10-16 sent only original synthetic metadata and the provider’s documented public example. Initial responses were HTTP 503 with Retry-After; one authorized, backed-off identical example retry returned HTTP 200 with valid JSON, matching title/artist/album and duration, plus synchronized-lyrics presence. No lyric text or user listening history was retained. This standalone HTTP check establishes limited live endpoint/schema evidence, not shipped Swift transport or lyric correctness; synthetic no-match behavior was not confirmed live.
 
-The final candidate uses numeric `CFBundleShortVersionString=1.0.0`, build `12`, and explicit release identity `1.0.0-beta.1` for UI/client labels, package names, DMG identity and the prerelease tag. Only metadata, guards, installer fixtures and these notes changed after Run #34. Static guards reject final-version tags/assets and missing/conflicting beta identity; 22 installer safety simulations pass. Full native gates must run again on this exact beta head before publication. No final `v1.0.0` release is intended.
+The final candidate uses numeric `CFBundleShortVersionString=1.0.0`, build `12`, and explicit release identity `1.0.0-beta.1` for UI/client labels, package names, DMG identity and the prerelease tag. Only metadata, guards, installer fixtures and these notes changed after Run #34. Static guards reject final-version tags/assets and missing/conflicting beta identity; 22 installer safety simulations pass. The final beta head passed the full native release workflow; its mounted DMG verified numeric bundle 1.0.0, build 12 and the explicit beta identity. These checks do not establish real Music/TCC, streaming compatibility or physical appearance.
 
 ## v0.1.9 observed notification compatibility results
 
