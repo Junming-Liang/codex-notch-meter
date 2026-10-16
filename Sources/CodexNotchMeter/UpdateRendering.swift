@@ -10,6 +10,7 @@ import NotchCore
 final class UpdateRenderHarness: NSObject {
     private enum Scenario: String, CaseIterable {
         case initial, unchanged, readFailed, shortDwell, standardDwell, longDwell, secondaryChanged
+        case identityFreeChange, metadataFreeChange
         case movingPromotion, coalescing, armedPromotion, reducedMotion, retiredTimer
 
         var fixtureIndex: Int {
@@ -18,6 +19,8 @@ final class UpdateRenderHarness: NSObject {
             case .unchanged: return 2
             case .readFailed: return 3
             case .secondaryChanged: return 4
+            case .identityFreeChange: return 5
+            case .metadataFreeChange: return 6
             default: return 1
             }
         }
@@ -70,6 +73,7 @@ final class UpdateRenderHarness: NSObject {
     private var rejectedChecks = 0
     private var completedDwells: Set<NoticeDuration> = []
     private var secondaryVerified = false
+    private var genericVerified: Set<String> = []
     private var targetVerified = false
     private var oldDeadlineVerified = false
     private var retainsNoticeWhileClosing = false
@@ -145,7 +149,7 @@ final class UpdateRenderHarness: NSObject {
         let third = tracker.record(unchanged, at: unchanged.fetchedAt)
         let fourth = tracker.record(secondary, at: secondary.fetchedAt)
         let failed = tracker.recordFailure(at: base.addingTimeInterval(20))
-        let values = [Fixture(name: "initial", snapshot: initial, result: first),
+        var values = [Fixture(name: "initial", snapshot: initial, result: first),
             Fixture(name: "fractional-decrease", snapshot: decreased, result: second),
             Fixture(name: "unchanged", snapshot: unchanged, result: third),
             Fixture(name: "failed-read", snapshot: unchanged, result: failed),
@@ -176,6 +180,33 @@ final class UpdateRenderHarness: NSObject {
             && secondaryNotice?.change == .decreased(percentagePoints: 0.25)
             && fourth.window(bucketID: "codex", windowID: "codex:primary")?.change == .unchanged,
             "unchanged preferred primary selects the actually changed secondary")
+        // Actual parser -> tracker -> notice factory path, without optional
+        // backend fields. These are synthetic public-schema responses, not users.
+        for identityAvailable in [false, true] {
+            var genericTracker = QuotaUpdateTracker()
+            let identity = identityAvailable ? ",\"accountId\":\"synthetic-native-generic\"" : ""
+            let metadata = identityAvailable ? "" : ",\"windowDurationMins\":300,\"resetsAt\":\(reset.timeIntervalSince1970)"
+            var changedFixture: Fixture?
+            for (index, used) in [20.0, 20.0, 20.125].enumerated() {
+                let json = "{\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":\(used)\(metadata)}}\(identity)}"
+                let current = try QuotaParser.parse(Data(json.utf8), fetchedAt: base.addingTimeInterval(Double(index) * 5))
+                let event = genericTracker.record(current, at: current.fetchedAt)
+                let fixture = Fixture(name: identityAvailable ? "metadata-free-change" : "identity-free-change", snapshot: current, result: event)
+                let notice = makeNotice(for: fixture, duration: .short)
+                if index < 2 {
+                    check(notice == nil, "optional-field fallback initial/unchanged reads stay silent")
+                } else {
+                    check(notice?.isEligible == true && notice?.title == "额度已更新"
+                        && notice?.detail == "当前剩余额度已更新，未计算消耗差值"
+                        && notice?.window?.remainingPercent == 79.875 && event.previousFetchedAt == nil
+                        && notice?.change == .updated(reason: identityAvailable ? .dataUnavailable : .identityUnavailable),
+                        "optional-field fallback keeps actual current value without invented consumption")
+                    changedFixture = fixture
+                }
+            }
+            guard let changedFixture else { throw MeterError.noQuota }
+            values.append(changedFixture)
+        }
         return values
     }
 
@@ -376,6 +407,15 @@ final class UpdateRenderHarness: NSObject {
                     secondaryVerified = activeNotice.window?.id == "codex:secondary"
                     check(secondaryVerified, "changed secondary completed its own passive notice dwell")
                     print("UPDATE_SECONDARY_OK: unchanged primary did not mask numeric secondary change")
+                }
+                if scenario == .identityFreeChange || scenario == .metadataFreeChange {
+                    let reason: QuotaUpdateReason = scenario == .identityFreeChange ? .identityUnavailable : .dataUnavailable
+                    check(activeNotice.isEligible && activeNotice.change == .updated(reason: reason)
+                        && activeNotice.title == "额度已更新" && activeNotice.window?.remainingPercent == 79.875
+                        && activeNotice.result.previousFetchedAt == nil,
+                        "generic changed-value notice completed actual painted dwell without consumption claim")
+                    genericVerified.insert(scenario.rawValue)
+                    print("UPDATE_GENERIC_OK: kind=\(scenario.rawValue) currentRemaining=79.875 consumptionClaim=false")
                 }
                 // Expiry can snap and paint before this inspection callback runs.
                 // Require freshness after the actual scheduled deadline, not after
@@ -591,7 +631,8 @@ final class UpdateRenderHarness: NSObject {
         if scenarioIndex < Scenario.allCases.count { startScenario() }
         else {
             finish(passed && totalSamples >= 20 && nativeProbes >= 20 && expandedChecks == 3
-                && rejectedChecks == 3 && completedDwells == Set(NoticeDuration.allCases) && secondaryVerified)
+                && rejectedChecks == 3 && completedDwells == Set(NoticeDuration.allCases) && secondaryVerified
+                && genericVerified == Set(["identityFreeChange", "metadataFreeChange"]))
         }
     }
 
