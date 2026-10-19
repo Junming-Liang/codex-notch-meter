@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import CryptoKit
 import QuartzCore
 import SwiftUI
 
@@ -179,8 +180,8 @@ final class MusicPlayingIndicatorView: NSView {
 }
 
 /// Bounded native evidence for the synthetic cache gate. Captures are rendered
-/// from the actual own-window presentation layer after real run-loop time, not
-/// from hand-selected animation times. This does not measure GPU scanout or FPS.
+/// from actual own-window presentation layers over a complete animation period.
+/// No animation time is forced. This does not measure GPU scanout or FPS.
 @MainActor
 enum MusicPlayingIndicatorVerification {
     private struct Failure: LocalizedError, CustomStringConvertible {
@@ -193,13 +194,19 @@ enum MusicPlayingIndicatorVerification {
         let png: Data
         let width: Int
         let height: Int
+        var pngSHA256: String { SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined() }
+    }
+    private struct Sample {
+        let time: TimeInterval
+        let scales: [Double]
+        let image: Capture
+        let receipt: [String: Any]
     }
 
     static func run(outputDirectory: URL) async throws -> [String: Any] {
         try require(CommandLine.arguments.contains("--music-test")
             && CommandLine.arguments.contains("--music-cache-test"), "synthetic-cache-only")
-        let began = CACurrentMediaTime()
-        let deadline = began + 1.9
+        let began = CACurrentMediaTime(), deadline = began + 3.0
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 200, height: 200)
         let window = NSPanel(contentRect: NSRect(x: screen.minX + 40, y: screen.minY + 40, width: 40, height: 40),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -215,10 +222,35 @@ enum MusicPlayingIndicatorVerification {
         window.contentView = host
         let originalKeyWindow = NSApp.keyWindow
         defer { view.dismantle(); window.orderOut(nil); window.contentView = nil; window.close() }
+        var samples: [Sample] = [], lifecycle: [[String: Any]] = []
+        var completed = false
+        func state() -> [String: Any] {
+            ["time": CACurrentMediaTime() - began, "animationKeys": view.animationKeys,
+             "animationStartCount": view.animationStartCount, "windowVisible": window.isVisible,
+             "occlusionVisible": window.occlusionState.contains(.visible),
+             "attached": view.window === window, "hidden": view.isHiddenOrHasHiddenAncestor]
+        }
+        func record(_ stage: String) {
+            var row = state(); row["stage"] = stage; lifecycle.append(row)
+        }
+        // A failed run retains the observations needed to distinguish aliasing,
+        // absent pixels, interruption, restart, and a real scheduling deadline.
+        defer {
+            if !completed {
+                let trace: [String: Any] = ["schema": 2, "deadlineSeconds": 3.0,
+                    "observationDeadlineSeconds": 2.1, "periodSeconds": 1.6,
+                    "samples": samples.map(\.receipt), "lifecycle": lifecycle, "finalState": state()]
+                if let data = try? JSONSerialization.data(withJSONObject: trace, options: [.sortedKeys]),
+                   let json = String(data: data, encoding: .utf8) {
+                    print("MUSIC_INDICATOR_DIAGNOSTIC_JSON: \(json)")
+                }
+            }
+        }
         view.configure(active: true, reduceMotion: false)
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
         try await wait(deadline, label: "native-visible-start") { running(view) }
+        record("started")
         try require(!window.isKeyWindow && NSApp.keyWindow === originalKeyWindow
             && view.frame.size == MusicPlayingIndicatorView.iconSize, "fixed-size-non-key")
         let starts = view.animationStartCount
@@ -234,6 +266,7 @@ enum MusicPlayingIndicatorVerification {
         view.layoutSubtreeIfNeeded()
         try require(view.animationStartCount == starts && running(view)
             && view.frame == NSRect(x: 10, y: 10, width: 20, height: 20), "layout-does-not-restart")
+        record("unchanged-inputs")
         let animations = view.barKeyframeAnimations
         try require(animations.count == 3 && animations.allSatisfy {
             let values = $0.values as? [NSNumber]
@@ -242,20 +275,54 @@ enum MusicPlayingIndicatorVerification {
                 && $0.keyTimes == [0, 0.25, 0.5, 0.75, 1]
         }, "compositor-keyframes-and-loop-endpoints")
 
+        func sample() throws -> Sample {
+            let sampledAt = CACurrentMediaTime() - began
+            var receipt = state(); receipt["time"] = sampledAt
+            try require(running(view) && view.animationStartCount == starts && window.isVisible
+                && window.occlusionState.contains(.visible) && view.window === window
+                && !view.isHiddenOrHasHiddenAncestor, "uninterrupted-visible-cycle")
+            let layers = view.layer?.sublayers?.compactMap { $0.presentation() } ?? []
+            let scales = layers.map { Double($0.transform.m22) }
+            let heights = layers.map { Double($0.frame.height) }
+            try require(layers.count == 3 && scales.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1 })
+                && heights.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 14 }), "missing-native-presentation")
+            let image = try capture(host, scale: window.backingScaleFactor)
+            receipt["scales"] = scales; receipt["heights"] = heights; receipt["pngSHA256"] = image.pngSHA256
+            return Sample(time: sampledAt, scales: scales, image: image, receipt: receipt)
+        }
         try await Task.sleep(nanoseconds: 140_000_000)
-        let timeA = CACurrentMediaTime()
-        let scalesA = try scales(view)
-        let playingA = try capture(host, scale: window.backingScaleFactor)
-        try await Task.sleep(nanoseconds: 220_000_000)
-        let timeB = CACurrentMediaTime()
-        let scalesB = try scales(view)
-        let playingB = try capture(host, scale: window.backingScaleFactor)
-        let changedBars = zip(scalesA, scalesB).filter { abs($0.0 - $0.1) > 0.01 }.count
+        samples.append(try sample())
+        let observationDeadline = began + samples[0].time + 2.1
+        // Observe a complete period, even when an early pair already differs.
+        // This is one bounded observation window, not retries of a failed test.
+        while samples.last!.time - samples[0].time < 1.6 {
+            try await Task.sleep(nanoseconds: 80_000_000)
+            try require(CACurrentMediaTime() <= observationDeadline && CACurrentMediaTime() <= deadline,
+                "full-cycle-observation-deadline")
+            samples.append(try sample())
+        }
+        let observationDuration = samples.last!.time - samples[0].time
+        let ranges = (0..<3).map { index -> Double in
+            let values = samples.map { $0.scales[index] }
+            return values.max()! - values.min()!
+        }
+        try require(observationDuration >= 1.6 && observationDuration <= 2.1
+            && ranges.allSatisfy { $0 > 0.01 }, "three-bars-move-over-full-cycle")
+        let first = samples[0]
+        guard let pairIndex = samples.indices.dropFirst().first(where: { index in
+            let other = samples[index]
+            return other.time - first.time >= 0.22
+                && zip(first.scales, other.scales).allSatisfy({ abs($0.0 - $0.1) > 0.01 })
+                && first.image.pixels != other.image.pixels
+        }) else { throw Failure(label: "music-indicator-three-real-presentation-bars-and-pixels-advance") }
+        let second = samples[pairIndex]
+        let playingA = first.image, playingB = second.image
         let changedBytes = zip(playingA.pixels, playingB.pixels).filter { $0.0 != $0.1 }.count
-        try require(changedBars == 3 && changedBytes > 0 && timeB > timeA,
-            "three-real-presentation-bars-and-pixels-advance")
+        try require(changedBytes > 0, "selected-pair-pixels-change")
+        record("observed-cycle")
 
         view.configure(active: false, reduceMotion: false)
+        record("paused")
         try require(stopped(view), "pause-removes-animations")
         try await Task.sleep(nanoseconds: 40_000_000)
         let paused = try capture(host, scale: window.backingScaleFactor)
@@ -266,8 +333,10 @@ enum MusicPlayingIndicatorVerification {
 
         view.configure(active: true, reduceMotion: false)
         try await wait(deadline, label: "resume-before-reduce-motion") { running(view) }
+        record("resume-before-reduce-motion")
         try await Task.sleep(nanoseconds: 30_000_000)
         view.configure(active: true, reduceMotion: true)
+        record("reduced-motion")
         try require(stopped(view), "reduce-motion-removes-animations")
         try await Task.sleep(nanoseconds: 40_000_000)
         let reduced = try capture(host, scale: window.backingScaleFactor)
@@ -277,22 +346,31 @@ enum MusicPlayingIndicatorVerification {
 
         view.configure(active: true, reduceMotion: false)
         try await wait(deadline, label: "resume-after-reduce-motion") { running(view) }
+        record("resume-after-reduce-motion")
         host.isHidden = true
+        record("ancestor-hidden")
         try require(stopped(view), "hidden-ancestor-removes-animations")
         host.isHidden = false
         try await wait(deadline, label: "unhide-resumes") { running(view) }
+        record("ancestor-unhidden")
         window.orderOut(nil)
         try await wait(deadline, label: "order-out-removes-animations") { !window.isVisible && stopped(view) }
+        record("ordered-out")
         window.orderFrontRegardless()
         try await wait(deadline, label: "order-front-resumes") { running(view) }
+        record("ordered-front")
         view.removeFromSuperview()
+        record("detached")
         try require(stopped(view), "detach-removes-animations")
         host.addSubview(view)
         try await wait(deadline, label: "reattach-resumes") { running(view) }
+        record("reattached")
         view.dismantle()
+        record("dismantled")
         view.configure(active: true, reduceMotion: false)
+        record("dismantled-reconfigure")
         try require(stopped(view), "dismantled-view-cannot-restart")
-        try require(CACurrentMediaTime() < deadline, "native-evidence-bounded")
+        try require(CACurrentMediaTime() <= deadline, "native-evidence-bounded")
 
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let captures = [("playing-a", playingA), ("playing-b", playingB), ("paused", paused), ("reduced-motion", reduced)]
@@ -300,10 +378,14 @@ enum MusicPlayingIndicatorVerification {
             try image.png.write(to: outputDirectory.appendingPathComponent("perimeter-indicator-\(name).png"), options: .atomic)
         }
         let elapsed = CACurrentMediaTime() - began
-        try require(elapsed < 1.9, "native-capture-and-export-bounded")
-        return ["schema": 1, "synthetic": true, "ownPresentationLayerPixels": true, "scanout": false,
-            "elapsed": elapsed, "sampleTimes": [timeA - began, timeB - began],
-            "scalesA": scalesA, "scalesB": scalesB, "changedBars": changedBars, "changedBytes": changedBytes,
+        try require(elapsed <= 3.0, "native-capture-and-export-bounded")
+        completed = true
+        return ["schema": 2, "synthetic": true, "ownPresentationLayerPixels": true, "scanout": false,
+            "elapsed": elapsed, "deadlineSeconds": 3.0, "periodSeconds": 1.6, "observationDeadlineSeconds": 2.1,
+            "observationDuration": observationDuration, "observedRanges": ranges,
+            "samples": samples.map(\.receipt), "lifecycle": lifecycle, "samplePairIndices": [0, pairIndex],
+            "sampleTimes": [first.time, second.time], "scalesA": first.scales, "scalesB": second.scales,
+            "changedBars": 3, "changedBytes": changedBytes,
             "animationKey": MusicPlayingIndicatorView.animationKey, "barCount": 3,
             "iconWidth": 20, "iconHeight": 20, "pixelWidth": playingA.width, "pixelHeight": playingA.height,
             "backingScale": Double(window.backingScaleFactor), "unchangedUpdates": 100, "unchangedLayouts": 100,
@@ -315,14 +397,12 @@ enum MusicPlayingIndicatorVerification {
     private static func require(_ value: Bool, _ label: String) throws {
         if !value { throw Failure(label: "music-indicator-" + label) }
     }
-
     private static func wait(_ deadline: TimeInterval, label: String, _ condition: () -> Bool) async throws {
         while !condition() {
-            try require(CACurrentMediaTime() < deadline, label)
+            try require(CACurrentMediaTime() <= deadline, label)
             try await Task.sleep(nanoseconds: 10_000_000)
         }
     }
-
     private static func running(_ view: MusicPlayingIndicatorView) -> Bool {
         view.animationKeys.allSatisfy { $0 == [MusicPlayingIndicatorView.animationKey] }
     }
@@ -331,13 +411,6 @@ enum MusicPlayingIndicatorVerification {
         guard let presentation = view.presentationScales else { return false }
         return zip(presentation, view.modelScales).allSatisfy { abs($0.0 - $0.1) < 0.0001 }
     }
-    private static func scales(_ view: MusicPlayingIndicatorView) throws -> [Double] {
-        guard let values = view.presentationScales, values.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1 }) else {
-            throw Failure(label: "music-indicator-missing-native-presentation")
-        }
-        return values
-    }
-
     private static func capture(_ host: NSView, scale: CGFloat) throws -> Capture {
         let width = Int((host.bounds.width * scale).rounded()), height = Int((host.bounds.height * scale).rounded())
         guard width > 0, height > 0, let presentation = host.layer?.presentation(),
