@@ -108,6 +108,13 @@ final class MusicRenderHarness: NSObject {
         let reconnect = try await read(fixture)
         let reconnectedAt = CACurrentMediaTime()
         try await release(fixture, reconnect, position: 1)
+        // Explicit reauthorization retires the previous local document. Restore
+        // this fixture through the real importer before testing usable lyrics.
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        try require(fixture.controller.isFreshPlaying && fixture.controller.isPlayingForPresentation
+            && fixture.controller.hasLocalLyrics && fixture.controller.isSynchronized
+            && fixture.controller.line == Self.firstLine && !closed.smokeLyricsSelected,
+            "reconnected queued-input fixture has genuinely restored its original usable lyric document")
         try await until("playback reconnect reaches its exact closed accessory endpoint") {
             closed.geometry.musicAccessoryProgress == 1 && closed.smokeMusicAccessoriesVisible && !closed.smokeMotionRunning
         }
@@ -1792,6 +1799,40 @@ final class MusicRenderHarness: NSObject {
     private func verifyNaturalGestureOwnership(_ panel: IslandPanelController, model: MeterModel, fixture: MusicFixture) async throws {
         let corridor = panel.smokeMusicGestureCorridor
         var observedPaints: Set<UInt64> = []
+        func refreshPhase(_ phase: String) async throws {
+            let controller = fixture.controller
+            let document = controller.syntheticLyricsDocument, line = controller.line
+            let selected = panel.smokeLyricsSelected, owner = panel.smokeExpansionOwner
+            let target = panel.smokeTargetProgress, retarget = panel.smokeRetarget?.eventTime
+            func diagnostic(_ edge: String) {
+                let now = ProcessInfo.processInfo.systemUptime
+                let observed = controller.syntheticPlaybackSnapshot?.observedAt
+                let sourceAge = observed.map { String(now - $0) } ?? "missing"
+                print("MUSIC_NATURAL_PHASE_DIAGNOSTIC: phase=\(phase) edge=\(edge) now=\(now) sourceObserved=\(String(describing: observed)) sourceAge=\(sourceAge) fresh=\(controller.isFreshPlaying) usable=\(controller.isPlayingForPresentation) selected=\(panel.smokeLyricsSelected) owner=\(String(describing: panel.smokeExpansionOwner)) progress=\(panel.smokeProgress) target=\(panel.smokeTargetProgress) retarget=\(String(describing: panel.smokeRetarget?.eventTime)) readCursor=\(fixture.readCursor)")
+            }
+            diagnostic("before")
+            try require(controller.isFreshPlaying && controller.isPlayingForPresentation && !line.isEmpty
+                && document != nil && selected,
+                "\(phase) begins with usable selected lyrics before any fixture refresh")
+            let pending = try await read(fixture)
+            diagnostic("before-release")
+            let sourceAge = controller.syntheticPlaybackSnapshot.map {
+                ProcessInfo.processInfo.systemUptime - $0.observedAt
+            }
+            try require(sourceAge.map { $0 >= 0 && $0 < 5 } == true
+                && controller.isFreshPlaying && controller.isPlayingForPresentation
+                && controller.syntheticLyricsDocument == document && controller.line == line
+                && panel.smokeLyricsSelected == selected && panel.smokeExpansionOwner == owner
+                && panel.smokeTargetProgress == target && panel.smokeRetarget?.eventTime == retarget,
+                "\(phase) stays continuously usable while awaiting its real pending read")
+            try await release(fixture, pending, position: 1)
+            diagnostic("after")
+            try require(controller.isFreshPlaying && controller.isPlayingForPresentation
+                && controller.syntheticLyricsDocument == document && controller.line == line
+                && panel.smokeLyricsSelected == selected && panel.smokeExpansionOwner == owner
+                && panel.smokeTargetProgress == target && panel.smokeRetarget?.eventTime == retarget,
+                "\(phase) real pending read refreshes freshness without replacing document, cue, selection or motion owner")
+        }
         for opening in [true, false] {
             let fresh = try await read(fixture)
             try await release(fixture, fresh, position: 1)
@@ -1841,12 +1882,17 @@ final class MusicRenderHarness: NSObject {
             }
             try require(savedFrames == 3, "three natural in-flight own-view frames were retained for each gesture direction")
             if opening {
-                try await waitMusic(panel, after: started)
+                try await waitMusic(panel, after: started, fixture: fixture)
+                try await refreshPhase("compact-pixels")
                 try await verifyMusicPerimeterPixels(panel, model: model, state: "compact")
+                try await refreshPhase("details-pixels")
                 try await enterDetails(panel)
                 try await verifyMusicPerimeterPixels(panel, model: model, state: "details")
+                try await refreshPhase("details-exit")
+                let exitedAt = CACurrentMediaTime()
                 try await exitDetails(panel)
-                try await waitMusic(panel, after: started)
+                try await waitMusic(panel, after: exitedAt, fixture: fixture)
+                try await refreshPhase("no-wings-pixels")
                 let g = panel.geometry
                 guard let clipped = makeGeometry(contentHeight: g.contentHeight, shapeCalibration: .init(depth: -6)) else {
                     throw Failure(label: "negative-depth native fixture geometry is valid")
@@ -1861,13 +1907,15 @@ final class MusicRenderHarness: NSObject {
                 }
                 try await verifyMusicPerimeterPixels(noWings, model: model, state: "details-no-wings")
                 noWings.stop()
-                let freshForClose = try await read(fixture)
-                try await release(fixture, freshForClose, position: 1)
+                try await refreshPhase("tall-close")
                 guard let tallGeometry = makeGeometry(contentHeight: 340) else { throw Failure(label: "missing tall music geometry") }
                 let tall = IslandPanelController(model: model, geometry: tallGeometry, startPolling: false,
                     reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
                 passivePanels.append(tall)
-                try await waitMusic(tall, after: 0)
+                try require(tall.smokeLyricsSelected && fixture.controller.isFreshPlaying
+                    && fixture.controller.isPlayingForPresentation && !fixture.controller.line.isEmpty,
+                    "new tall panel consumes the same already-selected usable controller without manufacturing a new gesture")
+                try await waitMusic(tall, after: 0, fixture: fixture)
                 let closeStarted = CACurrentMediaTime()
                 tall.setMusicPresentationAllowed(false)
                 try await waitIdle(tall, after: closeStarted)
@@ -2015,15 +2063,69 @@ final class MusicRenderHarness: NSObject {
         passivePanels.append(value)
         return value
     }
-    private func waitMusic(_ panel: IslandPanelController, after: TimeInterval) async throws {
-        try await until("native compact Music settles with fresh natural paint") {
-            self.nativeSettled(panel, progress: panel.smokeMusicTargetProgress, after: after)
-                && panel.smokeExpansionOwner == .music && panel.smokeMusicTargetActive && panel.smokeMusicVisible && panel.smokeLyricsSelected
-                && !panel.smokeNoticeTargetActive && !panel.isInteracting && panel.panel.ignoresMouseEvents
-                && self.naturalPaintMatches(panel, progress: panel.smokeMusicTargetProgress, after: after)
+    private func waitMusic(_ panel: IslandPanelController, after: TimeInterval, fixture: MusicFixture? = nil) async throws {
+        let entry = waitMusicDiagnostic(panel, after: after, fixture: fixture)
+        do {
+            try await until("native compact Music settles with fresh natural paint") {
+                self.nativeSettled(panel, progress: panel.smokeMusicTargetProgress, after: after)
+                    && panel.smokeExpansionOwner == .music && panel.smokeMusicTargetActive && panel.smokeMusicVisible && panel.smokeLyricsSelected
+                    && !panel.smokeNoticeTargetActive && !panel.isInteracting && panel.panel.ignoresMouseEvents
+                    && self.naturalPaintMatches(panel, progress: panel.smokeMusicTargetProgress, after: after)
+            }
+        } catch {
+            let diagnostic: [String: Any] = ["entry": entry,
+                "final": waitMusicDiagnostic(panel, after: after, fixture: fixture)]
+            if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
+               let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_WAIT_DIAGNOSTIC: \(json)")
+            }
+            throw error
         }
         try require((panel.paintReceipt?.frame.surfaceOpacity ?? 0) > 0,
                     "native compact Music has a painted body after notice or motion transition")
+    }
+    /// Read-only snapshots explain which unchanged readiness predicate failed;
+    /// neither collecting these values nor logging them requests a new paint.
+    private func waitMusicDiagnostic(_ panel: IslandPanelController, after: TimeInterval,
+                                     fixture: MusicFixture?) -> [String: Any] {
+        let now = ProcessInfo.processInfo.systemUptime, progress = panel.smokeMusicTargetProgress
+        let probe = panel.motionProbe, expected = panel.geometry.frame(progress: progress)
+        let bounds = CGRect(origin: .zero, size: expected.size), paint = panel.paintReceipt
+        var value: [String: Any] = ["now": now, "after": after, "expectedProgress": progress,
+            "progress": panel.smokeProgress, "target": panel.smokeTargetProgress,
+            "owner": String(describing: panel.smokeExpansionOwner), "motionRunning": panel.smokeMotionRunning,
+            "retarget": panel.smokeRetarget?.eventTime as Any? ?? NSNull(),
+            "native": ["visible": probe.visible, "nonKey": probe.nonKey,
+                "keyUnchanged": NSApp.keyWindow === initialKey, "placementValid": panel.placementIsValid,
+                "stopped": !probe.running, "requestedProgressMatches": probe.requestedProgress == progress,
+                "renderedProgressMatches": probe.renderedProgress == progress, "renderedAfter": probe.renderedAt >= after,
+                "frameMatches": probe.frame == expected, "viewportMatches": probe.viewport == expected.size,
+                "contentBoundsMatch": probe.contentBounds == bounds, "layerBoundsMatch": probe.layerPresentation == bounds,
+                "topAttached": abs(probe.frame.maxY - screen.frame.maxY) < 0.001],
+            "ownership": ["musicOwner": panel.smokeExpansionOwner == .music,
+                "musicTarget": panel.smokeMusicTargetActive, "musicVisible": panel.smokeMusicVisible,
+                "lyricsSelected": panel.smokeLyricsSelected, "noNoticeTarget": !panel.smokeNoticeTargetActive,
+                "notInteracting": !panel.isInteracting, "ignoresMouse": panel.panel.ignoresMouseEvents],
+            "paint": ["exists": paint != nil, "observedAfter": (paint?.observed ?? -1) >= after,
+                "progressMatches": paint?.frame.progress == progress,
+                "viewportMatches": paint?.frame.viewport == expected.size,
+                "actualViewportMatches": paint?.actualViewport == expected.size,
+                "noticeMatches": paint != nil && paint?.frame.noticeID == panel.smokeNoticeID,
+                "musicRevisionMatches": paint?.frame.musicRevision == panel.smokeMusicPresentationRevision,
+                "opacityMatches": paint.map { abs($0.frame.surfaceOpacity - max($0.frame.accessoryProgress,
+                    panel.geometry.surfaceOpacity(progress: progress))) < 0.000001 } ?? false],
+            "renderedAt": probe.renderedAt, "paintObserved": paint?.observed as Any? ?? NSNull(),
+            "paintProgress": paint?.frame.progress as Any? ?? NSNull(),
+            "musicRevision": panel.smokeMusicPresentationRevision,
+            "paintMusicRevision": paint?.frame.musicRevision as Any? ?? NSNull()]
+        if let fixture {
+            let controller = fixture.controller, observed = controller.syntheticPlaybackSnapshot?.observedAt
+            value["source"] = ["observed": observed as Any? ?? NSNull(),
+                "age": observed.map { now - $0 } as Any? ?? NSNull(), "fresh": controller.isFreshPlaying,
+                "usable": controller.isPlayingForPresentation, "hasDocument": controller.syntheticLyricsDocument != nil,
+                "hasLine": !controller.line.isEmpty, "readCursor": fixture.readCursor]
+        }
+        return value
     }
     private func waitIdle(_ panel: IslandPanelController, after: TimeInterval) async throws {
         try await until("native automatic Music closes to painted idle") {

@@ -41,6 +41,7 @@ final class BaselineMotionComparisonHarness: NSObject {
     private var sourceCommit = ""
     private var plan: [String: Any] = [:]
     private var planHash = ""
+    private var planJSON = ""
     private var inputs: [[String: Any]] = []
     private var frames: [[String: Any]] = []
     private var paints: [[String: Any]] = []
@@ -133,6 +134,12 @@ final class BaselineMotionComparisonHarness: NSObject {
                 return row
             }]
         let canonical = try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys])
+        guard let exactJSON = String(data: canonical, encoding: .utf8) else {
+            throw Failure(message: "common input plan is not UTF-8 JSON")
+        }
+        // Preserve the exact bytes hashed here. Other JSON libraries may emit
+        // equivalent Double values with different decimal spellings.
+        planJSON = exactJSON
         planHash = SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
         base = CACurrentMediaTime()
         let observer = Timer(timeInterval: 1.0 / 120, target: self, selector: #selector(observe), userInfo: nil, repeats: true)
@@ -371,7 +378,7 @@ final class BaselineMotionComparisonHarness: NSObject {
             "synthetic": true, "controllerLevelInput": true, "nativeIngress": false, "scanout": false,
             "baselineHasMusicWings": false,
             "modeComparison": "shared input responses; v1.0.0 automatic compact versus candidate default closed; no invented baseline wings",
-            "inputPlan": plan, "inputPlanSHA256": planHash, "inputs": inputs, "frames": frames,
+            "inputPlan": plan, "inputPlanJSON": planJSON, "inputPlanSHA256": planHash, "inputs": inputs, "frames": frames,
             "paints": paints, "paintCollection": "latest-receipt-observer", "paintSequenceGaps": paintSequenceGaps,
             "stateObserverInterval": 1.0 / 120, "settlements": settlements, "modeSamples": modes,
             "metrics": ["frameCount": frames.count, "paintCount": paints.count, "maxCallbackGap": maxCallbackGap,
