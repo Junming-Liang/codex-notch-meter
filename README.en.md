@@ -12,7 +12,7 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v1.0.1 formal release.** Each app session starts closed; fresh playback can show tiny artwork. Move the pointer fully left-to-right across the top band without pressing a button to open lyrics; reverse to close. Pause hides lyrics, and quota notices take priority. Recovery and interaction-delayed quota notices are also repaired. [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) and the quota-focused [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9) remain available.
+**v1.0.2 repair candidate.** Music perimeter, fast button-free gesture, expansion and prematurely disappearing six-second quota-notice fixes are undergoing verification. See the [bilingual changes](docs/RELEASE-1.0.2.md) and [validation boundaries](docs/MUSIC-INTERACTION-FIX.md). Downloads below still point to released v1.0.1; the new version requires all macOS gates and native PNG review before publication.
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 

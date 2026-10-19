@@ -24,7 +24,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v1.0.1 正式版。** 每次启动默认收起，播放时可显示小封面；不按鼠标键，从左向右划过顶部打开歌词，反向划过关闭。暂停收起，额度变化提示优先；同时修复短暂读取失败后漏提醒及交互期间的提醒丢失。保留 [Beta 1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.0-beta.1) 与仅需额度功能时可用的 [v0.1.9](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v0.1.9)。
+> **v1.0.2 修复候选。** 音乐外轮廓、快速无按键手势、展开抖动及 6 秒额度提示提前消失的修复正在验证，见[中英变更说明](docs/RELEASE-1.0.2.md)与[验证边界](docs/MUSIC-INTERACTION-FIX.md)。下方下载仍指向已发布的 v1.0.1；新版本须通过 macOS 全部门和原生图片审核后发布。
 
 显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
