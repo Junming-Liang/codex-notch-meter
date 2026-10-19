@@ -1462,13 +1462,14 @@ final class MusicRenderHarness: NSObject {
         let corridor = panel.smokeMusicGestureCorridor
         let center = corridor.midX
         var postedEvents = 0
+        var lastRequestedTime: TimeInterval = -.infinity
         var lastPostedTime: TimeInterval = -.infinity
         var representativeTimes: Set<TimeInterval> = []
         var gestureSegments: [(name: String, start: TimeInterval, end: TimeInterval, opening: Bool)] = []
 
-        func enqueue(_ point: CGPoint, timestamp: TimeInterval, window: NSWindow?, type: NSEvent.EventType = .mouseMoved) throws {
+        func enqueue(_ point: CGPoint, timestamp: TimeInterval, window: NSWindow?, type: NSEvent.EventType = .mouseMoved) throws -> TimeInterval {
             let location = window.map { $0.convertPoint(fromScreen: point) } ?? point
-            guard timestamp > lastPostedTime || (type != .mouseMoved && timestamp == lastPostedTime),
+            guard timestamp > lastRequestedTime || (type != .mouseMoved && timestamp == lastRequestedTime),
                   let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
                     timestamp: timestamp, windowNumber: window?.windowNumber ?? 0, context: nil,
                     eventNumber: 70_000 + postedEvents, clickCount: 0, pressure: 0) else {
@@ -1476,12 +1477,22 @@ final class MusicRenderHarness: NSObject {
             }
             try require(window.map { event.window === $0 } ?? (event.window == nil),
                         "native queued event retains the intended window or screen coordinate space")
-            postedEvents += 1; lastPostedTime = timestamp
+            // Match exactly what AppKit constructed, while independently keeping
+            // the original sub-nanosecond bound on its timestamp representation.
+            let nativeTime = event.timestamp
+            let timestampValid = nativeTime.isFinite && abs(nativeTime - timestamp) < 0.000000001
+                && (nativeTime > lastPostedTime || (type != .mouseMoved && nativeTime == lastPostedTime))
+            if type != .mouseMoved || !timestampValid {
+                print("MUSIC_POINTER_TIMESTAMP_DIAGNOSTIC: type=\(type.rawValue) requested=\(timestamp) constructed=\(nativeTime) deltaNs=\((nativeTime - timestamp) * 1_000_000_000) previousConstructed=\(lastPostedTime) valid=\(timestampValid)")
+            }
+            try require(timestampValid, "native event construction preserves the original timestamp within one nanosecond and keeps its order")
+            postedEvents += 1; lastRequestedTime = timestamp; lastPostedTime = nativeTime
             NSApp.postEvent(event, atStart: false)
+            return nativeTime
         }
         func hasReceipt(_ point: CGPoint, _ timestamp: TimeInterval) -> Bool {
             panel.smokePointerIngress.contains { receipt in
-                receipt.kind == "event" && abs(receipt.timestamp - timestamp) < 0.000000001
+                receipt.kind == "event" && receipt.timestamp == timestamp
                     && abs(receipt.point.x - point.x) < 0.000001
                     && abs(receipt.point.y - point.y) < 0.000001
             }
@@ -1502,19 +1513,26 @@ final class MusicRenderHarness: NSObject {
                 "each delivered moving pointer sample preserves music or idle without a transient details target")
         }
         func postPoint(_ point: CGPoint, window: NSWindow?, forbidDetails: Bool = true) async throws {
-            let timestamp = ProcessInfo.processInfo.systemUptime
-            try enqueue(point, timestamp: timestamp, window: window)
+            let timestamp = try enqueue(point, timestamp: ProcessInfo.processInfo.systemUptime, window: window)
             try await awaitReceipt(point, timestamp)
             if forbidDetails { try requireNoDetails() }
         }
         func postButton(_ point: CGPoint, type: NSEvent.EventType) async throws {
-            let timestamp = ProcessInfo.processInfo.systemUptime
-            try enqueue(point, timestamp: timestamp, window: sourceWindow, type: type)
+            let requested = ProcessInfo.processInfo.systemUptime
+            let before = panel.smokePointerIngress.count
+            let timestamp = try enqueue(point, timestamp: requested, window: sourceWindow, type: type)
             representativeTimes.insert(timestamp)
-            try await until("native button reaches the installed monitor") {
-                panel.smokePointerIngress.contains {
-                    $0.timestamp == timestamp && ($0.kind == "button" || $0.kind == "stale")
+            do {
+                try await until("native button reaches the installed monitor") {
+                    panel.smokePointerIngress.dropFirst(before).contains {
+                        $0.timestamp == timestamp && ($0.kind == "button" || $0.kind == "stale")
+                            && abs($0.point.x - point.x) < 0.000001 && abs($0.point.y - point.y) < 0.000001
+                    }
                 }
+            } catch {
+                let deliveredEvents = panel.smokePointerIngress.dropFirst(before).filter { $0.kind != "poll" }.prefix(16)
+                print("MUSIC_BUTTON_INGRESS_DIAGNOSTIC: type=\(type.rawValue) point=\(point) requestedTimestamp=\(requested) constructedTimestamp=\(timestamp) windowNumber=\(sourceWindow.windowNumber) windowVisible=\(sourceWindow.isVisible) ignoresMouseEvents=\(sourceWindow.ignoresMouseEvents) receiptsAfterPost=\(panel.smokePointerIngress.count - before) deliveredEvents=\(String(reflecting: deliveredEvents)) latestReceipts=\(String(reflecting: panel.smokePointerIngress.suffix(4)))")
+                throw error
             }
             try requireNoDetails()
         }
@@ -1525,8 +1543,7 @@ final class MusicRenderHarness: NSObject {
             var expected: [(CGPoint, TimeInterval)] = []
             for (index, point) in points.enumerated() {
                 if index > 0 { Thread.sleep(forTimeInterval: 0.02) }
-                let timestamp = ProcessInfo.processInfo.systemUptime
-                try enqueue(point, timestamp: timestamp, window: window)
+                let timestamp = try enqueue(point, timestamp: ProcessInfo.processInfo.systemUptime, window: window)
                 expected.append((point, timestamp)); representativeTimes.insert(timestamp)
             }
             Thread.sleep(forTimeInterval: 0.08)
@@ -1637,15 +1654,24 @@ final class MusicRenderHarness: NSObject {
         try await postPoint(CGPoint(x: corridor.minX + 8, y: bottomY), window: sourceWindow)
         try await postPoint(CGPoint(x: center, y: bottomY), window: sourceWindow)
         let boundaryTime = lastPostedTime
+        let boundaryRequestedTime = lastRequestedTime
         representativeTimes.insert(boundaryTime)
         let boundaryPoint = CGPoint(x: center, y: bottomY)
         let boundaryCount = panel.smokePointerIngress.count
-        try enqueue(boundaryPoint, timestamp: boundaryTime, window: sourceWindow, type: .leftMouseDown)
-        try enqueue(boundaryPoint, timestamp: boundaryTime, window: sourceWindow, type: .leftMouseUp)
-        try await until("same-timestamp native down and up both reach the monitor boundary") {
-            panel.smokePointerIngress.dropFirst(boundaryCount).filter {
-                abs($0.timestamp - boundaryTime) < 0.000000001 && ($0.kind == "button" || $0.kind == "stale")
-            }.count == 2
+        let downTime = try enqueue(boundaryPoint, timestamp: boundaryRequestedTime, window: sourceWindow, type: .leftMouseDown)
+        let upTime = try enqueue(boundaryPoint, timestamp: boundaryRequestedTime, window: sourceWindow, type: .leftMouseUp)
+        try require(downTime == boundaryTime && upTime == boundaryTime,
+                    "same-timestamp move and native button boundaries share the exact constructed AppKit time")
+        do {
+            try await until("same-timestamp native down and up both reach the monitor boundary") {
+                panel.smokePointerIngress.dropFirst(boundaryCount).filter {
+                    $0.timestamp == boundaryTime && ($0.kind == "button" || $0.kind == "stale")
+                }.count == 2
+            }
+        } catch {
+            let deliveredEvents = panel.smokePointerIngress.dropFirst(boundaryCount).filter { $0.kind != "poll" }.prefix(16)
+            print("MUSIC_BUTTON_BOUNDARY_DIAGNOSTIC: requestedTimestamp=\(boundaryRequestedTime) moveTimestamp=\(boundaryTime) downTimestamp=\(downTime) upTimestamp=\(upTime) deliveredEvents=\(String(reflecting: deliveredEvents)) latestReceipts=\(String(reflecting: panel.smokePointerIngress.suffix(4)))")
+            throw error
         }
         try await postPoint(CGPoint(x: corridor.maxX - 8, y: bottomY), window: sourceWindow)
         try await postPoint(CGPoint(x: center + 230, y: bottomY), window: sourceWindow)
