@@ -30,6 +30,79 @@ final class IslandCrossingTests: XCTestCase {
         XCTAssertNil(detector.update(point: point(1.1), now: 0.3, corridor: corridor, enabled: true))
         XCTAssertEqual(traverse(&detector, right: false, start: 0.4), [.left])
     }
+    func testThirtyHertzCrossingDoesNotNeedSamplesInEitherEdgeZone() {
+        for right in [true, false] {
+            var detector = IslandCrossing()
+            let positions: [CGFloat] = [-0.1, 0.5, 1.1]
+            let actions = positions.enumerated().compactMap { index, fraction in
+                detector.update(point: point(right ? fraction : 1 - fraction),
+                    now: 1 + Double(index) / 30, corridor: corridor, enabled: true)
+            }
+            XCTAssertEqual(actions, [right ? .right : .left])
+        }
+    }
+    func testFastEdgeToEdgeCrossingsAreAcceptedWithoutArtificialDwell() {
+        for elapsed in [0.02, 0.03, 0.05] {
+            for right in [true, false] {
+                var detector = IslandCrossing()
+                XCTAssertNil(detector.update(point: point(right ? 0.02 : 0.98),
+                    now: 1, corridor: corridor, enabled: true))
+                XCTAssertEqual(detector.update(point: point(right ? 0.98 : 0.02),
+                    now: 1 + elapsed, corridor: corridor, enabled: true), right ? .right : .left)
+            }
+        }
+    }
+    func testSingleObservedSegmentCanCrossBothHorizontalEdges() {
+        for right in [true, false] {
+            var detector = IslandCrossing()
+            XCTAssertNil(detector.update(point: point(right ? -0.1 : 1.1),
+                now: 1, corridor: corridor, enabled: true))
+            XCTAssertEqual(detector.update(point: point(right ? 1.1 : -0.1),
+                now: 1 + 1.0 / 30, corridor: corridor, enabled: true), right ? .right : .left)
+        }
+    }
+    func testEndpointOvershootCompletesAnAlreadyTrackedCrossing() {
+        for right in [true, false] {
+            var detector = IslandCrossing()
+            let positions: [CGFloat] = [0.02, 0.4, 0.8, 1.2]
+            let actions = positions.enumerated().compactMap { index, fraction in
+                detector.update(point: point(right ? fraction : 1 - fraction),
+                    now: 1 + Double(index) / 30, corridor: corridor, enabled: true)
+            }
+            XCTAssertEqual(actions, [right ? .right : .left])
+        }
+    }
+    func testThirtyHertzSamplingPhaseDoesNotChangeCompleteCrossingResult() {
+        // Replay complete constant-speed paths, including the outside samples
+        // real polling observes. The prior edge-only detector missed many phases.
+        for duration in [0.08, 0.12, 0.16, 0.24, 0.32, 0.48] {
+            for phase in 0..<16 {
+                for right in [true, false] {
+                    var detector = IslandCrossing()
+                    var actions: [IslandCrossing.Direction] = []
+                    for index in -2...(Int(ceil(duration * 30)) + 2) {
+                        let elapsed = Double(index) / 30 + Double(phase) / (16 * 30)
+                        let fraction = CGFloat(elapsed / duration)
+                        if let action = detector.update(point: point(right ? fraction : 1 - fraction),
+                            now: 10 + elapsed, corridor: corridor, enabled: true) {
+                            actions.append(action)
+                        }
+                    }
+                    XCTAssertEqual(actions, [right ? .right : .left],
+                        "duration=\(duration), phase=\(phase), right=\(right)")
+                }
+            }
+        }
+    }
+    func testSparseReverseAfterObservedExitIsFreshCrossing() {
+        var detector = IslandCrossing()
+        let positions: [CGFloat] = [-0.1, 0.5, 1.1, 1.2, 0.5, -0.1]
+        let actions = positions.enumerated().compactMap { index, fraction in
+            detector.update(point: point(fraction), now: 1 + Double(index) / 30,
+                corridor: corridor, enabled: true)
+        }
+        XCTAssertEqual(actions, [.right, .left])
+    }
     func testMiddleEntryAndStationaryHoverNeverCross() {
         var detector = IslandCrossing()
         for index in 0..<30 {
@@ -50,12 +123,58 @@ final class IslandCrossingTests: XCTestCase {
         XCTAssertNil(detector.update(point: point(0.5, y: 850), now: 0.04, corridor: corridor, enabled: true))
         XCTAssertNil(detector.update(point: point(0.98), now: 0.08, corridor: corridor, enabled: true))
     }
+    func testObservedVerticalEntryAtSideDoesNotArmHorizontalCrossing() {
+        for right in [true, false] {
+            var detector = IslandCrossing()
+            let fractions: [CGFloat] = [0.02, 0.02, 0.5, 0.98, 1.1]
+            for (index, fraction) in fractions.enumerated() {
+                let y = index == 0 ? corridor.minY - 12 : corridor.midY
+                XCTAssertNil(detector.update(point: point(right ? fraction : 1 - fraction, y: y),
+                    now: 1 + Double(index) / 30, corridor: corridor, enabled: true))
+            }
+        }
+    }
+    func testDiagonalEnteringThroughBottomCannotMasqueradeAsSideEntry() {
+        for right in [true, false] {
+            var detector = IslandCrossing()
+            // The first segment crosses the corridor's horizontal x extent
+            // below its bottom, then actually enters through the bottom edge.
+            let samples: [(CGFloat, CGFloat)] = [
+                (-0.2, corridor.minY - 100), (0.5, corridor.midY),
+                (0.98, corridor.midY), (1.1, corridor.midY)
+            ]
+            for (index, sample) in samples.enumerated() {
+                XCTAssertNil(detector.update(point: point(right ? sample.0 : 1 - sample.0, y: sample.1),
+                    now: 1 + Double(index) / 30, corridor: corridor, enabled: true))
+            }
+        }
+    }
     func testPermissionSuppressionOrButtonResetsPartialCrossing() {
         for buttons in [false, true] {
             var detector = IslandCrossing()
             XCTAssertNil(detector.update(point: point(0.02), now: 0, corridor: corridor, enabled: true))
             XCTAssertNil(detector.update(point: point(0.5), now: 0.04, corridor: corridor, enabled: buttons, buttonDown: buttons))
             XCTAssertNil(detector.update(point: point(0.98), now: 0.08, corridor: corridor, enabled: true))
+        }
+    }
+    func testDisabledAndButtonDownSamplesDiscardOutsideHistory() {
+        for buttons in [false, true] {
+            var detector = IslandCrossing()
+            XCTAssertNil(detector.update(point: point(-0.1), now: 1,
+                corridor: corridor, enabled: true))
+            XCTAssertNil(detector.update(point: point(1.1), now: 1.03,
+                corridor: corridor, enabled: buttons, buttonDown: buttons))
+            XCTAssertNil(detector.update(point: point(-0.1), now: 1.06,
+                corridor: corridor, enabled: true))
+        }
+    }
+    func testStalledOutsideSamplesCannotInventUnobservedCrossing() {
+        for elapsed in [0.251, 0.5, 2.0] {
+            var detector = IslandCrossing()
+            XCTAssertNil(detector.update(point: point(-0.1), now: 1,
+                corridor: corridor, enabled: true))
+            XCTAssertNil(detector.update(point: point(1.1), now: 1 + elapsed,
+                corridor: corridor, enabled: true))
         }
     }
     func testStalledAndReversedTimeFailClosed() {
@@ -80,6 +199,14 @@ final class IslandCrossingTests: XCTestCase {
         detector.reset()
         XCTAssertNil(detector.update(point: point(0.98), now: 0.08, corridor: corridor, enabled: true))
     }
+    func testExplicitResetAlsoDiscardsOutsideHistory() {
+        var detector = IslandCrossing()
+        XCTAssertNil(detector.update(point: point(-0.1), now: 1,
+            corridor: corridor, enabled: true))
+        detector.reset()
+        XCTAssertNil(detector.update(point: point(1.1), now: 1.03,
+            corridor: corridor, enabled: true))
+    }
     func testPhysicalTopEdgeAndEndPointsAreInclusive() {
         var detector = IslandCrossing()
         for (index, fraction) in [CGFloat(0), 0.5, 1].enumerated() {
@@ -97,6 +224,83 @@ final class IslandCrossingTests: XCTestCase {
             XCTAssertFalse(detector.isTracking)
         }
     }
+    func testGestureHoverGateStartsUnclaimedAndClaimIsIdempotent() {
+        var gate = IslandGestureHoverGate()
+        XCTAssertFalse(gate.isSuppressing)
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: true))
+        gate.claim()
+        gate.claim()
+        XCTAssertTrue(gate.isSuppressing)
+        for _ in 0..<60 {
+            XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+        }
+    }
+    func testGestureHoverGateSurvivesNaturalSideAndDownwardExitFromCorridor() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let raw = CGRect(x: 610, y: 868, width: 220, height: 32)
+        var geometry = IslandGeometry(notch: NotchGeometry(notch: raw, leftPanel: .zero, rightPanel: .zero), screen: screen)
+        geometry.showsMusicAccessories = true
+        let corridor = geometry.musicGestureCorridor
+        let samples = [
+            CGPoint(x: corridor.maxX - 6, y: corridor.midY),
+            CGPoint(x: corridor.maxX + 5, y: corridor.midY),
+            CGPoint(x: corridor.maxX + 5, y: corridor.minY - 20)
+        ]
+        var gate = IslandGestureHoverGate()
+        gate.claim()
+        for sample in samples {
+            XCTAssertTrue(geometry.hoverContains(sample, progress: 1))
+            XCTAssertTrue(gate.suppresses(insideStableEnvelope: geometry.hoverContains(sample, progress: 1)))
+        }
+        XCTAssertFalse(corridor.contains(samples[1]))
+        XCTAssertFalse(corridor.contains(samples[2]))
+        XCTAssertTrue(gate.isSuppressing)
+    }
+    func testGestureHoverGateDoesNotFollowAppearingOrShrinkingBody() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let raw = CGRect(x: 610, y: 868, width: 220, height: 32)
+        var geometry = IslandGeometry(notch: NotchGeometry(notch: raw, leftPanel: .zero, rightPanel: .zero), screen: screen)
+        geometry.showsMusicAccessories = true
+        let sample = CGPoint(x: geometry.musicGestureCorridor.maxX + 5,
+            y: geometry.musicGestureCorridor.midY)
+        XCTAssertFalse(geometry.hoverContains(sample, progress: 0))
+        XCTAssertTrue(geometry.hoverContains(sample, progress: 1))
+        var gate = IslandGestureHoverGate()
+        gate.claim()
+        var visibleContainment = Set<Bool>()
+        for progress in [0.0, 0.05, 0.3, 0.7, 1.0, 0.7, 0.3, 0.05, 0.0] {
+            visibleContainment.insert(geometry.hoverContains(sample, progress: progress))
+            // The pointer has not moved. Production must consult the stable
+            // full envelope rather than the changing visible progress above.
+            XCTAssertTrue(gate.suppresses(insideStableEnvelope: geometry.hoverContains(sample, progress: 1)))
+        }
+        XCTAssertEqual(visibleContainment, Set([false, true]))
+    }
+    func testGestureHoverGateReleasesAfterExitAndFreshEntryCanDwellOpen() {
+        var gate = IslandGestureHoverGate()
+        var hover = IslandHoverState()
+        gate.claim()
+        XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: false))
+        XCTAssertFalse(gate.isSuppressing)
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: true))
+        hover.update(inside: true, now: 1)
+        XCTAssertFalse(hover.isExpanded)
+        hover.update(inside: true, now: 1.13)
+        XCTAssertTrue(hover.isExpanded)
+    }
+    func testGestureHoverGateResetAndNewClaimAreIndependent() {
+        var gate = IslandGestureHoverGate()
+        gate.claim()
+        gate.reset()
+        XCTAssertFalse(gate.isSuppressing)
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: true))
+        gate.claim()
+        XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: false))
+        gate.claim()
+        XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+    }
     func testCameraGeometryAndRailStaySeparateFromMusicEnvelope() {
         for scale in [CGFloat(1), 2] {
             let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -108,11 +312,27 @@ final class IslandCrossingTests: XCTestCase {
             XCTAssertEqual(music.contourFrame, original.contourFrame)
             XCTAssertEqual(music.frame(progress: 0).height, original.frame(progress: 0).height)
             XCTAssertGreaterThan(music.frame(progress: 0).width, original.frame(progress: 0).width)
-            for p in [0.0, 0.02, 0.3, 0.7, 1.0] {
+            XCTAssertEqual(original.contourRect(progress: 0).width, 226)
+            XCTAssertEqual(music.contourRect(progress: 0).width, 288)
+            XCTAssertEqual(music.contourRect(progress: 0).width, music.musicAccessoryFrame.width)
+            let compactProgress = music.musicProgress(contentHeight: 48)
+            for p in [0.0, 0.02, compactProgress / 2, compactProgress, 0.7, 1.0] {
                 let a = original.frame(progress: p), b = music.frame(progress: p)
                 let ar = original.contourRect(progress: p), br = music.contourRect(progress: p)
-                XCTAssertEqual(a.minX + ar.minX, b.minX + br.minX, accuracy: 1e-9)
-                XCTAssertEqual(ar.size, br.size)
+                XCTAssertEqual(a.minX + ar.midX, b.minX + br.midX, accuracy: 1e-9)
+                XCTAssertEqual(ar.height, br.height, accuracy: 1e-9)
+                if p < compactProgress {
+                    let fraction = CGFloat(p / compactProgress)
+                    let ease = fraction * fraction * (3 - 2 * fraction)
+                    XCTAssertEqual(br.width - ar.width, 62 * (1 - ease), accuracy: 1e-9)
+                    XCTAssertGreaterThan(br.width, ar.width)
+                } else {
+                    XCTAssertEqual(ar.size, br.size)
+                    XCTAssertEqual(a.minX + ar.minX, b.minX + br.minX, accuracy: 1e-9)
+                }
+                let originalRail = original.railRect(progress: p), musicRail = music.railRect(progress: p)
+                XCTAssertEqual(originalRail.size, musicRail.size)
+                XCTAssertEqual(a.minX + originalRail.minX, b.minX + musicRail.minX, accuracy: 1e-9)
                 XCTAssertEqual(music.musicGestureCorridor, original.musicGestureCorridor)
             }
         }
