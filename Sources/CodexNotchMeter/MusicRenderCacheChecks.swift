@@ -155,9 +155,116 @@ final class MusicRenderCacheChecks {
         let corridor = geometry.musicGestureCorridor
         let y = corridor.minY + 2
         let endpoint = CGPoint(x: corridor.maxX - 20, y: y)
-        panel.smokeSetPolledPointer(endpoint)
+        let preparationPoint = CGPoint(x: geometry.frame(progress: 1).maxX + 40, y: y)
+        panel.smokeSetPolledPointer(preparationPoint)
         let path = [CGPoint(x: corridor.minX + 20, y: y), CGPoint(x: corridor.midX, y: y), endpoint]
         try require(path.allSatisfy { geometry.canonicalHoverContains($0, progress: 1) }, "crossing-stays-in-envelope")
+        // Match the mature native-pointer fixture: establish a naturally
+        // painted idle window before measuring input. A newly ordered offscreen
+        // source can have AppKit coordinates before its server registration has
+        // caught up. Never repair or repost a delivered event with wrong points.
+        let preparationBegan = ProcessInfo.processInfo.systemUptime
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? screenFrame.maxY
+        var sourceReadiness: [String: Any] = [:]
+        var preparationAttempts = 0
+        func coordinates(_ p: CGPoint) -> [Double] { [Double(p.x), Double(p.y)] }
+        func dimensions(_ r: CGRect) -> [Double] { [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)] }
+        func emitReadiness(_ ready: Bool) {
+            sourceReadiness["ready"] = ready
+            sourceReadiness["elapsed"] = ProcessInfo.processInfo.systemUptime - preparationBegan
+            if let data = try? JSONSerialization.data(withJSONObject: sourceReadiness, options: [.sortedKeys]),
+               data.count <= 16_384, let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_SOURCE_READINESS_JSON: " + json)
+            }
+        }
+        do {
+            try await until("source-window-native-readiness", timeout: 2) {
+                let expected = panel.geometry.frame(progress: 0), probe = panel.motionProbe
+                preparationAttempts += 1
+                sourceReadiness["attempts"] = preparationAttempts
+                sourceReadiness["deadlineSeconds"] = 2
+                sourceReadiness["observedAt"] = ProcessInfo.processInfo.systemUptime
+                sourceReadiness["sourceWindowNumber"] = source.windowNumber
+                sourceReadiness["sourceFrame"] = dimensions(source.frame)
+                sourceReadiness["sourceVisible"] = source.isVisible
+                sourceReadiness["sourceBackingScale"] = Double(source.backingScaleFactor)
+                sourceReadiness["panelFrame"] = dimensions(probe.frame)
+                sourceReadiness["expectedPanelFrame"] = dimensions(expected)
+                sourceReadiness["panelVisible"] = probe.visible
+                sourceReadiness["panelMotionRunning"] = probe.running
+                sourceReadiness["panelProgress"] = probe.renderedProgress
+                sourceReadiness["accessoryProgress"] = panel.smokeAccessoryProgress
+                sourceReadiness["paintObservedAt"] = panel.paintReceipt.map { $0.observed as Any } ?? NSNull()
+                sourceReadiness["preparationPoint"] = coordinates(preparationPoint)
+                sourceReadiness["inputState"] = panel.smokeMusicInputState(at: preparationPoint).map { $0 as Any } ?? NSNull()
+                guard !probe.running, probe.requestedProgress == 0, probe.renderedProgress == 0,
+                      panel.smokeAccessoryProgress == 1, probe.frame == expected, probe.viewport == expected.size,
+                      probe.visible, probe.nonKey, let paint = panel.paintReceipt,
+                      paint.observed >= preparationBegan, paint.frame.progress == 0,
+                      paint.actualViewport == expected.size, paint.nativeFrame == expected,
+                      source.isVisible, source.frame == CGRect(x: -900, y: -700, width: 240, height: 180),
+                      source.windowNumber > 0 else { return false }
+                // Request only this fixture's known window ID, and check its PID
+                // before inspecting bounds. No other windows or pixels are read.
+                let number = CGWindowID(source.windowNumber)
+                let ownWindows = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]]
+                guard let own = ownWindows?.first(where: {
+                    ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == number
+                        && ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ProcessInfo.processInfo.processIdentifier
+                }), let serverDictionary = own[kCGWindowBounds as String] as? [String: Any],
+                      let serverBounds = CGRect(dictionaryRepresentation: serverDictionary as CFDictionary) else { return false }
+                let expectedServer = CGRect(x: source.frame.minX, y: primaryTop - source.frame.maxY,
+                    width: source.frame.width, height: source.frame.height)
+                let screenPoint = path[0], local = source.convertPoint(fromScreen: screenPoint)
+                let expectedQuartz = CGPoint(x: screenPoint.x, y: primaryTop - screenPoint.y)
+                guard let probeEvent = NSEvent.mouseEvent(with: .mouseMoved, location: local, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: source.windowNumber,
+                    context: nil, eventNumber: 27_999, clickCount: 0, pressure: 0),
+                      let quartzEvent = probeEvent.cgEvent else { return false }
+                let roundTrip = NSEvent(cgEvent: quartzEvent)
+                sourceReadiness.merge(["sourceWindowNumber": source.windowNumber,
+                    "sourceFrame": dimensions(source.frame), "sourceBackingScale": Double(source.backingScaleFactor),
+                    "serverBounds": dimensions(serverBounds), "expectedServerBounds": dimensions(expectedServer),
+                    "screenPoint": coordinates(screenPoint), "localPoint": coordinates(local),
+                    "quartzPoint": coordinates(quartzEvent.location), "expectedQuartzPoint": coordinates(expectedQuartz),
+                    "roundTripWindowNumber": roundTrip.map { $0.windowNumber as Any } ?? NSNull(),
+                    "roundTripLocalPoint": roundTrip.map { coordinates($0.locationInWindow) as Any } ?? NSNull(),
+                    "roundTripScreenPoint": roundTrip.map { restored in
+                        coordinates(restored.window.map { $0.convertPoint(toScreen: restored.locationInWindow) }
+                            ?? restored.locationInWindow) as Any
+                    } ?? NSNull(),
+                    "probePosted": false, "naturalIdlePaint": true, "preparationPoint": coordinates(preparationPoint)],
+                    uniquingKeysWith: { _, current in current })
+                // The round-trip is diagnostic, not a substitute for actual
+                // delivered window/local/screen identity in the assertions below.
+                return serverBounds == expectedServer && quartzEvent.location == expectedQuartz
+                    && probeEvent.window === source && probeEvent.locationInWindow == local
+            }
+            let prepared = panel.smokeMusicInputState(at: preparationPoint)
+            let preInput = panel.smokePointerIngress.filter { $0.timestamp >= preparationBegan }
+            var preparationOracle = IslandCrossing()
+            var oracleInert = true
+            for sample in preInput {
+                if preparationOracle.update(point: sample.point, now: sample.timestamp,
+                    corridor: corridor, enabled: true) != nil || preparationOracle.reservesPointer { oracleInert = false }
+            }
+            let clearKeys = ["gestureSuppressed", "needsCorridorExit", "eventReserves", "pollReserves", "hoverExpanded"]
+            try require(!geometry.canonicalHoverContains(preparationPoint, progress: 1)
+                && !preInput.isEmpty && preInput.allSatisfy { $0.kind == "poll" && $0.point == preparationPoint && $0.owner == .idle && $0.target == 0 }
+                && oracleInert && clearKeys.allSatisfy { prepared?[$0] as? Bool == false }
+                && controller.isFreshPlaying && !controller.lyricsModeEnabled && !panel.isInteracting,
+                "source-readiness-does-not-trigger-gesture-or-hover")
+            sourceReadiness["preparationPolls"] = preInput.count
+            sourceReadiness["preparationOracleInert"] = oracleInert
+            sourceReadiness["inputStateBeforeCrossing"] = prepared.map { $0 as Any } ?? NSNull()
+            emitReadiness(true)
+        } catch {
+            emitReadiness(false)
+            throw error
+        }
+        // The measured event→poll→event sequence starts only here. Its endpoint,
+        // nine events, real timestamps, quiet guard and deadlines are unchanged.
+        panel.smokeSetPolledPointer(endpoint)
         let began = ProcessInfo.processInfo.systemUptime
         var constructed: [[String: Any]] = []
         var observations: [[String: Any]] = []
@@ -208,7 +315,7 @@ final class MusicRenderCacheChecks {
                 }
                 let receipts = panel.smokePointerIngress.filter { $0.timestamp >= began }
                 let entries = panel.smokePointerEntries.filter { (28_000...28_008).contains($0.eventNumber) }
-                let evidence: [String: Any] = ["stage": recoveryStage,
+                let evidence: [String: Any] = ["stage": recoveryStage, "sourceReadiness": sourceReadiness,
                     "constructed": constructed, "snapshots": observations,
                     "finalSnapshot": snapshot("failure"), "initialCrossingOracle": oracleRows,
                     "initialCrossingOracleCompletedRight": completedRight,
@@ -275,6 +382,8 @@ final class MusicRenderCacheChecks {
                 let evidence: [String: Any] = ["eventNumber": number, "windowNumber": source.windowNumber,
                     "requestedTimestamp": requested, "constructedTimestamp": timestamp,
                     "expectedPoint": point(p), "expectedLocalPoint": point(location),
+                    "sourceFrame": rect(source.frame), "sourceBackingScale": Double(source.backingScaleFactor),
+                    "constructedQuartzPoint": event.cgEvent.map { point($0.location) as Any } ?? NSNull(),
                     "monitorEntries": entries.map { e -> [String: Any] in
                         ["monitor": e.monitor, "eventType": e.eventType, "windowNumber": e.windowNumber,
                          "timestamp": e.timestamp, "deltaNanoseconds": (e.timestamp - timestamp) * 1e9,

@@ -457,6 +457,12 @@ final class MusicRenderHarness: NSObject {
                     try await until("gesture recovery queued identity and point reach both installed monitors", timeout: remaining) { received() }
                 }
             } catch {
+                // Focused1 delivered this event in 0.18 ms, but the waiting task
+                // resumed after 321 ms. Recheck once after a late wake: received()
+                // still requires actual delivery within the original 0.20-second
+                // deadline and the exact production receipt. Never wait again or
+                // turn cancellation/watchdog retirement into a successful event.
+                if !finished && !Task.isCancelled && received() { return }
                 // Run60 stopped before its first setup event had a joint receipt.
                 // Preserve each actual operand before defer stops the panel; an
                 // absent identity is not proof of a timestamp or coordinate bug.
