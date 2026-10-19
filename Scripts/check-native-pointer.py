@@ -121,7 +121,7 @@ def valid(output):
             return False
     except (ValueError, KeyError, TypeError):
         return False
-    shutdown = "SMOKE_OK: synthetic orderly shutdown"
+    shutdown = "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only"
     return output.count(shutdown) == 1 and output.index(shutdown) > output.index("MUSIC_OK:")
 
 def pointer_fixture(count=40):
@@ -154,7 +154,7 @@ def sample():
         *[f"MUSIC_CLOSED_TRANSITION_HEIGHT_OK: transition={t} commits=20 movingCommits=18 paints=19 movingPaints=17 sameHeight=true sameBottom=true widthOnly=true scanout=false" for t in ("playback-start", "pause", "reconnect")],
         GATE,
         "MUSIC_OK: checks=200 elapsed=21.5 synthetic=true localViewPixels=true scanout=false",
-        "SMOKE_OK: synthetic orderly shutdown",
+        "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only",
     ]) + "\n"
 
 def protocol_self_test():
@@ -243,7 +243,10 @@ def self_test():
         assert not valid(text.replace(a, b)), a
         count += 1
     assert not valid(text + "MUSIC_FAILED: injected\n")
-    print(f"POINTER_RECEIPT_SELF_TEST_OK: assertions={count + 1 + protocol_self_test()} nativeAppRun=false")
+    shutdown = "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only"
+    assert not valid(text.replace(shutdown, "SMOKE_OK: synthetic orderly shutdown"))
+    assert not valid(shutdown + "\n" + text.replace(shutdown + "\n", ""))
+    print(f"POINTER_RECEIPT_SELF_TEST_OK: assertions={count + 3 + protocol_self_test()} nativeAppRun=false")
     return 0
 
 def main():
