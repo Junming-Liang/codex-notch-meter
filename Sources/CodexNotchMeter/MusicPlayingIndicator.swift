@@ -173,7 +173,7 @@ final class MusicPlayingIndicatorView: NSView {
         return values.count == bars.count ? values : nil
     }
     fileprivate var modelScales: [Double] { bars.map { Double($0.transform.m22) } }
-    fileprivate var animations: [CAKeyframeAnimation] {
+    fileprivate var barKeyframeAnimations: [CAKeyframeAnimation] {
         bars.compactMap { $0.animation(forKey: Self.animationKey) as? CAKeyframeAnimation }
     }
 }
@@ -234,7 +234,7 @@ enum MusicPlayingIndicatorVerification {
         view.layoutSubtreeIfNeeded()
         try require(view.animationStartCount == starts && running(view)
             && view.frame == NSRect(x: 10, y: 10, width: 20, height: 20), "layout-does-not-restart")
-        let animations = view.animations
+        let animations = view.barKeyframeAnimations
         try require(animations.count == 3 && animations.allSatisfy {
             let values = $0.values as? [NSNumber]
             return $0.keyPath == "transform.scale.y" && $0.duration == 1.6
