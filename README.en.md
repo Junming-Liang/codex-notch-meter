@@ -3,7 +3,7 @@
   <h1>Codex Notch Meter</h1>
   <p><strong>Codex allowance and Apple Music lyrics, at the top of your Mac.</strong></p>
   <p>Native macOS · Read-only quotas · Optional lyrics</p>
-  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg">Download Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.2">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
+  <p><a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg">Download Universal DMG</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip">Alternative ZIP</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.1.0">Release notes</a> · <a href="README.md">简体中文</a> · <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">Report an issue</a></p>
 </div>
 
 ## Overview
@@ -12,7 +12,7 @@ A small SwiftUI and AppKit menu-bar utility. A fine contour follows the MacBook 
 
 The meter reads the official Codex CLI's account interface. It sends no model prompts, starts no conversations, and does not collect chat history.
 
-**v1.0.3 candidate, under validation.** Reports after v1.0.2 still describe expansion jitter, missed button-free crossings and an overly tall closed music shell. Earlier synthetic checks did not establish that those physical-device issues were resolved. This revision targets original pointer events, hover transitions, a same-height/wider-only closed music shell, and shared frame timing and geometry/progress. See the [bilingual candidate changes](docs/RELEASE-1.0.3.md) and [validation status](docs/VALIDATION.md). Native macOS validation, image review and v1.0.3 publication are pending; downloads still point to published v1.0.2. The source, synthetic native checks and image-review record from [Run 49](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/39196309482) apply only to v1.0.2 and does not establish user-device behavior, GPU scanout or every Music permission combination.
+**v1.1.0 is available.** After a transient Music read failure, fresh playback information confirming the same track restores its previously loaded lyrics. A new track still needs a match; missing lyrics never display the previous track’s text. Ordinary quota-detail hover restores single-stage width timing while retaining current dimensions and the Music gesture path. The complete macOS checks in [Run 58](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/39241505652) passed; 30 synthetic native images and the same-run source-bound installers were reviewed. See the [bilingual release notes](docs/RELEASE-1.1.0.md). Synthetic checks do not establish user-device feel, physical-notch fit, or every Music permission/streaming configuration.
 
 Display handling uses runtime bounds and capabilities, with menu-bar fallback for non-notched, external-only, closed-lid and mirrored configurations. Hosted native gates passed; the [coverage matrix](docs/COMPATIBILITY.md) distinguishes synthetic evidence from physical-device validation. The automatic curve is a documented approximation, not a measured profile for every panel.
 
@@ -31,11 +31,11 @@ See [Enable lyrics](#enable-lyrics-optional) below and the [lyrics integration c
 
 ## Download
 
-1. Download the [v1.0.2 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg.sha256)
+1. Download the [v1.1.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg) and optional [SHA-256 checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg.sha256)
 2. Open the DMG and drag **Codex Notch Meter.app** to **Applications**
 3. Launch the installed copy from Applications, then eject the DMG
 
-An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
+An alternative [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip) and [checksum](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip.sha256) are available. Extract the complete `.app` into Applications.
 
 For an upgrade, quit the previous version before replacing the `.app`.
 

@@ -4,9 +4,9 @@
   <p><strong>Codex 额度与 Apple Music 歌词，融入 Mac 顶边。</strong></p>
   <p>原生 macOS 菜单栏工具 · 只读额度 · 可选歌词</p>
   <p>
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg">下载 Universal DMG</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip">ZIP 备用下载</a> ·
-    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.2">发布说明</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg">下载 Universal DMG</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip">ZIP 备用下载</a> ·
+    <a href="https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.1.0">发布说明</a> ·
     <a href="#快速开始">快速开始</a> ·
     <a href="README.en.md">English</a> ·
     <a href="https://github.com/Junming-Liang/codex-notch-meter/issues">反馈问题</a>
@@ -24,7 +24,7 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 应用使用 SwiftUI 与 AppKit 构建，通过官方 Codex CLI 的账户接口读取数据。不发送模型提示，不创建对话，不收集聊天记录。
 
-> **v1.0.3 候选版本，正在验证。** v1.0.2 发布后仍收到展开抖动、无按键划过不触发，以及闭合音乐外壳过高的反馈，不能把此前合成检查通过等同于实机问题已解决。本次修订针对原始鼠标事件、悬停状态切换、同高仅加宽的闭合音乐外壳，以及共用帧时间与几何进度。见[中英候选变更](docs/RELEASE-1.0.3.md)和[验证状态](docs/VALIDATION.md)。v1.0.3 的 macOS 原生验证、图片审核与发布尚未完成；下载链接仍指向已发布的 v1.0.2。此前 [Run 49](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/39196309482) 的源代码、合成原生检查及图片审核记录只适用于 v1.0.2，不证明用户实机、GPU 扫描输出或全部 Music 权限组合已验证。
+> **v1.1.0 已发布。** 临时 Music 读取失败后，取得新鲜且确认同曲的播放信息即可恢复已加载歌词；换到新曲时仍需等待匹配，无匹配时不会展示旧歌词。普通额度详情悬停展开恢复单段宽度节奏，保留现有尺寸与音乐手势路径。[Run 58](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/39241505652) 的完整 macOS 检查已通过，30 张合成原生图片及同次源码绑定安装包已审核。见[中英发布说明](docs/RELEASE-1.1.0.md)。合成验证不等于用户实机手感、物理刘海或全部 Music 权限/流媒体组合已验证。
 
 显示适配使用系统实时边界与显示能力；无刘海、外接、合盖及镜像模式保留菜单栏。云端原生检查已通过，[机型与覆盖矩阵](docs/COMPATIBILITY.md)明确区分合成验证和实机验证；自动曲线仍是公开资料支持的近似，不能保证每块实物面板完全贴合。
 
@@ -55,11 +55,11 @@ Codex Notch Meter 把 Codex 订阅的剩余额度显示在 MacBook 刘海两侧�
 
 ## 下载与安装
 
-1. 下载 [v1.0.2 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.dmg.sha256)
+1. 下载 [v1.1.0 Universal DMG](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg)，可同时获取 [SHA-256 校验文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.dmg.sha256)
 2. 打开 DMG，把 **Codex Notch Meter.app** 拖到 **Applications**
 3. 从“应用程序”打开已安装的副本，再推出 DMG
 
-也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.0.2/CodexNotchMeter-1.0.2-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
+也可选择 [Universal ZIP](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip)及其 [SHA-256 文件](https://github.com/Junming-Liang/codex-notch-meter/releases/download/v1.1.0/CodexNotchMeter-1.1.0-universal.zip.sha256)，解压后将完整 `.app` 放入“应用程序”。
 
 升级时请先退出旧版本，再替换 `.app`。
 
