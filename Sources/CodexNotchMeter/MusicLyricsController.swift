@@ -45,6 +45,15 @@ final class MusicLyricsController: ObservableObject {
     private var timeline = LyricsTimeline()
     private var document = LyricsDocument.unavailable
     private var current: MusicPlaybackSnapshot?
+    /// One in-memory successful document, never a display/playback anchor.
+    /// Only an exact, freshly confirmed track may reclaim it after a soft read failure.
+    private struct RetainedLyrics {
+        let track: MusicTrackIdentity
+        let document: LyricsDocument
+        let isLocal: Bool
+        let sourceLabel: String
+    }
+    private var retainedLyrics: RetainedLyrics?
     private var pollTask: Task<Void, Never>?
     private var lookupTask: Task<Void, Never>?
     private var importTask: Task<Void, Never>?
@@ -114,6 +123,7 @@ final class MusicLyricsController: ObservableObject {
     func setOnlineLookupEnabled(_ value: Bool) {
         guard !stopped, onlineLookupEnabled != value else { return }
         onlineLookupEnabled = value
+        if !value, retainedLyrics?.isLocal == false { retainedLyrics = nil }
         defaults?.set(value, forKey: "musicLyricsOnlineLookupEnabled")
         lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
         resetLookupState()
@@ -183,8 +193,11 @@ final class MusicLyricsController: ObservableObject {
         }
     }
 
+    var canClearLocalLyrics: Bool { hasLocalLyrics || retainedLyrics?.isLocal == true }
+
     func clearLocalLyrics() {
-        guard hasLocalLyrics else { return }
+        guard hasLocalLyrics || retainedLyrics?.isLocal == true else { return }
+        retainedLyrics = nil
         importTask?.cancel(); importTask = nil
         hasLocalLyrics = false; document = .unavailable; sourceLabel = ""; line = ""
         _ = timeline.setLyrics(.unavailable, generation: timeline.generation)
@@ -204,7 +217,17 @@ final class MusicLyricsController: ObservableObject {
         lookupGeneration = nil
     }
 
-    private func clearPlayback() {
+    private func clearPlayback(retainingSuccessfulLyrics: Bool = false) {
+        if retainingSuccessfulLyrics {
+            if let track = current?.track {
+                if case .unavailable = document.content {
+                    // No successfully parsed document exists to recover.
+                } else {
+                    retainedLyrics = RetainedLyrics(track: track, document: document,
+                        isLocal: hasLocalLyrics, sourceLabel: sourceLabel)
+                }
+            }
+        } else { retainedLyrics = nil }
         let hadPresentation = isPlayingForPresentation || isFreshPlaying || !line.isEmpty || !nextLine.isEmpty
         if isPlayingForPresentation { isPlayingForPresentation = false }
         isFreshPlaying = false; artwork = nil
@@ -249,7 +272,14 @@ final class MusicLyricsController: ObservableObject {
             lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
             importTask?.cancel(); importTask = nil
             lineTimer?.invalidate(); lineTimer = nil
-            clearPlayback()
+            // Even a timeout may have occurred after observing a pause. Hide
+            // immediately; retaining a document never extends source freshness.
+            let recoverable: Bool
+            switch reason {
+            case .timedOut, .busy, .changedDuringRead, .unknownTrack: recoverable = true
+            default: recoverable = false
+            }
+            clearPlayback(retainingSuccessfulLyrics: recoverable)
             switch reason {
             case .authorizationRequired:
                 needsAuthorization = true; statusText = "需要允许读取 Music；请在设置中请求授权"
@@ -264,6 +294,9 @@ final class MusicLyricsController: ObservableObject {
             }
         case .snapshot(let value):
             guard value.state == .playing || value.state == .paused else {
+                // A confirmed stopped/unknown snapshot is not a transient
+                // unknown-track read. It retires any recovery binding as well.
+                clearPlayback()
                 receive(.unavailable(.unknownTrack)); return
             }
             let now = clock()
@@ -288,6 +321,18 @@ final class MusicLyricsController: ObservableObject {
                 receive(.unavailable(.invalidResponse)); return
             }
             current = value; needsAuthorization = false; trackTitle = value.track.title
+            if let retained = retainedLyrics {
+                // Consume the slot on the first validated sample, even when it
+                // is another song. Never carry A through B and revive it later.
+                retainedLyrics = nil
+                if retained.track == value.track && (retained.isLocal || onlineLookupEnabled) {
+                    document = retained.document; hasLocalLyrics = retained.isLocal
+                    sourceLabel = retained.sourceLabel
+                    _ = timeline.setLyrics(retained.document, generation: timeline.generation)
+                    lookupGeneration = timeline.generation
+                    if !retained.isLocal { lookupState = .matched }
+                }
+            }
             if artwork != value.artwork { artwork = value.artwork }
             refreshLine()
             beginLookupIfNeeded()

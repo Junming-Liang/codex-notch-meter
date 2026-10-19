@@ -123,7 +123,7 @@ struct MusicLyricsSettings: View {
                     HStack {
                         Button("为当前歌曲导入 LRC…", action: chooseLocalLyrics)
                             .disabled(!music.canImport || music.synthetic)
-                        if music.hasLocalLyrics {
+                        if music.canClearLocalLyrics {
                             Button("清除本次导入") { music.clearLocalLyrics() }.disabled(music.synthetic)
                         }
                     }.controlSize(.small)

@@ -22,6 +22,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var collapseHarness: CollapseRenderHarness?
     private var updateHarness: UpdateRenderHarness?
     private var musicHarness: MusicRenderHarness?
+    private var ordinaryMotionHarness: OrdinaryMotionRenderHarness?
     private var baselineMotionHarness: BaselineMotionComparisonHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
@@ -159,7 +160,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--baseline-motion-test") { runBaselineMotionTest() }
+            if CommandLine.arguments.contains("--ordinary-motion-test") { runOrdinaryMotionTest() }
+            else if CommandLine.arguments.contains("--baseline-motion-test") { runBaselineMotionTest() }
             else if CommandLine.arguments.contains("--music-test") { runMusicTest() }
             else if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
             else if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
@@ -196,7 +198,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         noticeQueue.invalidate()
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); baselineMotionHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); baselineMotionHarness?.stop(); ordinaryMotionHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -338,6 +340,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         displayHarness?.start()
+    }
+    private func runOrdinaryMotionTest() {
+        guard CommandLine.arguments.contains("--music-test"), let screen = NSScreen.main else { requestQuit(); return }
+        ordinaryMotionHarness = OrdinaryMotionRenderHarness(screen: screen) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        ordinaryMotionHarness?.start()
     }
     private func runBaselineMotionTest() {
         guard CommandLine.arguments.contains("--music-test"), let screen = NSScreen.main else { requestQuit(); return }

@@ -40,6 +40,8 @@ final class MusicRenderHarness: NSObject {
     private var lastOCRLines: [MusicOCRLine] = []
     private var lastOCRImage: CGImage?
     private var nativeExpectations: [ObjectIdentifier: (progress: Double, after: TimeInterval)] = [:]
+    private var lyricsRecoveryCompleted = false
+    private var lyricsRecoveryOnly: Bool { CommandLine.arguments.contains("--lyrics-recovery-test") }
     private var pointerVerificationCompleted = false
     private var pointerVerificationOnly: Bool { CommandLine.arguments.contains("--pointer-ingress-test") }
 
@@ -52,7 +54,8 @@ final class MusicRenderHarness: NSObject {
         guard !started, !finished else { return }
         started = true; startedAt = CACurrentMediaTime(); initialKey = NSApp.keyWindow
         guard CommandLine.arguments.contains("--music-test") else { finish(false); return }
-        let deadline: TimeInterval = pointerVerificationOnly ? 45 : 150
+        guard !(pointerVerificationOnly && lyricsRecoveryOnly) else { finish(false); return }
+        let deadline: TimeInterval = lyricsRecoveryOnly ? 90 : (pointerVerificationOnly ? 45 : 150)
         let timer = Timer(timeInterval: deadline, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.finished else { return }
@@ -64,7 +67,8 @@ final class MusicRenderHarness: NSObject {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                if self.pointerVerificationOnly { try await self.runPointerVerification() }
+                if self.lyricsRecoveryOnly { try await self.runLyricsRecoveryVerification() }
+                else if self.pointerVerificationOnly { try await self.runPointerVerification() }
                 else { try await self.run() }
                 self.finish(true)
             } catch {
@@ -130,6 +134,350 @@ final class MusicRenderHarness: NSObject {
         try await verifyNativePointerIngress(fixture: fixture, model: model)
         pointerVerificationCompleted = true
         print("MUSIC_POINTER_GATE_OK: independent=true deadline=45 oldMusicDeadline=150 closedHeightMask=true nativeEventQueue=true")
+    }
+
+    private struct LyricsRecoveryFixture {
+        let value: MusicFixture
+        let document: LyricsDocument
+        let online: Bool
+        var source: String { online ? "online" : "local" }
+        var sourceLabel: String { online ? "LRCLIB 社区歌词" : "本地歌词" }
+    }
+
+    /// Controller-only evidence through the production poll loop. This separate
+    /// 90-second invocation neither extends nor replaces the 150-second paint gate.
+    private func runLyricsRecoveryVerification() async throws {
+        try await verifySoftLyricsRecovery()
+        try await verifyLyricsRecoveryBoundaries()
+        try await verifySoftRecoveryLateResults()
+        try await verifyRecoveryChainAndFreshness()
+        for value in fixtures { value.controller.stop() }
+        for value in fixtures {
+            await value.reader.releaseAll(.unavailable(.cancelled))
+            await value.lookup.releaseAll(.unavailable)
+            await value.importer.releaseAll(.unavailable)
+        }
+        let counts = await countsFor(fixtures)
+        try await dwell(0.10)
+        var pending = 0
+        for value in fixtures {
+            pending += await value.reader.pendingCount()
+            pending += await value.lookup.pendingCount()
+            pending += await value.importer.pendingCount()
+        }
+        let finalCounts = await countsFor(fixtures)
+        try require(pending == 0 && finalCounts == counts,
+                    "recovery gate retires every real continuation without starting more work")
+        print("MUSIC_LYRICS_RECOVERY_CLEANUP_OK: controllers=\(fixtures.count) pendingRequests=0 countsStable=true")
+        lyricsRecoveryCompleted = true
+        print("MUSIC_LYRICS_RECOVERY_GATE_OK: independent=true deadline=90 oldMusicDeadline=150 softCases=8 boundaryCases=12 lateCases=2 chainCases=1 controllerOnly=true")
+    }
+
+    /// Recovery-only cursor: ordinary legacy fixtures keep their existing reader
+    /// semantics. Restart cases first hold one exact pending old request, cancel
+    /// it, and observe that exact cancellation before accepting a newer request.
+    private func readLyricsRecovery(_ value: MusicFixture,
+                                    notBefore restartedAt: TimeInterval? = nil) async throws -> MusicFixtureCall<Bool> {
+        var received: MusicFixtureCall<Bool>?
+        try await until("current non-cancelled recovery request arrives", timeout: 3.6) {
+            let calls = await value.reader.calls()
+            let cancelled = await value.reader.cancelledIDs()
+            received = calls.first { call in
+                call.id > value.readCursor && !cancelled.contains(call.id)
+                    && (restartedAt.map { call.startedAt >= $0 } ?? true)
+            }
+            return received != nil
+        }
+        guard let received else { throw Failure(label: "missing current recovery reader request") }
+        value.readCursor = received.id
+        return received
+    }
+
+    private func makeLyricsRecoveryFixture(online: Bool) async throws -> LyricsRecoveryFixture {
+        let value = makeFixture()
+        value.controller.start()
+        if online { value.controller.setOnlineLookupEnabled(true) }
+        value.controller.setEnabled(true)
+        let initial = try await readLyricsRecovery(value)
+        try await release(value, initial, position: 1)
+        let exact = try document("[by:recovery-\(UUID().uuidString)]\n[00:00]\(Self.firstLine)\n[00:10]\(Self.secondLine)")
+        if online {
+            let request = try await lookup(value)
+            try require(await value.lookup.release(request.id, .matched(exact)), "complete real recovery lookup")
+            try await until("exact online recovery document is applied") {
+                let returned = await value.lookup.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticLyricsDocument == exact
+                    && value.controller.line == Self.firstLine && value.controller.lookupState == .matched
+            }
+        } else {
+            try beginImport(value.controller, path: "/synthetic-recovery.lrc")
+            let request = try await imported(value)
+            try require(await value.importer.release(request.id, exact), "complete real recovery import")
+            try await until("exact local recovery document is applied") {
+                let returned = await value.importer.returnedIDs().contains(request.id)
+                return returned && value.controller.syntheticLyricsDocument == exact
+                    && value.controller.line == Self.firstLine && value.controller.hasLocalLyrics
+            }
+        }
+        value.controller.selectLyricsMode(true)
+        try require(value.controller.lyricsModeEnabled && value.controller.isPlayingForPresentation,
+                    "recovery starts from actual usable lyrics and explicit selected mode")
+        return LyricsRecoveryFixture(value: value, document: exact, online: online)
+    }
+
+    private func interruptLyricsRecovery(_ value: MusicFixture, reason: MusicReadFailure) async throws {
+        let request = try await readLyricsRecovery(value)
+        let revision = value.controller.playbackRevision
+        try require(await value.reader.release(request.id, .unavailable(reason)), "deliver real pending recovery source failure")
+        try await until("recovery failure is received and hides all old source content") {
+            let returned = await value.reader.returnedIDs().contains(request.id)
+            return returned && value.controller.playbackRevision != revision
+                && value.controller.syntheticPlaybackSnapshot == nil && value.controller.trackTitle.isEmpty
+                && value.controller.line.isEmpty && value.controller.nextLine.isEmpty
+                && !value.controller.isFreshPlaying && !value.controller.isPlayingForPresentation
+                && !value.controller.canImport
+        }
+    }
+
+    private func requireRecoveredLyrics(_ fixture: LyricsRecoveryFixture) async throws {
+        let value = fixture.value
+        try require(value.controller.syntheticLyricsDocument == fixture.document
+            && value.controller.line == Self.secondLine && value.controller.nextLine.isEmpty
+            && value.controller.sourceLabel == fixture.sourceLabel
+            && value.controller.hasLocalLyrics == !fixture.online
+            && value.controller.lyricsModeEnabled && value.controller.isFreshPlaying
+            && value.controller.isPlayingForPresentation && value.controller.isSynchronized,
+            "fresh exact same-track snapshot restores the original bound document, source and selected mode")
+        try await dwell(0.04)
+        let lookups = await value.lookup.calls().count
+        let imports = await value.importer.calls().count
+        try require(lookups == (fixture.online ? 1 : 0) && imports == (fixture.online ? 0 : 1),
+                    "same-track recovery does not repeat lookup or import")
+    }
+
+    private func verifySoftLyricsRecovery() async throws {
+        let failures: [(String, MusicReadFailure)] = [
+            ("timedOut", .timedOut), ("busy", .busy),
+            ("changedDuringRead", .changedDuringRead), ("unknownTrack", .unknownTrack)
+        ]
+        var cases: [(LyricsRecoveryFixture, String, MusicReadFailure)] = []
+        for online in [false, true] {
+            for (name, reason) in failures {
+                cases.append((try await makeLyricsRecoveryFixture(online: online), name, reason))
+            }
+        }
+        for (fixture, _, reason) in cases {
+            try await interruptLyricsRecovery(fixture.value, reason: reason)
+            try require(fixture.value.controller.lyricsModeEnabled,
+                        "soft source failure preserves only the explicit selected mode")
+        }
+        for (fixture, _, _) in cases {
+            let fresh = try await readLyricsRecovery(fixture.value)
+            try await release(fixture.value, fresh, position: 12)
+            // The pre-fix controller must fail here: current becomes fresh again,
+            // but the one successfully loaded document was already discarded.
+            try await requireRecoveredLyrics(fixture)
+        }
+        for (fixture, name, _) in cases {
+            let ordinary = try await readLyricsRecovery(fixture.value)
+            try require(!ordinary.input, "same-track recovery never requests renewed permission")
+            try await release(fixture.value, ordinary, position: 12)
+            try await requireRecoveredLyrics(fixture)
+            let lookups = await fixture.value.lookup.calls().count
+            let imports = await fixture.value.importer.calls().count
+            print("MUSIC_LYRICS_RECOVERY_CASE_OK: source=\(fixture.source) reason=\(name) hidden=true sameDocument=true selected=true currentCue=true ordinaryPoll=true lookups=\(lookups) imports=\(imports)")
+            fixture.value.controller.stop()
+        }
+    }
+
+    private func requireLyricsAbsent(_ value: MusicFixture, label: String) throws {
+        try require(value.controller.line.isEmpty && value.controller.nextLine.isEmpty
+            && !value.controller.isPlayingForPresentation && !value.controller.hasLocalLyrics
+            && value.controller.syntheticLyricsDocument == .unavailable,
+            "\(label) cannot resurrect the old lyric document")
+    }
+
+    private func verifyLyricsRecoveryBoundaries() async throws {
+        let names = ["pause", "stopped", "unknown", "cross-track-no-match", "clear-local", "revoke-online",
+                     "disable", "sleep", "authorization", "target-mismatch", "permission-denied", "terminal-stop"]
+        var cases: [(String, LyricsRecoveryFixture)] = []
+        for name in names {
+            cases.append((name, try await makeLyricsRecoveryFixture(online: name == "revoke-online")))
+        }
+        for (_, fixture) in cases { try await interruptLyricsRecovery(fixture.value, reason: .changedDuringRead) }
+        var terminalCounts: [Int] = []
+        var terminalStoppedAt: TimeInterval = 0
+        var restartedAt: [String: TimeInterval] = [:]
+        // Hold each restarted controller's exact ordinary request before retiring
+        // it. A pre-cancel history snapshot alone can miss a newly queued old read.
+        for (name, fixture) in cases {
+            let value = fixture.value
+            switch name {
+            case "clear-local": value.controller.clearLocalLyrics()
+            case "revoke-online": value.controller.setOnlineLookupEnabled(false)
+            case "disable", "sleep", "authorization", "terminal-stop":
+                let retiring = try await readLyricsRecovery(value)
+                try require(!retiring.input, "hard boundary holds its exact ordinary pending read")
+                restartedAt[name] = ProcessInfo.processInfo.systemUptime
+                switch name {
+                case "disable": value.controller.setEnabled(false); value.controller.setEnabled(true)
+                case "sleep": value.controller.setActive(false); value.controller.setActive(true)
+                case "authorization": value.controller.requestAuthorization()
+                default: value.controller.stop(); terminalStoppedAt = CACurrentMediaTime()
+                }
+                try await until("hard boundary acknowledges cancellation of its exact old reader request") {
+                    await value.reader.cancelledIDs().contains(retiring.id)
+                }
+                if name == "terminal-stop" {
+                    terminalCounts = (await countsFor([value]))[0]
+                    value.controller.start(); value.controller.setActive(true)
+                    value.controller.setEnabled(false); value.controller.setEnabled(true)
+                    value.controller.requestAuthorization()
+                }
+            default: break
+            }
+        }
+        for (name, fixture) in cases {
+            let value = fixture.value
+            switch name {
+            case "terminal-stop": continue
+            case "pause":
+                let paused = try await readLyricsRecovery(value)
+                try await release(value, paused, position: 12, state: .paused)
+                try require(value.controller.line.isEmpty && value.controller.nextLine.isEmpty
+                    && !value.controller.isFreshPlaying && !value.controller.isPlayingForPresentation
+                    && value.controller.lyricsModeEnabled,
+                    "soft recovery into paused playback keeps the lyric hidden and mode selected")
+            case "stopped", "unknown":
+                let request = try await readLyricsRecovery(value)
+                let revision = value.controller.playbackRevision
+                try require(await value.reader.release(request.id, snapshot(position: 12,
+                    state: name == "stopped" ? .stopped : .unknown)), "deliver actual non-playing hard state")
+                try await until("explicit stopped or unknown state clears the suspended binding") {
+                    let returned = await value.reader.returnedIDs().contains(request.id)
+                    return returned && value.controller.playbackRevision != revision
+                        && value.controller.syntheticPlaybackSnapshot == nil
+                }
+                try requireLyricsAbsent(value, label: name)
+            case "cross-track-no-match":
+                let other = try await readLyricsRecovery(value)
+                try await release(value, other, track: "HARBOR B", position: 12)
+                try requireLyricsAbsent(value, label: "different verified track")
+                value.controller.setOnlineLookupEnabled(true)
+                let noMatch = try await lookup(value)
+                try require(await value.lookup.release(noMatch.id, .noMatch), "complete genuine B no-match result")
+                try await until("B no-match remains lyric-free") { value.controller.lookupState == .noMatch }
+                try requireLyricsAbsent(value, label: "B no-match")
+                // Retiring online lookup prevents a new A lookup from obscuring
+                // whether the former local A document incorrectly survived B.
+                value.controller.setOnlineLookupEnabled(false)
+            case "target-mismatch": try await interruptLyricsRecovery(value, reason: .targetMismatch)
+            case "permission-denied":
+                try await interruptLyricsRecovery(value, reason: .permissionDenied)
+                try require(value.controller.needsAuthorization, "hard denial requires explicit authorization")
+                restartedAt[name] = ProcessInfo.processInfo.systemUptime
+                value.controller.requestAuthorization()
+            default: break
+            }
+        }
+        for (name, fixture) in cases {
+            let value = fixture.value
+            if name == "terminal-stop" {
+                if CACurrentMediaTime() - terminalStoppedAt < 3.15 {
+                    try await dwell(3.15 - (CACurrentMediaTime() - terminalStoppedAt))
+                }
+                try require((await countsFor([value]))[0] == terminalCounts,
+                            "terminal stop cannot restart work after one complete paused polling interval")
+                try requireLyricsAbsent(value, label: name)
+            } else {
+                let fresh = try await readLyricsRecovery(value, notBefore: restartedAt[name])
+                try await release(value, fresh, position: 12)
+                if name == "pause" { try await requireRecoveredLyrics(fixture) }
+                else { try requireLyricsAbsent(value, label: name) }
+            }
+            print("MUSIC_LYRICS_RECOVERY_BOUNDARY_OK: kind=\(name) oldContentHidden=true result=\(name == "pause" ? "fresh-resume" : "no-resurrection")")
+            value.controller.stop()
+        }
+    }
+
+    private func verifySoftRecoveryLateResults() async throws {
+        let local = try await makeLyricsRecoveryFixture(online: false)
+        try beginImport(local.value.controller, path: "/synthetic-obsolete-recovery.lrc")
+        let lateImport = try await imported(local.value)
+        let online = makeFixture()
+        online.controller.start(); online.controller.setOnlineLookupEnabled(true); online.controller.setEnabled(true)
+        let initial = try await readLyricsRecovery(online); try await release(online, initial, position: 1)
+        let lateLookup = try await lookup(online)
+        try await interruptLyricsRecovery(local.value, reason: .busy)
+        try await interruptLyricsRecovery(online, reason: .timedOut)
+        try await until("soft interruption cancels pending import and lookup") {
+            let imported = await local.value.importer.cancelledIDs().contains(lateImport.id)
+            let lookedUp = await online.lookup.cancelledIDs().contains(lateLookup.id)
+            return imported && lookedUp
+        }
+        let localFresh = try await readLyricsRecovery(local.value); try await release(local.value, localFresh, position: 12)
+        try require(local.value.controller.syntheticLyricsDocument == local.document
+            && local.value.controller.line == Self.secondLine,
+            "pending replacement import cannot destroy the last successful local document")
+        let onlineFresh = try await readLyricsRecovery(online); try await release(online, onlineFresh, position: 12)
+        let newLookup = try await lookup(online)
+        let obsolete = try document("[00:00]\(Self.obsoleteLine)")
+        try require(await local.value.importer.release(lateImport.id, obsolete), "return retired import after same-track recovery")
+        try require(await online.lookup.release(lateLookup.id, .matched(obsolete)), "return retired lookup after same-track recovery")
+        try await until("both deliberately late cancelled operations actually return") {
+            let imported = await local.value.importer.returnedIDs().contains(lateImport.id)
+            let lookedUp = await online.lookup.returnedIDs().contains(lateLookup.id)
+            return imported && lookedUp
+        }
+        try await dwell(0.10)
+        try require(local.value.controller.syntheticLyricsDocument == local.document
+            && local.value.controller.line == Self.secondLine && local.value.controller.hasLocalLyrics,
+            "late cancelled import cannot overwrite the restored exact document")
+        try requireLyricsAbsent(online, label: "late cancelled online result")
+        let current = try document("[by:new-recovery-\(UUID().uuidString)]\n[00:00]\(Self.secondLine)")
+        try require(await online.lookup.release(newLookup.id, .matched(current)), "complete only current-generation lookup")
+        try await until("current-generation lookup is applied after retired result rejection") {
+            let returned = await online.lookup.returnedIDs().contains(newLookup.id)
+            return returned && online.controller.syntheticLyricsDocument == current
+                && online.controller.line == Self.secondLine && online.controller.lookupState == .matched
+        }
+        let importCount = await local.value.importer.calls().count
+        let lookupCount = await online.lookup.calls().count
+        try require(importCount == 2 && lookupCount == 2,
+            "late-result fixtures make exactly two explicitly expected operations")
+        print("MUSIC_LYRICS_RECOVERY_LATE_OK: kind=import cancelled=true returned=true oldRejected=true currentDocument=true calls=2")
+        print("MUSIC_LYRICS_RECOVERY_LATE_OK: kind=lookup cancelled=true returned=true oldRejected=true currentDocument=true calls=2")
+        local.value.controller.stop(); online.controller.stop()
+    }
+
+    private func verifyRecoveryChainAndFreshness() async throws {
+        let fixture = try await makeLyricsRecoveryFixture(online: false)
+        let value = fixture.value
+        try await interruptLyricsRecovery(value, reason: .timedOut)
+        try await interruptLyricsRecovery(value, reason: .busy)
+        let fresh = try await readLyricsRecovery(value)
+        try await release(value, fresh, position: 12)
+        try await requireRecoveredLyrics(fixture)
+        guard let observedAt = value.controller.syntheticPlaybackSnapshot?.observedAt else {
+            throw Failure(label: "missing real recovered source anchor")
+        }
+        let held = try await readLyricsRecovery(value)
+        // Do not answer this actual request. The unchanged five-second source
+        // timer must revoke presentation, even though the document was recovered.
+        try await until("recovered document cannot extend actual source freshness", timeout: 5.5) {
+            value.controller.line.isEmpty && value.controller.nextLine.isEmpty
+                && value.controller.trackTitle.isEmpty && !value.controller.isFreshPlaying
+                && !value.controller.isPlayingForPresentation && !value.controller.canImport
+                && value.controller.statusText == "Music 播放信息已过期"
+        }
+        let age = ProcessInfo.processInfo.systemUptime - observedAt
+        try require(age >= 5 && age <= 7 && value.controller.lyricsModeEnabled
+            && value.controller.syntheticLyricsDocument == fixture.document,
+            "consecutive soft errors preserve one document without relaxing five-second freshness")
+        try await release(value, held, position: 12)
+        try await requireRecoveredLyrics(fixture)
+        print("MUSIC_LYRICS_RECOVERY_FRESHNESS_OK: chain=timedOut,busy sameDocument=true heldReader=true age=\(decimal(age)) freshness=5 hidden=true freshResume=true lookups=0 imports=1")
+        value.controller.stop()
     }
 
     private func run() async throws {
@@ -2723,11 +3071,18 @@ final class MusicRenderHarness: NSObject {
         finished = true
         let elapsed = CACurrentMediaTime() - startedAt
         stop()
-        let valid = success && (pointerVerificationOnly
-            ? elapsed <= 45 && pointerVerificationCompleted
-            : elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2)
-        print(valid ? "MUSIC_OK: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true localViewPixels=true scanout=false"
-                    : "MUSIC_FAILED: native synthetic music integration contract failed")
+        let valid = success && (lyricsRecoveryOnly
+            ? elapsed <= 90 && lyricsRecoveryCompleted
+            : (pointerVerificationOnly
+                ? elapsed <= 45 && pointerVerificationCompleted
+                : elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2))
+        if lyricsRecoveryOnly {
+            print(valid ? "MUSIC_LYRICS_RECOVERY_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true realPolling=true controllerOnly=true scanout=false"
+                        : "MUSIC_LYRICS_RECOVERY_FAILED: native synthetic recovery contract failed")
+        } else {
+            print(valid ? "MUSIC_OK: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true localViewPixels=true scanout=false"
+                        : "MUSIC_FAILED: native synthetic music integration contract failed")
+        }
         completion(valid)
     }
     func stop() {

@@ -96,6 +96,7 @@ func contourPath(_ contour: IslandContour, inset: CGFloat, closed: Bool) -> Path
 }
 
 private struct IslandRenderObservation: Equatable {
+    let frameRevision: UInt64
     let progress: Double
     let accessoryProgress: Double
     let size: CGSize
@@ -144,7 +145,7 @@ private struct IslandRootView: View {
                     if motionProfile.prewarmsDetails || p > 0 {
                         CompactDetailView(model: model, music: music, width: geometry.detailContentWidth, height: geometry.contentHeight, quitFrameChanged: quitFrameChanged, refresh: refresh, settings: settings, quit: quit)
                             .frame(width: geometry.detailContentWidth)
-                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - geometry.detailContentWidth / 2,
+                            .offset(x: geometry.expandedContentCenterX - geometry.frame(progress: p).minX - geometry.detailContentWidth / 2,
                                     y: geometry.notch.height + 8 + (motionProfile.forcesLayout ? 0 : (1 - detailReveal) * 6))
                             .opacity(presentation.showingDetails ? (motionProfile.forcesLayout ? min(1, max(0, (p - 0.35) / 0.5)) : detailReveal) : 0)
                             .allowsHitTesting(p == 1 && presentation.showingDetails)
@@ -155,7 +156,7 @@ private struct IslandRootView: View {
                     if presentation.showingMusic {
                         MusicCompactView(music: music)
                             .frame(width: geometry.compactContentWidth, height: musicHeight)
-                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - geometry.compactContentWidth / 2,
+                            .offset(x: geometry.expandedContentCenterX - geometry.frame(progress: p).minX - geometry.compactContentWidth / 2,
                                     y: geometry.notch.height + 8)
                             .opacity(IslandReveal.smooth(p / geometry.musicProgress(contentHeight: 48)) * (presentation.showingDetails ? 1 - detailReveal : 1))
                             .allowsHitTesting(false).accessibilityHidden(p == 0)
@@ -165,7 +166,7 @@ private struct IslandRootView: View {
                     if let notice = presentation.notice {
                         RefreshNoticeView(notice: notice)
                             .frame(width: geometry.noticeContentWidth, height: 62)
-                            .offset(x: geometry.frame(progress: 1).minX + geometry.contourRect(progress: 1).midX - geometry.frame(progress: p).minX - geometry.noticeContentWidth / 2,
+                            .offset(x: geometry.expandedContentCenterX - geometry.frame(progress: p).minX - geometry.noticeContentWidth / 2,
                                     y: geometry.notch.height + 8)
                             .opacity(IslandReveal.smooth(p / geometry.updateProgress) * (presentation.showingDetails ? 1 - detailReveal : 1))
                             .allowsHitTesting(false).accessibilityHidden(p == 0)
@@ -184,7 +185,7 @@ private struct IslandRootView: View {
                 .onAppear { viewportChanged(viewport.size); rendered(p, viewport.size) }
                 // A single coherent observation avoids a resize callback overwriting
                 // the new progress with the previous body's captured progress.
-                .onChange(of: IslandRenderObservation(progress: p, accessoryProgress: geometry.musicAccessoryProgress, size: viewport.size, noticeID: presentation.notice?.id, musicRevision: music.presentationRevision)) { observation in
+                .onChange(of: IslandRenderObservation(frameRevision: snapshot.revision, progress: p, accessoryProgress: geometry.musicAccessoryProgress, size: viewport.size, noticeID: presentation.notice?.id, musicRevision: music.presentationRevision)) { observation in
                     viewportChanged(observation.size); rendered(observation.progress, observation.size)
                 }
             }
@@ -203,6 +204,18 @@ struct IslandMotionRetarget {
     let integrated: IslandMotion
     let previousTarget: Bool
     let nextTarget: Bool
+}
+
+/// Synthetic ordinary-path proof, captured synchronously at the retarget boundary.
+struct IslandWidthHandoffReceipt {
+    let sequence: UInt64
+    let eventTime: TimeInterval
+    let integratedTime: TimeInterval
+    let before: IslandWidthSample
+    let after: IslandWidthSample
+    let target: IslandWidthSample
+    let oldProfile: String
+    let owner: IslandExpansionOwner
 }
 
 struct IslandCloseReceipt {
@@ -244,6 +257,10 @@ final class IslandPanelController: NSObject {
     private(set) var smokeRenderCommits: [IslandRenderCommit] = []
     var smokePaintHistory: [IslandPaintReceipt] { paintStore.history() }
     private enum PointerSource { case event, poll, synthetic }
+    private var ordinaryWidthCycle = false
+    private var widthBridge: IslandWidthBridge?
+    private var widthHandoffSequence: UInt64 = 0
+    private(set) var smokeWidthHandoffReceipt: IslandWidthHandoffReceipt?
     private var accessoryMotion = IslandMotion()
     private var accessoryTarget = false
     private var observedPlaybackRevision: UUID?
@@ -371,12 +388,14 @@ final class IslandPanelController: NSObject {
     private func apply(progress: Double) {
         guard !stopped else { return }
         var nextGeometry = presentation.geometry
-        if progress == 0, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let pendingGeometry {
+        if progress == 0, widthBridge == nil, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let pendingGeometry {
             nextGeometry = pendingGeometry; self.pendingGeometry = nil
         }
         nextGeometry.showsMusicAccessories = (accessoryTarget || accessoryMotion.progress > 0)
             && nextGeometry.canShowMusicAccessories
         nextGeometry.musicAccessoryProgress = accessoryMotion.progress
+        nextGeometry.ordinaryHoverWidth = ordinaryWidthCycle
+        nextGeometry.widthPresentation = widthBridge.map { IslandWidthPresentation(progress: progress, sample: $0.sample) }
         let hadDetails = displaysColoredDetails
         if (progress == 0 && !noticeTargetActive) || (progress == 1 && hover.isExpanded) {
             if presentation.notice != nil { presentation.notice = nil }
@@ -513,7 +532,7 @@ final class IslandPanelController: NSObject {
         // A complete crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
         if recognizer.reservesPointer { updateClickRouting(point); return }
-        if gestureHoverGate.suppresses(insideStableEnvelope: geometry.hoverContains(point, progress: 1)) {
+        if gestureHoverGate.suppresses(insideStableEnvelope: geometry.canonicalHoverContains(point, progress: 1)) {
             updateClickRouting(point); return
         }
         // A moving pointer near the music shell is approaching a gesture, not
@@ -525,7 +544,7 @@ final class IslandPanelController: NSObject {
             } else if musicHoverAnchor == nil { musicHoverAnchor = point }
         } else { musicHoverAnchor = nil }
         let before = hover.isExpanded
-        hover.update(inside: geometry.hoverContains(point, progress: motion.progress),
+        hover.update(inside: currentHoverContains(point),
             now: source == .synthetic ? now : ProcessInfo.processInfo.systemUptime,
             resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         if hover.isExpanded != before {
@@ -536,8 +555,78 @@ final class IslandPanelController: NSObject {
         }
         updateClickRouting(point)
     }
+    // Retargeting integrates the springs before the next frame publication. A
+    // bridge override belongs to its published progress, so hit-test that same
+    // displayed snapshot instead of silently falling back to the shared map.
+    private var currentHoverProgress: Double {
+        widthBridge != nil || geometry.widthPresentation != nil ? presentation.progress : motion.progress
+    }
+    private func currentHoverContains(_ point: CGPoint) -> Bool {
+        geometry.hoverContains(point, progress: currentHoverProgress)
+    }
     private func updateClickRouting(_ point: CGPoint) {
-        panel.ignoresMouseEvents = !(hover.isExpanded && motion.isSettled && motion.progress == 1 && geometry.interactiveContains(point))
+        panel.ignoresMouseEvents = !(hover.isExpanded && widthBridge == nil && motion.isSettled && motion.progress == 1 && geometry.interactiveContains(point))
+    }
+    /// Pure geometry snapshots: current values use integrated springs, not the last paint.
+    private func widthGeometry(ordinary: Bool, endpoint: Bool = false) -> IslandGeometry {
+        var value = geometry
+        value.ordinaryHoverWidth = ordinary; value.widthPresentation = nil
+        value.showsMusicAccessories = (endpoint ? accessoryTarget : (accessoryTarget || accessoryMotion.progress > 0))
+            && value.canShowMusicAccessories
+        value.musicAccessoryProgress = endpoint ? (accessoryTarget ? 1 : 0) : accessoryMotion.progress
+        return value
+    }
+    private func currentWidthSample() -> IslandWidthSample {
+        widthBridge?.sample ?? widthGeometry(ordinary: ordinaryWidthCycle).widthSample(
+            progress: motion.progress, velocity: motion.velocity, accessoryVelocity: accessoryMotion.velocity)
+    }
+    private func retargetWidth(owner: IslandExpansionOwner, eventTime: TimeInterval) {
+        let ordinaryContext = !model.music.isFreshPlaying && !noticeTargetActive
+            && presentation.notice == nil && !accessoryTarget && accessoryMotion.isSettled(at: 0)
+        if !ordinaryWidthCycle && widthBridge == nil && ordinaryContext && owner == .details
+            && motion.isSettled(at: 0) {
+            ordinaryWidthCycle = true
+            return
+        }
+        if ordinaryWidthCycle {
+            // A fresh playback edge cannot change a still-owned opening. Both
+            // maps agree at the full endpoint; switch there without a bridge.
+            if owner == .details { return }
+            if owner == .idle && ordinaryContext { return }
+        } else if widthBridge == nil { return } // All direct music/notice paths stay unchanged.
+        let endpoint = widthGeometry(ordinary: false, endpoint: true)
+        let target = endpoint.widthSample(progress: motionTargetValue)
+        if let widthBridge, widthBridge.target == target { return }
+        let current = currentWidthSample(), oldProfile = smokeWidthProfile
+        let closed = endpoint.widthSample(progress: 0), full = endpoint.widthSample(progress: 1)
+        let lower = min(Double(endpoint.contourFrame.width), closed.width, full.width, current.width, target.width)
+        let upper = max(Double(endpoint.contourFrame.width), closed.width, full.width, current.width, target.width)
+        let left = min(Double(endpoint.calibratedNotch.midX), closed.center, full.center, current.center, target.center)
+        let right = max(Double(endpoint.calibratedNotch.midX), closed.center, full.center, current.center, target.center)
+        ordinaryWidthCycle = false
+        widthBridge = IslandWidthBridge(from: current, to: target, widthBounds: lower...upper,
+            centerBounds: left...right, horizontalBounds: endpoint.motionHorizontalBounds)
+        if model.demo, CommandLine.arguments.contains("--ordinary-motion-test"), let bridge = widthBridge {
+            widthHandoffSequence &+= 1
+            smokeWidthHandoffReceipt = IslandWidthHandoffReceipt(sequence: widthHandoffSequence,
+                eventTime: eventTime, integratedTime: lastMotionTime, before: current, after: bridge.sample,
+                target: bridge.target, oldProfile: oldProfile, owner: owner)
+        }
+    }
+    private func advanceWidth(elapsed: TimeInterval) {
+        widthBridge?.advance(elapsed: elapsed, reduceMotion: reducedMotion)
+        if ordinaryWidthCycle && motion.isSettled(at: 1) && model.music.isFreshPlaying {
+            ordinaryWidthCycle = false // Same position and first derivative at p=1.
+        }
+        if ordinaryWidthCycle && motion.isSettled(at: 0) && !accessoryTarget && accessoryMotion.isSettled(at: 0) {
+            ordinaryWidthCycle = false
+        }
+        if let bridge = widthBridge, bridge.isSettled,
+           motion.isSettled(at: motionTargetValue), accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0) {
+            // The bridge holds its endpoint until the shared map reaches it.
+            // Notice dwell/click routing/close drain cannot acknowledge an earlier frame.
+            widthBridge = nil
+        }
     }
     private func startMotion() {
         guard !stopped else { return }
@@ -550,11 +639,13 @@ final class IslandPanelController: NSObject {
         if motionFrames != nil, now > lastMotionTime {
             motion.advance(target: motionTargetValue, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
             accessoryMotion.advance(expanded: accessoryTarget, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
+            advanceWidth(elapsed: now - lastMotionTime)
             lastMotionTime = now
         }
         let integrated = motion
         let owner = expansionOwner
         motionTargetValue = owner.target(compactProgress: owner == .music ? smokeMusicTargetProgress : geometry.updateProgress)
+        retargetWidth(owner: owner, eventTime: now)
         switch owner {
         case .music:
             // Notice expiry can return to music at the SAME progress. Retire its
@@ -575,6 +666,7 @@ final class IslandPanelController: NSObject {
                 previousTarget: previousTarget, nextTarget: motionTargetExpanded)
         }
         if reducedMotion {
+            ordinaryWidthCycle = false; widthBridge = nil
             stopMotionFrames()
             motion.advance(target: motionTargetValue, elapsed: 0, reduceMotion: true)
             accessoryMotion.advance(expanded: accessoryTarget, elapsed: 0, reduceMotion: true)
@@ -599,13 +691,14 @@ final class IslandPanelController: NSObject {
         let now = CACurrentMediaTime(), elapsed = max(0, time - lastMotionTime)
         lastMotionTime = max(lastMotionTime, time)
         let accessoryEndpoint: Double = accessoryTarget ? 1 : 0
-        let previousProgress = max(motion.progress, abs(accessoryMotion.progress - accessoryEndpoint))
+        let previousProgress = max(motion.progress, abs(accessoryMotion.progress - accessoryEndpoint), widthBridge == nil ? 0 : 1)
         motion.advance(target: motionTargetValue, elapsed: elapsed, reduceMotion: reducedMotion)
         accessoryMotion.advance(expanded: accessoryTarget, elapsed: elapsed, reduceMotion: reducedMotion)
+        advanceWidth(elapsed: elapsed)
         let began = CACurrentMediaTime()
         var startedCloseDrain = false
         if drainsClosePresentation, let generation = closeDrain.begin(previousProgress: previousProgress,
-            progress: max(motion.progress, abs(accessoryMotion.progress - accessoryEndpoint)), expanded: motionTargetExpanded, reduceMotion: reducedMotion, now: began) {
+            progress: max(motion.progress, abs(accessoryMotion.progress - accessoryEndpoint), widthBridge == nil ? 0 : 1), expanded: motionTargetExpanded, reduceMotion: reducedMotion, now: began) {
             startedCloseDrain = true
             closeGeneration = generation
             closeReceipt = IslandCloseReceipt(requestedAt: began, acknowledgedAt: nil, completedAt: nil, finalDisplayDuration: 0, renderedAt: nil, paintedAt: nil, outcome: .pending)
@@ -621,14 +714,14 @@ final class IslandPanelController: NSObject {
             viewport: renderedViewport, visible: panel.isVisible, nonKey: !panel.isKeyWindow && !panel.canBecomeKey,
             source: source.kind))
         // A callback may retarget through a diagnostic observer; never retire its new motion.
-        guard !stopped, motion.isSettled(at: motionTargetValue), accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0) else { return }
+        guard !stopped, widthBridge == nil, motion.isSettled(at: motionTargetValue), accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0) else { return }
         scheduleNoticeExpiryIfReady()
         if startedCloseDrain { return } // Never acknowledge within the requesting callback.
         if closeDrain.isPending { observeClosePresentation(at: CACurrentMediaTime()) }
         else { stopMotionFrames() }
     }
     private func observeClosePresentation(at time: TimeInterval) {
-        guard !stopped, !motionTargetExpanded, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let generation = closeGeneration else { return }
+        guard !stopped, widthBridge == nil, !motionTargetExpanded, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let generation = closeGeneration else { return }
         let expected = geometry.frame(progress: 0)
         let paint = paintStore.latest(), requestedAt = closeReceipt?.requestedAt ?? .infinity
         let freshPaint = paint.map { $0.observed >= requestedAt && $0.frame.progress == 0
@@ -682,6 +775,7 @@ final class IslandPanelController: NSObject {
             if motionFrames != nil, now > lastMotionTime {
                 motion.advance(target: motionTargetValue, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
                 accessoryMotion.advance(expanded: accessoryTarget, elapsed: now - lastMotionTime, reduceMotion: reducedMotion)
+                advanceWidth(elapsed: now - lastMotionTime)
                 lastMotionTime = now
             }
             accessoryTarget = accessories
@@ -728,7 +822,7 @@ final class IslandPanelController: NSObject {
     private func scheduleNoticeExpiryIfReady() {
         guard !stopped, noticeTargetActive, placementIsValid, panel.isVisible,
               let notice = presentation.notice, !hover.isExpanded,
-              noticeExpiry == nil, motion.isSettled(at: geometry.updateProgress) else { return }
+              noticeExpiry == nil, widthBridge == nil, motion.isSettled(at: geometry.updateProgress) else { return }
         let now = CACurrentMediaTime(), expected = geometry.frame(progress: geometry.updateProgress)
         if now >= smokeNoticeReadinessNotBefore,
            let paint = paintStore.latest(), paint.observed >= noticePaintRequiredAfter,
@@ -781,7 +875,8 @@ final class IslandPanelController: NSObject {
     }
     func stop() {
         guard !stopped else { return }
-        stopped = true; resetCrossings(); gestureHoverGate.reset()
+        stopped = true; ordinaryWidthCycle = false; widthBridge = nil
+        resetCrossings(); gestureHoverGate.reset()
         if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor); self.localPointerMonitor = nil }
         if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor); self.globalPointerMonitor = nil }
         musicSubscription?.cancel(); musicSubscription = nil
@@ -911,6 +1006,15 @@ final class IslandPanelController: NSObject {
     var smokeTargetProgress: Double { motionTargetValue }
     var smokeProgress: Double { motion.progress }
     var smokeVelocity: Double { motion.velocity }
+    var smokeWidthProfile: String { widthBridge != nil ? "ordinary-handoff" : (ordinaryWidthCycle ? "ordinary-v100" : "shared-v103") }
+    var smokeWidthSample: IslandWidthSample { currentWidthSample() }
+    var smokeWidthBridgeTarget: IslandWidthSample? { widthBridge?.target }
+    var smokeWidthBridgeElapsed: Double? { widthBridge?.elapsed }
+    var smokeHasPendingGeometry: Bool { pendingGeometry != nil }
+    var smokeHoverSnapshotProgress: Double { currentHoverProgress }
+    func smokeCurrentHoverContains(_ point: CGPoint) -> Bool { currentHoverContains(point) }
+    var smokeAccessoryProgress: Double { accessoryMotion.progress }
+    var smokeAccessoryVelocity: Double { accessoryMotion.velocity }
     var smokeRetarget: IslandMotionRetarget? { lastRetarget }
     var smokeMotionRunning: Bool { motionFrames != nil }
     var motionProbe: IslandMotionProbe {

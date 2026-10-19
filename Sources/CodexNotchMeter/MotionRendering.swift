@@ -9,6 +9,14 @@ import NotchCore
 final class NativeMotionHarness: NSObject {
     private let model: MeterModel
     private let geometry: IslandGeometry
+    // This harness runs only ordinary no-Music hover cycles. Its boundary inputs
+    // and historical paint expectations must use that cycle's latched width map,
+    // not the shared compact Music/notice map stored in the initial geometry.
+    private var expectedMotionGeometry: IslandGeometry {
+        var value = geometry
+        value.ordinaryHoverWidth = true
+        return value
+    }
     private let completion: (Bool) -> Void
     private let profiles: [IslandMotionProfile] = [.synchronousBaseline, .adaptive, .timerFallback]
     private var profileIndex = 0
@@ -138,10 +146,10 @@ final class NativeMotionHarness: NSObject {
             // After the near-boundary reversal, move the synthetic pointer into
             // the body for the hold. A fixed near-edge point could legitimately
             // leave the visible side as the compact shoulder curves grow inward.
-            let heldFrame = geometry.frame(progress: island.smokeProgress)
+            let heldFrame = expectedMotionGeometry.frame(progress: island.smokeProgress)
             heldPointer = CGPoint(x: heldFrame.midX, y: heldFrame.midY)
             if let heldPointer {
-                passed = geometry.hoverContains(heldPointer, progress: island.smokeProgress) && passed
+                passed = expectedMotionGeometry.hoverContains(heldPointer, progress: island.smokeProgress) && passed
                 island.smokePointer(at: heldPointer, now: now)
             }
             beginPacing("reversal", island: island)
@@ -197,13 +205,13 @@ final class NativeMotionHarness: NSObject {
     }
     private func edgePoint(inside: Bool) -> CGPoint? {
         guard let island = controller else { return nil }
-        let p = island.smokeProgress, frame = geometry.frame(progress: p), contour = geometry.contourRect(progress: p)
+        let p = island.smokeProgress, frame = expectedMotionGeometry.frame(progress: p), contour = expectedMotionGeometry.contourRect(progress: p)
         // The straight side follows the shared contour's inward shoulder, not
         // the rectangular host edge. Its midpoint is outside both circular turns.
         let shoulder = min(12 * CGFloat(p), max(0, contour.width / 4 - 2))
         let point = CGPoint(x: frame.minX + contour.maxX - shoulder + (inside ? -0.25 : 0.25),
             y: frame.maxY - contour.midY)
-        let classified = geometry.hoverContains(point, progress: p)
+        let classified = expectedMotionGeometry.hoverContains(point, progress: p)
         passed = (classified == inside) && passed
         SmokeDiagnostics.mark("motion boundary classification progress=\(p) expectedInside=\(inside) actualInside=\(classified)")
         return point
@@ -355,7 +363,7 @@ final class NativeMotionHarness: NSObject {
             }
         }
         let native = samples.allSatisfy { sample in
-            let expected = geometry.frame(progress: sample.progress)
+            let expected = expectedMotionGeometry.frame(progress: sample.progress)
             return sample.visible && sample.nonKey && sample.frame == expected
                 && sample.contentBounds.origin == .zero && sample.contentBounds.size == sample.frame.size
                 && sample.progress.isFinite && sample.velocity.isFinite
@@ -370,10 +378,10 @@ final class NativeMotionHarness: NSObject {
         let activePaints = paints.filter { $0.active }
         let paintMatches = paints.allSatisfy { entry in
             let receipt = entry.receipt, p = receipt.frame.progress
-            let expected = IslandContour(rect: geometry.contourRect(progress: p), progress: p,
+            let expected = IslandContour(rect: expectedMotionGeometry.contourRect(progress: p), progress: p,
                 cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
             return receipt.actualViewport == receipt.frame.viewport
-                && receipt.frame.viewport == geometry.frame(progress: p).size
+                && receipt.frame.viewport == expectedMotionGeometry.frame(progress: p).size
                 && receipt.bodyBounds == contourPath(expected, inset: 0, closed: true).boundingRect
                 && receipt.railBounds == contourPath(expected, inset: 2, closed: false).boundingRect
         }

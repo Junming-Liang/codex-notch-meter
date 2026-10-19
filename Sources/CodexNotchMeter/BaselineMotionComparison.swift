@@ -33,6 +33,9 @@ final class BaselineMotionComparisonHarness: NSObject {
     private var watchdog: Timer?
     private var started = false
     private var finished = false
+    private var collectingTimedEvidence = true
+    private var timedElapsed: TimeInterval?
+    private var ordinaryVisualFrames: [[String: Any]] = []
     private var traceOverflow = false
     private var base: TimeInterval = 0
     private var initialKey: NSWindow?
@@ -169,6 +172,86 @@ final class BaselineMotionComparisonHarness: NSObject {
             try require(music.isPlayingForPresentation && music.hasLocalLyrics,
                         "music group ends with fresh usable synthetic playback")
         }
+        timedElapsed = CACurrentMediaTime() - base
+        collectingTimedEvidence = false
+        observer?.invalidate(); observer = nil
+        if group == "ordinary" { try await captureOrdinaryVisualRound() }
+    }
+
+    // Separate visual replay after timing has ended. Rasterization can force a
+    // draw, so it must never be part of the timed comparison or natural-paint gate.
+    private func captureOrdinaryVisualRound() async throws {
+        guard let panel else { throw Failure(message: "ordinary visual panel missing") }
+        let directory: URL
+        if role == "candidate" {
+            directory = URL(fileURLWithPath: "dist/contour-rendering/ordinary-candidate", isDirectory: true)
+        } else {
+            guard let output = argument("--baseline-motion-output") else {
+                throw Failure(message: "baseline visual replay requires its isolated comparison output directory")
+            }
+            directory = URL(fileURLWithPath: output, isDirectory: true).appendingPathComponent("ordinary-visual", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for opening in [true, false] {
+            let began = CACurrentMediaTime()
+            var saved = 0
+            var lastSequence: UInt64 = 0
+            var lastCapturedProgress = opening ? 0.0 : 1.0
+            let thresholds = opening ? [0.15, 0.40, 0.70] : [0.80, 0.50, 0.20]
+            while CACurrentMediaTime() - began < 2.5 {
+                panel.smokePointer(at: opening ? inside : outside, now: ProcessInfo.processInfo.systemUptime)
+                if saved < 3, let paint = panel.paintReceipt, paint.observed >= began,
+                   paint.sequence > lastSequence, paint.frame.progress == panel.smokeProgress,
+                   (opening ? paint.frame.progress > lastCapturedProgress : paint.frame.progress < lastCapturedProgress),
+                   paint.frame.progress > 0, paint.frame.progress < 1,
+                   (opening ? paint.frame.progress >= thresholds[saved] : paint.frame.progress <= thresholds[saved]) {
+                    // Inspect a naturally submitted paint before cacheDisplay.
+                    let expected = IslandContour(rect: panel.geometry.contourRect(progress: paint.frame.progress),
+                        progress: paint.frame.progress, cornerAdjustment: panel.geometry.shapeCalibration.corner,
+                        referenceDepth: panel.geometry.notch.height)
+                    try require(paint.frame.contour == expected && paint.actualViewport == paint.frame.viewport,
+                                "ordinary visual frame has fresh matching native contour and viewport")
+                    guard let view = panel.panel.contentView,
+                          let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                        throw Failure(message: "ordinary own-view bitmap unavailable")
+                    }
+                    let captureBounds = view.bounds
+                    try require(captureBounds.size == paint.actualViewport,
+                                "ordinary capture starts at the naturally painted viewport")
+                    view.cacheDisplay(in: captureBounds, to: bitmap)
+                    guard let afterCapture = panel.paintReceipt else {
+                        throw Failure(message: "ordinary own-view capture lost its paint receipt")
+                    }
+                    try require(panel.smokeProgress == paint.frame.progress && view.bounds == captureBounds
+                        && afterCapture.frame.progress == paint.frame.progress
+                        && afterCapture.actualViewport == paint.actualViewport
+                        && afterCapture.frame.viewport == paint.frame.viewport,
+                        "ordinary capture preserves natural progress and viewport through rasterization")
+                    // cacheDisplay may submit another receipt synchronously. Consume
+                    // it, and also require subsequent progress to advance, so that
+                    // forced redraw cannot masquerade as the next natural sample.
+                    lastSequence = max(paint.sequence, afterCapture.sequence)
+                    lastCapturedProgress = paint.frame.progress
+                    guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                        throw Failure(message: "ordinary own-view PNG encoding failed")
+                    }
+                    saved += 1
+                    let direction = opening ? "open" : "close"
+                    let file = directory.appendingPathComponent("perimeter-ordinary-\(direction)-\(saved).png")
+                    try png.write(to: file, options: .atomic)
+                    ordinaryVisualFrames.append(["direction": direction, "sample": saved, "file": file.path,
+                        "progress": paint.frame.progress, "paintSequence": paint.sequence,
+                        "postCaptureSequence": lastSequence, "captureProgress": afterCapture.frame.progress,
+                        "naturalViewport": size(paint.actualViewport), "captureViewport": size(afterCapture.actualViewport),
+                        "paintObserved": paint.observed, "nativeWidth": Double(panel.panel.frame.width),
+                        "contourWidth": Double(paint.frame.contour.rect.width), "timedEvidence": false, "scanout": false])
+                }
+                if saved == 3 && isSettled(panel) && panel.smokeTargetProgress == (opening ? 1 : 0) { break }
+                try await Task.sleep(nanoseconds: 8_000_000)
+            }
+            try require(saved == 3 && isSettled(panel) && panel.smokeTargetProgress == (opening ? 1 : 0),
+                        "ordinary separate visual replay retains three distinct in-flight images and settles")
+        }
     }
 
     private func makeSteps() -> [Step] {
@@ -187,7 +270,8 @@ final class BaselineMotionComparisonHarness: NSObject {
             add(7.36, "pointer", "inside"); add(7.52, "pointer", "inside")
             add(8.25, "read", "playing"); add(8.50, "checkpoint", "details-reopened")
             add(8.70, "pointer", "outside"); add(8.94, "pointer", "outside")
-            add(9.50, "read", "playing"); add(9.95, "checkpoint", "final")
+            add(9.10, "pointer", "outside"); add(9.26, "pointer", "outside"); add(9.42, "pointer", "outside")
+            add(9.50, "read", "playing"); add(10.35, "checkpoint", "final")
         } else {
             if group == "steady-music" {
                 for time in [0.10, 1.30, 2.50, 3.70, 4.90] { add(time, "read", "playing") }
@@ -200,7 +284,8 @@ final class BaselineMotionComparisonHarness: NSObject {
             add(2.96, "pointer", "inside"); add(3.12, "pointer", "inside")
             add(4.10, "checkpoint", "details-reopened")
             add(4.30, "pointer", "outside"); add(4.54, "pointer", "outside")
-            add(5.55, "checkpoint", "final")
+            add(4.70, "pointer", "outside"); add(4.86, "pointer", "outside"); add(5.02, "pointer", "outside")
+            add(5.95, "checkpoint", "final")
         }
         return result.sorted { $0.time < $1.time }
     }
@@ -244,7 +329,7 @@ final class BaselineMotionComparisonHarness: NSObject {
     }
 
     private func capture(_ sample: IslandMotionSample) {
-        guard base > 0, !finished, let panel else { return }
+        guard base > 0, !finished, collectingTimedEvidence, let panel else { return }
         guard frames.count < 6000 else { traceOverflow = true; return }
         generation = sample.generation
         // Intentional idle intervals between retired frame sources are not frame
@@ -266,7 +351,7 @@ final class BaselineMotionComparisonHarness: NSObject {
     }
 
     @objc private func observe() {
-        guard base > 0, !finished, let panel else { return }
+        guard base > 0, !finished, collectingTimedEvidence, let panel else { return }
         let now = CACurrentMediaTime() - base
         if let paint = panel.paintReceipt, paint.sequence != lastPaintSequence {
             if paints.count >= 6000 { traceOverflow = true; return }
@@ -312,11 +397,33 @@ final class BaselineMotionComparisonHarness: NSObject {
                         "ordinary or paused endpoint is the genuine idle state")
         }
         let settled = lastSettlement
+        if name == "final" {
+            // Planned spacing is not proof of dwell: delayed dispatch can compress
+            // samples. Require the final uninterrupted, actually delivered exit.
+            let lastInside = inputs.lastIndex { ($0["kind"] as? String) == "pointer" && ($0["value"] as? String) == "inside" } ?? -1
+            let exits = inputs.enumerated().filter { $0.offset > lastInside && ($0.element["kind"] as? String) == "pointer" && ($0.element["value"] as? String) == "outside" }
+            guard let first = exits.first, let last = exits.last,
+                  let firstTime = first.element["timestamp"] as? Double, let lastTime = last.element["timestamp"] as? Double,
+                  let delivered = first.element["delivered"] as? Double,
+                  let settled, let initial = modes.first(where: { ($0["name"] as? String) == "pre-hover" }),
+                  let initialFrame = initial["frame"] as? [Double], let paint = panel.paintReceipt else {
+                throw Failure(message: "final exit lacks fresh transition and initial geometry evidence")
+            }
+            try require(exits.count >= 3 && lastTime - firstTime >= 0.22,
+                        "final outside samples actually span the hover exit threshold")
+            try require(settled.transition.inputIndex >= first.offset && settled.transition.started >= delivered
+                && settled.time >= settled.transition.started && paint.observed - base >= settled.transition.started,
+                        "final settlement and natural paint belong to this final outside transition")
+            try require(owner == (initial["owner"] as? String) && target == (initial["target"] as? Double)
+                && abs(Double(panel.panel.frame.width) - initialFrame[2]) <= 0.001,
+                        "final exit restores its own pre-hover owner and closed width")
+        }
         let began = settled?.transition.started ?? 0, at = settled?.time ?? (CACurrentMediaTime() - base)
         settlements.append(["name": name, "inputIndex": settled?.transition.inputIndex ?? 0,
             "target": target, "targetStarted": began, "t": at, "latency": max(0, at - began),
             "frame": rect(panel.panel.frame), "owner": owner, "progress": panel.smokeProgress,
-            "generation": generation])
+            "generation": generation, "checkpointObservedAt": CACurrentMediaTime() - base,
+            "paintObservedAt": (panel.paintReceipt?.observed ?? base) - base])
         modes.append(["name": name, "t": CACurrentMediaTime() - base, "progress": panel.smokeProgress,
             "target": target, "frame": rect(panel.panel.frame), "owner": owner,
             "playing": controller.isPlayingForPresentation])
@@ -371,7 +478,7 @@ final class BaselineMotionComparisonHarness: NSObject {
         guard !finished else { return }
         observe()
         finished = true
-        let elapsed = base > 0 ? CACurrentMediaTime() - base : 0
+        let elapsed = timedElapsed ?? (base > 0 ? CACurrentMediaTime() - base : 0)
         let valid = success && elapsed < 45 && !traceOverflow
         let payload: [String: Any] = ["schema": 1, "success": valid, "failure": failure,
             "role": role, "group": group, "sourceCommit": sourceCommit,
@@ -385,7 +492,8 @@ final class BaselineMotionComparisonHarness: NSObject {
                 "maxApplyDuration": maxApplyDuration, "minScheduledLead": minScheduledLead.isFinite ? minScheduledLead : 0,
                 "maxScheduledLead": maxScheduledLead.isFinite ? maxScheduledLead : 0, "targetChanges": targetChanges,
                 "interruptedTransitions": interruptedTransitions, "maxInputLateness": maxInputLateness],
-            "historyOverflow": traceOverflow, "elapsed": elapsed]
+            "historyOverflow": traceOverflow, "elapsed": elapsed,
+            "ordinaryVisualFrames": ordinaryVisualFrames, "visualReplayExcludedFromTiming": true]
         stop()
         do {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
