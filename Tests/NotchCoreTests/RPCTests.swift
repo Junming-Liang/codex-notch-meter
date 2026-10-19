@@ -16,6 +16,14 @@ final class RPCTests: XCTestCase {
         let wire = String(decoding: try ReadOnlyRequest.account.encoded(id: 2), as: UTF8.self)
         XCTAssertTrue(wire.contains("\"method\":\"account/read\""))
     }
+    func testInitializationUsesCurrentReleaseIdentity() throws {
+        let initialize = try XCTUnwrap(JSONSerialization.jsonObject(with: ReadOnlyRequest.initialize.encoded(id: 1)) as? [String: Any])
+        let params = try XCTUnwrap(initialize["params"] as? [String: Any])
+        let client = try XCTUnwrap(params["clientInfo"] as? [String: Any])
+        XCTAssertEqual(client["name"] as? String, "codex_notch_meter")
+        XCTAssertEqual(client["title"] as? String, "Codex Notch Meter")
+        XCTAssertEqual(client["version"] as? String, "1.0.3")
+    }
     func testFramerHandlesFragmentsAndSeveralLines() throws {
         var framer = LineFramer()
         XCTAssertTrue(try framer.append(Data("{\"id\":".utf8)).isEmpty)

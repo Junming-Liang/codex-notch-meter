@@ -68,7 +68,7 @@ final class LyricsLookupTests: XCTestCase {
         XCTAssertEqual(request.method, "GET")
         XCTAssertEqual(request.timeout, 10)
         XCTAssertEqual(request.maximumResponseBytes, 1_048_576)
-        XCTAssertTrue(request.userAgent.contains("CodexNotchMeter/1.0.2 "))
+        XCTAssertTrue(request.userAgent.contains("CodexNotchMeter/1.0.3 "))
         let fields = Dictionary(uniqueKeysWithValues: try XCTUnwrap(url.queryItems).map { ($0.name, $0.value ?? "") })
         XCTAssertEqual(Set(fields.keys), Set(["track_name", "artist_name", "album_name", "duration"]))
         XCTAssertEqual(fields["track_name"], fixture.title)
