@@ -3,7 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v1.0.1 DMG and ZIP after all checks pass
+        description: Publish v1.0.2 DMG and ZIP after all checks pass
+        type: boolean
+        required: true
+        default: false
+      stage_draft:
+        description: Stage this successful run's exact assets and synthetic PNGs as a private draft for review
         type: boolean
         required: true
         default: false
@@ -20,10 +25,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Reject conflicting release modes
+        if: ${{ inputs.publish_release && inputs.stage_draft }}
+        run: |
+          echo "publish_release and stage_draft are mutually exclusive." >&2
+          exit 1
       - name: Toolchain
         run: swift --version
       - name: Public source checks
         run: python3 Scripts/check-source.py
+      - name: Release source binding safety tests
+        run: python3 Scripts/test-verify-release-source.py
       - name: Synthetic Music dictionary discovery safety tests
         run: python3 Scripts/test-music-dictionary.py
       - name: Inspect public Music scripting dictionary without launch
@@ -85,7 +97,9 @@ jobs:
         run: python3 Scripts/check-native-collapse.py
       - name: Native compact refresh and promotion gate
         if: ${{ always() && steps.package.outcome == 'success' }}
-        run: python3 Scripts/check-native-updates.py
+        run: |
+          python3 Scripts/check-native-updates.py --self-test
+          python3 Scripts/check-native-updates.py
       - name: Native optional Music lyrics safety and priority gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: python3 Scripts/check-native-music.py
@@ -108,10 +122,11 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-1.0.1-universal.zip
-            dist/CodexNotchMeter-1.0.1-universal.zip.sha256
-            dist/CodexNotchMeter-1.0.1-universal.dmg
-            dist/CodexNotchMeter-1.0.1-universal.dmg.sha256
+            dist/CodexNotchMeter-1.0.2-universal.zip
+            dist/CodexNotchMeter-1.0.2-universal.zip.sha256
+            dist/CodexNotchMeter-1.0.2-universal.dmg
+            dist/CodexNotchMeter-1.0.2-universal.dmg.sha256
+            dist/release-source.json
           if-no-files-found: error
           retention-days: 7
   official-desktop:
@@ -124,79 +139,128 @@ jobs:
       - name: Read-only signed official desktop helper discovery
         run: python3 Scripts/inspect-official-desktop.py
   release:
-    if: ${{ inputs.publish_release }}
+    if: ${{ inputs.publish_release || inputs.stage_draft }}
     needs: [build, official-desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: CodexNotchMeter-developer-preview
           path: dist
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.stage_draft }}
+        with:
+          name: CodexNotchMeter-native-contour-evidence
+          path: dist/evidence
+      - name: Prepare synthetic review images
+        if: ${{ inputs.stage_draft }}
+        run: |
+          python3 - <<'PYPNG'
+          from pathlib import Path
+          import shutil
+          sources = sorted(Path("dist/evidence").rglob("perimeter-*.png"))
+          expected = {f"perimeter-{state}-{theme}.png" for state in ("compact", "details", "details-no-wings")
+                      for theme in ("standard", "rainbow", "aurora", "sunset", "ice")}
+          expected |= {f"perimeter-motion-{direction}-{i}.png" for direction in ("open", "close") for i in (1, 2, 3)}
+          expected.add("perimeter-closed-artwork.png")
+          if len(sources) != len(expected) or {p.name for p in sources} != expected:
+              raise SystemExit("Exact synthetic review PNG set is missing or duplicated")
+          for source in sources:
+              if source.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit("Invalid PNG signature")
+              shutil.copyfile(source, Path("dist") / source.name)
+          PYPNG
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-1.0.1-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-1.0.1-universal.dmg.sha256
-      - name: Publish developer preview
+          sha256sum --check CodexNotchMeter-1.0.2-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-1.0.2-universal.dmg.sha256
+      - name: Verify exact source and asset manifest
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+          STAGE_DRAFT: ${{ inputs.stage_draft }}
+        run: |
+          review_options=()
+          if [[ "$STAGE_DRAFT" == "true" ]]; then review_options+=(--require-review-images); fi
+          python3 Scripts/verify-release-source.py --source-commit "$RELEASE_COMMIT" --source-run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY" --checkout . --dist dist --version 1.0.2 --bundle-build 15 --asset-manifest dist/release-assets.json "${review_options[@]}"
+      - name: Publish release or stage private draft
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ github.sha }}
+          STAGE_DRAFT: ${{ inputs.stage_draft }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
         run: |
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.0.1" --jq '.[] | select(.ref == "refs/tags/v1.0.1") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.0.1") | .id')"
+          if [[ "$STAGE_DRAFT" == "true" && "$PUBLISH_RELEASE" == "true" ]]; then
+            echo "Refusing conflicting release modes." >&2
+            exit 1
+          fi
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.0.2" --jq '.[] | select(.ref == "refs/tags/v1.0.2") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.0.2") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v1.0.1 tag or release." >&2
+            echo "Refusing to replace an existing v1.0.2 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v1.0.1
-          播放时默认保持收起，仅显示小封面与播放指示。鼠标不按键从左向右完整划过顶部，展开左对齐 B 歌词；反向划过关闭。当前句18pt、真实下一句12pt、歌名10pt，长句最多两行，无下一句时收紧高度。无可用歌词、暂停或信息过期时保持收起。额度变化提示临时优先，按所选2/4/6秒停留后恢复仍有效的选择；悬停保留普通详情。
-          使用：先自行打开 Music，在“设置 → Apple Music 歌词”开启“Apple Music 歌词与播放指示”，按意愿批准自动化请求。可导入当前歌曲的本地 UTF-8 LRC，或单独同意 LRCLIB 在线匹配及歌曲信息传输。v1.0.0、v1.0.0-beta.1与v0.1.9均保留下载。
-          Setup: open Music yourself, enable Apple Music lyrics and playback indicators in Settings, and choose whether to grant Automation. Import a local UTF-8 LRC or separately consent to LRCLIB metadata sharing. Playback starts closed. Move the pointer across the fixed top band left-to-right, without pressing a button, to show usable lyrics; right-to-left closes them. Pause hides lyrics while retaining the selected session mode. Quota notices temporarily take priority, then restore the eligible selection. Artwork is optional, read only from the current Music track and downsampled in memory; missing art uses a neutral placeholder.
-          额度读取增加有界恢复：跳过未使用的重置详情查询，旧协议仅在明确拒绝参数时回退一次；单次RPC20秒、连接总预算45秒，临时超时/断连按15/30/60/120/300秒退避恢复。旧读数保留时标为过期并显示上次成功时间；认证错误不按瞬态错误快速重试。这不是对用户具体错误原因的确认。
-          LRCLIB先精确查询，再进行最多两个有界候选查询；只规整已知影视出处或专辑展示后缀，保留现场、混音、翻唱、语言等版本区别，并核对歌手、时长和候选唯一性。空专辑不会永久阻止查询。临时网络/服务错误与真正无匹配分别显示，遵守Retry-After与有界退避。不能保证每首歌都有匹配歌词。
-          可选歌词与在线匹配均默认关闭。在线模式仅向LRCLIB发送歌名、歌手、专辑和时长；本地导入不上传。社区歌词不等于Apple官方歌词，没有时间戳的文本标为未同步。不会自动打开Music或控制播放。
-          A separate anonymous request for LRCLIB's documented public example succeeded after a temporary HTTP503 and backed-off retry. That checked response schema/metadata and synchronized-lyrics presence without retaining lyric text; it did not exercise the shipped Swift transport. The user reported successful lyric display with beta1 in their setup, which is not a cross-version Music/TCC or streaming guarantee.
-          修复可选账号标识或窗口元数据缺失时，额度数字正常更新却没有提示的问题。新鲜、匹配窗口的数值变化仍可显示“额度已更新”和当前余额；只有同账号、同周期的可比读数才显示消耗差值。未变化、初次读取、失败、已知账号切换和仅元数据变化保持安静。提示停留时长可选短2秒/标准4秒/长6秒，默认4秒，从完全展开并完成绘制后开始计时；悬停可保持详情。
-          黑色主体与进度轮廓由同一个同步 Canvas、同一不可变几何帧绘制，保留 v0.1.7 外形、位置与3.5/4pt描边。动效节奏参考 DynamicNotchKit 示例，采用约0.415秒达到99%的连续临界阻尼响应；不是逐帧复制或实体设备流畅度保证。
-          额度提醒恢复：暂时超时或连接中断后，保留有时限的上次成功观察；恢复后的数值变化以当前余额提示，不推算跨故障消耗。未变化刷新不会撤掉或重启正在显示的提示。悬停、设置或菜单可暂缓一个最新提示，原始数据超过180秒或到达重置时间后丢弃，不积压旧通知。
+          ## Codex Notch Meter v1.0.2
 
-          延续显示兼容性：按实际内建显示能力与系统原始安全区域定位，不按机型硬编码刘海坐标。屏幕布局不变时保留当前面板与动效；模式/缩放/连接变化只替换受影响的面板。睡眠、锁屏会话、隐藏或关闭显示时停止轮廓定时器，恢复时重新读取布局。
-          无刘海、外接屏、合盖、镜像或缺失/无效安全区域使用菜单栏。保留默认零偏移逐屏校准、五款皮肤、流光彩虹、左侧剩余进度、纯黑已用段、v0.1.5 连续悬停动效、DMG 和可选登录时启动。
-          自动圆弧轮廓统一进度线与黑色主体；详情按内容收紧，刷新时短暂包裹展开，只有可比读数才显示减少的百分点。初次、未知、重置和失败不会伪装成消耗。
-          官方机型/面板资料用于覆盖矩阵，运行时不收集型号或使用白名单。需要 macOS 13+，旧机型必须能运行 Apple 支持的相应系统；不声称逐台真机验证或支持所有历史 MacBook。
+          ### 中文
 
-          优先下载 Universal DMG，将 .app 拖到 Applications，再从“应用程序”打开；ZIP 仍可选。两种产物均包含 Apple Silicon / Intel 二进制。
-          登录时启动默认关闭，仅由用户点击请求启用；macOS 可能要求批准或拒绝临时签名。安装映像与测试不会注册登录项。
-          需要 macOS 13+ 和已登录 ChatGPT 账户的官方 Codex 桌面应用或 CLI。未知桌面打包布局会安全报错。
+          修复音乐状态下的外轮廓、无按键划过手势和展开抖动：
 
-          **签名限制 / Signing limits:** 仅使用 ad-hoc 临时签名，没有 Apple Developer ID 签名或公证。
-          macOS 可能阻止下载产物启动。项目不提供关闭 Gatekeeper 或绕过安全检查的指令。
-          Native compile, synthetic tests, dual-architecture packaging, signature checks, and demo-only native geometry, drawing, motion, Quit-layout and shutdown checks passed in this workflow.
-          Read-only inspection of the current official signed desktop DMG resolved its bundled helper within the production deadline; no downloaded Codex executable or account session was started.
-          Paired old/new stroke samples passed at 1x/2x across both lower corners, all five skins and full/partial/zero/unknown states. White/dark background contribution and chromatic coverage were measured separately; this is synthetic coverage, not proof of exact physical-notch fit.
-          All five skins passed native 1x/2x full-U contour alpha/color/arc/live-selection/phase gates. Remaining fills from the left; the consumed right suffix is pure black. A shared maximum-15fps color scheduler passed synthetic lifecycle pause/resume checks.
-          Raw-edge native pixel-axis and mirrored-corner checks passed for off-center, odd/even/fractional inputs, signed calibration and reset; the recreated old edge-rounding control was rejected. Forced 1x/2x captures are not physical Retina placement tests.
-          Native motion checks sampled applied frames, normal-run-loop view/presentation bounds, callback cadence, reversals and retired-source cleanup under synthetic UI updates. The observational baseline uses the old synchronous layout/timer strategy with the same current spring and Canvas, not the full old binary. Timing evidence does not establish perceived smoothness on a physical Mac; macOS 13 fallback is exercised on the hosted newer OS.
-          The production display planner/reconciler passed injected native lifecycle checks: identical snapshots preserve controllers, changed geometry/identity retires only affected panels, fresh bounded retries recover from incomplete topology, and suspension/termination rejects stale callbacks. Family-shaped pure geometry profiles and actual own-view pixel/layout checks are synthetic coverage, not physical model, clamshell, mirroring or Spaces tests.
-          Compact refresh-state native tests passed for parsed responses with unavailable optional identity/window metadata, generic current-value notices without unverified consumption claims, numeric-change-only eligibility, actual 2/4/6-second painted-endpoint holds, live hover promotion, replacement/retired expiry, Reduce Motion and content-fit Quit layout. Synchronous-paint callbacks and separate 1x/2x paired body/rail pixel probes passed; these are not compositor scanout or physical hand-feel measurements. Automatic circular geometry remains a documented approximation, not measured per-model hardware truth.
-          Recovery notice tests exercise the actual model and one shared pending queue: transient failure or a longer read gap can produce a generic current-value update, unchanged reads publish no event, and interaction can defer a still-fresh latest notice beyond ten seconds without restarting its painted hold. Account/source/failure boundaries still clear delivery. No claim is made about the cause of an uninspected user account error.
-          Optional lyrics tests used original synthetic text and injected IPC/network/file boundaries. They exercised default-off/consent, pointer-selected lyric/notice/hover priority, pause hiding, seek/staleness, retired and wrong-track results, local import selection, real own-view lyric painting in light/dark appearances, retained retry status and Quit layout. CI inspected the installed public Music scripting dictionary without launching Music or requesting Automation; this is not a live Music, TCC or LRCLIB compatibility test. Lyrics remain in memory and the community provider's server license does not grant rights to all submitted lyrics.
-          Synthetic login-state tests passed without real registration; actual login/reboot behavior remains unverified. The DMG was mounted read-only and its app bytes, signature, architectures and Applications link verified. Synthetic rendering evidence is retained in the workflow artifact, not a physical-Mac screenshot.
-          The user reported successful quota reads with v0.1.1; CI never accesses an account. Physical notch appearance/interaction still requires separate verification.
+          - 额度进度沿整个音乐黑色外壳绘制，紧凑封面、展开歌词和音乐详情共用同一轮廓。已用部分纯黑，保留五款皮肤；音乐详情不再重复显示内部横向进度条。
+          - 快速从左向右划过顶部可以打开匹配歌词，反向划过关闭。补充只读鼠标事件观察和跨采样边缘判断，避免漏掉快速轨迹；不新增辅助功能或屏幕录制权限。
+          - 手势完成后，指针继续移到邻近或下方不会被普通悬停抢走状态，避免突然放大成详情又缩回。离开整个外壳后重新悬停，仍可正常查看详情。
+          - 暂停、恢复及设置暂时隐藏时，配件宽度与外壳共用同一帧驱动，避免布尔尺寸跳变。保留默认小封面/播放指示、歌词 B 布局、额度提示优先及2/4/6秒停留。
+
+          - 修复额度通知设置 6 秒却一闪即逝的路径：普通鼠标移入移出不再抢占提示，慢绘制会重试而非在 250ms 后撤销；2/4/6 秒从稳定绘制确认后开始计算。保留未变化读取不撤销提示，新变化按自身已捕获时长重新显示。
+
+          ### English
+
+          Fixes the music perimeter, button-free pointer gestures, and unstable expansion:
+
+          - One shared shell draws the body and quota perimeter around compact playback, expanded lyrics and music details. Used quota stays black; all five skins remain. Music details no longer duplicate progress as interior horizontal bars.
+          - Fast left-to-right pointer crossings open eligible lyrics, and reverse crossings close them. Read-only mouse observation and segment-based boundary handling avoid missed samples without new Accessibility or Screen Recording permission.
+          - Natural adjacent/downward movement after a gesture no longer promotes the same interaction into full hover details. Leaving the full shell and returning still supports ordinary hover.
+          - Playback accessory width and expansion share the frame driver through pause/resume and temporary suppression. Compact artwork, the B lyric layout, quota-notice priority and the 2/4/6-second holds remain.
+
+          - Prevents configured six-second quota notices from flashing away: passive pointer movement cannot interrupt the notice, and slow paint retries instead of dismissing after 250ms. The 2/4/6-second hold starts after settled paint acknowledgment; unchanged reads retain the notice, while a new change receives its own captured dwell.
+
+          ### Validation and limits / 验证与边界
+
+          This release is intended to be published only after its exact source passes macOS CI and its synthetic native PNGs are reviewed. Build-source metadata binds the packaged app to the commit, tree and workflow run; archive checksums identify the reviewed ZIP/DMG bytes. See the source-linked workflow and `docs/VALIDATION.md` for observed results, rather than treating this note as an unverified test receipt.
+
+          Native tests use original synthetic lyrics/artwork, injected playback and the app's own view captures. They do not access a user's account, Music library or screen. Passing them does not establish physical-display smoothness, all Music/TCC/streaming combinations, macOS 13 runtime, or real login/reboot behavior.
+
+          需要 macOS 13+，Universal DMG/ZIP 包含 Apple Silicon 与 Intel 二进制。仅 ad-hoc 签名，没有 Developer ID 签名或公证；macOS 可能阻止启动。本项目不提供绕过安全检查的指令。可选歌词与在线匹配仍默认关闭，LRCLIB 需要单独同意发送当前歌曲信息，社区歌词不等于 Apple 官方歌词。
+
+          Requires macOS 13+. Universal DMG/ZIP contains Apple Silicon and Intel binaries. Ad-hoc signed only, without Developer ID signing or notarization; macOS may block launch. No security-bypass instructions are provided. Optional lyrics and online lookup remain off by default; LRCLIB metadata sharing requires separate consent, and community lyrics are not Apple official lyrics.
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v1.0.1" -f sha="$RELEASE_COMMIT" --silent
-          gh release create v1.0.1 \
+            -f ref="refs/tags/v1.0.2" -f sha="$RELEASE_COMMIT" --silent
+          release_options=()
+          review_assets=()
+          if [[ "$STAGE_DRAFT" == "true" ]]; then
+            release_options+=(--draft)
+            review_assets=(dist/perimeter-*.png)
+          fi
+          gh release create v1.0.2 \
+            "${release_options[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v1.0.1 · Closed-to-Lyrics" \
+            --title "v1.0.2 · Music Interaction Fix" \
             --notes-file notes.md \
-            dist/CodexNotchMeter-1.0.1-universal.zip \
-            dist/CodexNotchMeter-1.0.1-universal.zip.sha256 \
-            dist/CodexNotchMeter-1.0.1-universal.dmg \
-            dist/CodexNotchMeter-1.0.1-universal.dmg.sha256
+            dist/CodexNotchMeter-1.0.2-universal.zip \
+            dist/CodexNotchMeter-1.0.2-universal.zip.sha256 \
+            dist/CodexNotchMeter-1.0.2-universal.dmg \
+            dist/CodexNotchMeter-1.0.2-universal.dmg.sha256 \
+            dist/release-source.json \
+            dist/release-assets.json \
+            "${review_assets[@]}"
