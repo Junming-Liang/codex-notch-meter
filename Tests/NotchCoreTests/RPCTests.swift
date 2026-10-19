@@ -22,7 +22,7 @@ final class RPCTests: XCTestCase {
         let client = try XCTUnwrap(params["clientInfo"] as? [String: Any])
         XCTAssertEqual(client["name"] as? String, "codex_notch_meter")
         XCTAssertEqual(client["title"] as? String, "Codex Notch Meter")
-        XCTAssertEqual(client["version"] as? String, "1.0.3")
+        XCTAssertEqual(client["version"] as? String, "1.1.0")
     }
     func testFramerHandlesFragmentsAndSeveralLines() throws {
         var framer = LineFramer()
