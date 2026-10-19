@@ -13,14 +13,17 @@ struct IslandVisualFrame {
     let noticeID: UUID?
     let musicRevision: UInt64
     let contour: IslandContour
+    let accessoryProgress: Double
     let surfaceOpacity: Double
     let railOpacity: Double
-    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, noticeID: UUID? = nil, musicRevision: UInt64 = 0, baseline: Bool = false) {
+    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, noticeID: UUID? = nil, musicRevision: UInt64 = 0, baseline: Bool = false, musicPerimeter: Bool = false) {
         self.progress = progress; self.viewport = viewport; self.noticeID = noticeID; self.musicRevision = musicRevision
         contour = IslandContour(rect: geometry.contourRect(progress: progress), progress: progress,
             cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
-        surfaceOpacity = baseline ? min(1, progress * 3) : geometry.surfaceOpacity(progress: progress)
-        railOpacity = baseline ? max(0, 1 - progress * 4) : IslandReveal.rail(progress)
+        let accessory = geometry.showsMusicAccessories ? geometry.musicAccessoryProgress : 0
+        accessoryProgress = accessory
+        surfaceOpacity = max(accessory, baseline ? min(1, progress * 3) : geometry.surfaceOpacity(progress: progress))
+        railOpacity = musicPerimeter ? 1 : max(accessory, baseline ? max(0, 1 - progress * 4) : IslandReveal.rail(progress))
     }
     var bodyPath: Path { contourPath(contour, inset: 0, closed: true) }
     var railPath: Path { contourPath(contour, inset: 2, closed: false) }

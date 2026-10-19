@@ -36,8 +36,6 @@ struct MusicClosedAccessories: View {
     }
     var body: some View {
         ZStack(alignment: .topLeading) {
-            wing(left)
-            wing(right)
             Group {
                 if let image { Image(decorative: image, scale: 1).resizable().interpolation(.high).scaledToFill() }
                 else { Image(systemName: "music.note").font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white.opacity(0.12)) }
@@ -48,18 +46,7 @@ struct MusicClosedAccessories: View {
                 .offset(x: right.maxX - 27, y: max(0, (right.height - 20) / 2))
         }.accessibilityElement(children: .ignore).accessibilityLabel("Apple Music 正在播放")
     }
-    private func wing(_ rect: CGRect) -> some View {
-        Path { path in
-            let r = min(CGFloat(7), rect.height / 2)
-            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-            path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r), control: CGPoint(x: rect.minX, y: rect.maxY))
-            path.closeSubpath()
-        }.fill(.black)
-    }
+
 }
 
 /// Approved B: small song title, left-aligned current cue, quieter actual next cue.

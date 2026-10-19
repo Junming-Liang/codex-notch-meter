@@ -324,12 +324,17 @@ final class MusicRenderHarness: NSObject {
             "lyric replacement neither replaces quota notice nor changes geometry, expiry or click routing")
         print("MUSIC_PRIORITY_OK: actualRefreshNotice=true lyricChanged=true noticeRetained=true passive=true")
         let promotedAt = CACurrentMediaTime()
-        try require(island.beginSmokeExpansion(), "quota notice promotes to details through the normal hover path")
+        try require(!island.beginSmokeExpansion() && island.smokeNoticeTargetActive
+            && island.smokeNoticeArmedAt == armed, "ordinary hover cannot consume the notice dwell")
+        island.dismissRefreshNotice()
+        let fullFrame = island.geometry.frame(progress: 1)
+        island.smokePointer(at: CGPoint(x: fullFrame.midX, y: fullFrame.minY - 5), now: CACurrentMediaTime())
+        try require(island.beginSmokeExpansion(), "explicit dismissal permits a fresh details hover")
         try await until("promoted expanded viewport settles") { self.nativeSettled(island, progress: 1, after: promotedAt) }
         try await dwell(0.15)
         try verifyExpanded(island)
         try require(!island.smokeNoticeTargetActive && !island.smokeNoticeVisible && island.smokeNoticeArmedAt == nil,
-                    "hover promotion retires notice and expiry without losing expanded Quit")
+                    "explicit dismissal retires notice and expiry without losing expanded Quit")
         print("MUSIC_LAYOUT_OK: nativeExpanded=2 measuredQuit=2 clickRouting=2 nonactivating=true")
         try await verifyLongDetailLayout(fixture, model: model, island: island)
         // Restore the three-cue original fixture for the real seek/pause tests.
@@ -850,7 +855,7 @@ final class MusicRenderHarness: NSObject {
         try await waitIdle(panel, after: 0)
         try require(sourceAge >= 5 && fixture.controller.line.isEmpty && fixture.controller.nextLine.isEmpty
             && !fixture.controller.canImport && panel.panel.frame.height == idleFrame.height
-            && panel.geometry.contourRect(progress: 0).size == idleContour.size && passiveFrameSamples == idleFrames
+            && panel.geometry.contourFrame.height == idleContour.height && passiveFrameSamples > idleFrames
             && !panel.smokeMusicAccessoriesVisible && fixture.controller.artwork == nil,
                     "natural no-document expiry clears accessories without expanding the raw contour or painting a lyric body")
         print("MUSIC_CLOSED_STALE_OK: age=\(decimal(sourceAge)) document=unavailable lyricBodyPainted=false accessoryCleared=true owner=idle")
@@ -873,6 +878,9 @@ final class MusicRenderHarness: NSObject {
             && !contains(defaultPixels, "HARBOR A") && panel.panel.frame == panel.geometry.frame(progress: 0)
             && panel.panel.frame.height <= panel.geometry.notch.height + 4,
             "matched playing source remains in the true hardware-depth closed state with no lyric or title")
+        try await verifyNaturalGestureOwnership(panel, model: model, fixture: fixture)
+        let afterPointerChecks = try await read(fixture)
+        try await release(fixture, afterPointerChecks, position: 1, artwork: artwork)
         try await enterDetails(panel)
         try require(!panel.smokeLyricsSelected, "ordinary hover shows details without enabling lyric mode")
         try await exitDetails(panel)
@@ -923,8 +931,15 @@ final class MusicRenderHarness: NSObject {
         try require(panel.showRefreshNotice(notice), "repeated identical notice is accepted without a new dwell")
         var playingUpdates = 0
         var lyricUpdates = 0
+        var pointerSamples = 0
         let deadline = armed + notice.holdDuration + 2
         while panel.smokeNoticeTargetActive && CACurrentMediaTime() < deadline {
+            let visibleFrame = panel.geometry.frame(progress: panel.smokeProgress)
+            let visibleContour = panel.geometry.contourRect(progress: panel.smokeProgress)
+            let bottom = visibleFrame.maxY - visibleContour.maxY
+            panel.smokePointer(at: CGPoint(x: visibleFrame.midX,
+                y: bottom + (pointerSamples.isMultiple(of: 2) ? 1 : -1)), now: CACurrentMediaTime())
+            pointerSamples += 1
             if let request = await fixture.reader.calls().first(where: { $0.id > fixture.readCursor }) {
                 fixture.readCursor = request.id
                 try await release(fixture, request, position: 1)
@@ -946,9 +961,19 @@ final class MusicRenderHarness: NSObject {
         }
         let held = CACurrentMediaTime() - armed
         try require(!panel.smokeNoticeTargetActive && held >= notice.holdDuration && held <= notice.holdDuration + 1.5
-            && playingUpdates >= 2 && lyricUpdates >= 2,
-            "real long notice completes all six fully-painted seconds despite repeated Music publications")
+            && playingUpdates >= 2 && lyricUpdates >= 2 && pointerSamples >= 20,
+            "real long notice completes six fully-painted seconds despite Music and adjacent pointer samples")
+        print("MUSIC_NOTICE_POINTER_DWELL_OK: seconds=6 held=\(held) pointerSamples=\(pointerSamples) musicUpdates=\(playingUpdates)")
         try await waitMusic(panel, after: armed + notice.holdDuration)
+        for index in 0..<20 {
+            let frame = panel.geometry.frame(progress: panel.smokeProgress)
+            let contour = panel.geometry.contourRect(progress: panel.smokeProgress)
+            panel.smokePointer(at: CGPoint(x: frame.midX,
+                y: frame.maxY - contour.maxY + (index.isMultiple(of: 2) ? 1 : -1)), now: CACurrentMediaTime())
+            try require(panel.smokeExpansionOwner == .music && !panel.isInteracting,
+                "adjacent pointer after expiry cannot inherit hover and steal the restored music shell")
+            try await dwell(0.02)
+        }
         try require(ObjectIdentifier(panel.panel) == panelIdentity && panel.panel.frame == compactFrame
             && !panel.smokeNoticeVisible && fixture.controller.isPlayingForPresentation && panel.smokeLyricsSelected,
             "notice expiry returns directly to Music in the same compact native panel")
@@ -1323,6 +1348,129 @@ final class MusicRenderHarness: NSObject {
         return artwork
     }
 
+    /// Replay sparse fast mouse samples through the production controller, then
+    /// continue beside/down into the appeared shell rather than teleporting away.
+    private func verifyNaturalGestureOwnership(_ panel: IslandPanelController, model: MeterModel, fixture: MusicFixture) async throws {
+        let corridor = panel.smokeMusicGestureCorridor
+        var observedPaints: Set<UInt64> = []
+        for opening in [true, false] {
+            let fresh = try await read(fixture)
+            try await release(fixture, fresh, position: 1)
+            let started = CACurrentMediaTime()
+            var savedFrames = 0
+            for fraction in [CGFloat(-0.1), 0.5, 1.1] {
+                let x = opening ? fraction : 1 - fraction
+                panel.smokePointer(at: CGPoint(x: corridor.minX + corridor.width * x, y: corridor.midY),
+                    now: ProcessInfo.processInfo.systemUptime)
+                try await dwell(1.0 / 30)
+            }
+            try require(panel.smokeLyricsSelected == opening, "sparse 30Hz real-time crossing selects the requested mode")
+            let adjacent = CGPoint(x: opening ? corridor.maxX + 5 : corridor.minX - 5, y: corridor.minY - 6)
+            try require(panel.geometry.hoverContains(adjacent, progress: 1),
+                        "regression pointer remains inside the full shell after leaving the gesture band")
+            for _ in 0..<36 {
+                panel.smokePointer(at: adjacent, now: ProcessInfo.processInfo.systemUptime)
+                try require(!panel.isInteracting && panel.smokeExpansionOwner == (opening ? .music : .idle)
+                    && panel.smokeTargetProgress == (opening ? panel.smokeMusicTargetProgress : 0),
+                    "adjacent/downward gesture exit never transiently promotes details or retargets expansion")
+                if let paint = panel.paintReceipt, paint.observed >= started,
+                   paint.frame.progress > 0, paint.frame.progress < panel.smokeMusicTargetProgress {
+                    let expected = IslandContour(rect: panel.geometry.contourRect(progress: paint.frame.progress),
+                        progress: paint.frame.progress, cornerAdjustment: panel.geometry.shapeCalibration.corner,
+                        referenceDepth: panel.geometry.notch.height)
+                    try require(paint.frame.contour == expected && paint.frame.railOpacity == 1
+                        && paint.bodyBounds == contourPath(expected, inset: 0, closed: true).boundingRect
+                        && paint.railBounds == contourPath(expected, inset: 2, closed: false).boundingRect,
+                        "moving music shell and perimeter rail are submitted from one exact geometry frame")
+                    observedPaints.insert(paint.sequence)
+                    let ratio = paint.frame.progress / panel.smokeMusicTargetProgress
+                    let threshold = opening ? [0.2, 0.5, 0.8] : [0.8, 0.5, 0.2]
+                    if savedFrames < 3, paint.frame.progress == panel.smokeProgress,
+                       (opening ? ratio >= threshold[savedFrames] : ratio <= threshold[savedFrames]) {
+                        let raster = try ownViewImage(panel, progress: panel.smokeProgress)
+                        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                        guard let png = NSBitmapImageRep(cgImage: raster.image).representation(using: .png, properties: [:]) else {
+                            throw Failure(label: "cannot encode natural motion own-view frame")
+                        }
+                        savedFrames += 1
+                        let direction = opening ? "open" : "close"
+                        try png.write(to: directory.appendingPathComponent("perimeter-motion-\(direction)-\(savedFrames).png"), options: .atomic)
+                    }
+                }
+                try await dwell(0.012)
+            }
+            try require(savedFrames == 3, "three natural in-flight own-view frames were retained for each gesture direction")
+            if opening {
+                try await waitMusic(panel, after: started)
+                try await verifyMusicPerimeterPixels(panel, model: model, state: "compact")
+                try await enterDetails(panel)
+                try await verifyMusicPerimeterPixels(panel, model: model, state: "details")
+                try await exitDetails(panel)
+                try await waitMusic(panel, after: started)
+                let g = panel.geometry
+                let clipped = IslandGeometry(notch: .init(notch: g.notch, leftPanel: .zero, rightPanel: .zero),
+                    screen: g.screen, backingScale: g.backingScale, shapeCalibration: .init(depth: -6), contentHeight: g.contentHeight)
+                try require(!clipped.canShowMusicAccessories, "negative-depth native fixture has no safe accessory wings")
+                let noWings = IslandPanelController(model: model, geometry: clipped, startPolling: false,
+                    reducedMotionOverride: true, hovered: {}, refresh: {}, settings: {}, quit: {})
+                passivePanels.append(noWings)
+                try require(noWings.beginSmokeExpansion(), "wing-ineligible music can still open details")
+                try await until("wing-ineligible full music details paint") {
+                    self.nativeSettled(noWings, progress: 1, after: 0) && self.naturalPaintMatches(noWings, progress: 1, after: 0)
+                }
+                try await verifyMusicPerimeterPixels(noWings, model: model, state: "details-no-wings")
+                noWings.stop()
+                let freshForClose = try await read(fixture)
+                try await release(fixture, freshForClose, position: 1)
+                guard let tallGeometry = makeGeometry(contentHeight: 340) else { throw Failure(label: "missing tall music geometry") }
+                let tall = IslandPanelController(model: model, geometry: tallGeometry, startPolling: false,
+                    reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
+                passivePanels.append(tall)
+                try await waitMusic(tall, after: 0)
+                let closeStarted = CACurrentMediaTime()
+                tall.setMusicPresentationAllowed(false)
+                try await waitIdle(tall, after: closeStarted)
+                try require(tall.closeReceipt?.outcome == .ready,
+                            "tall-card short lyric waits for both geometry channels before its unchanged close-paint deadline")
+                tall.stop()
+            } else { try await waitIdle(panel, after: started) }
+        }
+        try require(observedPaints.count >= 6, "both natural gesture transitions produced multiple actual paint frames")
+        print("MUSIC_PERIMETER_OK: skins=5 states=compact,details,details-no-wings coloredOutside=true usedBlack=true innerBlack=true ownViewPixels=true scanout=false")
+        print("MUSIC_NATURAL_POINTER_OK: sparse30Hz=true adjacentExit=true downwardExit=true noDetailsRetarget=true coupledCloseReady=true movingPaints=\(observedPaints.count) sharedContour=true scanout=false")
+    }
+
+    private func verifyMusicPerimeterPixels(_ panel: IslandPanelController, model: MeterModel, state: String) async throws {
+        let original = model.theme
+        defer { model.theme = original }
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for theme in MeterTheme.allCases {
+            model.theme = theme
+            try await dwell(0.025)
+            let raster = try ownViewImage(panel, progress: panel.smokeProgress)
+            let bitmap = NSBitmapImageRep(cgImage: raster.image)
+            guard let paint = panel.paintReceipt else { throw Failure(label: "music perimeter has no paint receipt") }
+            let rect = paint.frame.contour.rect, side = rect.minX + paint.frame.contour.shoulder
+            let y = rect.midY
+            func color(_ x: CGFloat) -> NSColor? {
+                bitmap.colorAt(x: Int((x * screen.backingScaleFactor).rounded(.down)),
+                    y: Int((y * screen.backingScaleFactor).rounded(.down)))?.usingColorSpace(.deviceRGB)
+            }
+            let remainingSide = color(side + 2)
+            let usedSide = color(rect.maxX - paint.frame.contour.shoulder - 2)
+            let body = color(side + 8)
+            let colored = remainingSide.map { max($0.redComponent, max($0.greenComponent, $0.blueComponent)) > 0.15 && $0.alphaComponent > 0.9 } ?? false
+            let blackUsed = usedSide.map { max($0.redComponent, max($0.greenComponent, $0.blueComponent)) < 0.03 && $0.alphaComponent > 0.9 } ?? false
+            let blackBody = body.map { max($0.redComponent, max($0.greenComponent, $0.blueComponent)) < 0.03 && $0.alphaComponent > 0.9 } ?? false
+            try require(colored && blackUsed && blackBody && paint.frame.railOpacity == 1,
+                        "\(theme.rawValue) paints a colored outer remaining edge, pure-black used edge and black inner body")
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw Failure(label: "cannot encode perimeter fixture") }
+            try png.write(to: directory.appendingPathComponent("perimeter-\(state)-\(theme.rawValue).png"), options: .atomic)
+        }
+    }
+
     private func verifyClosedArtwork(_ panel: IslandPanelController, expected: MusicArtwork,
                                      controller: MusicLyricsController) throws {
         guard let image = lastOCRImage else { throw Failure(label: "missing closed own-view image") }
@@ -1351,7 +1499,7 @@ final class MusicRenderHarness: NSObject {
                 }
             }
         }
-        let rawContour = panel.geometry.contourRect(progress: 0)
+        let rawContour = panel.geometry.contourFrame
         let rawUnchanged = abs(rawContour.width - panel.geometry.calibratedNotch.width - 6) < 0.001
             && abs(rawContour.height - panel.geometry.calibratedNotch.height - 3) < 0.001
         let depthMatches = panel.geometry.musicAccessoryFrame.height == panel.geometry.notch.height
@@ -1360,6 +1508,10 @@ final class MusicRenderHarness: NSObject {
         try require(controller.artwork == expected && controller.isFreshPlaying && panel.smokeMusicAccessoriesVisible
             && artworkPixels && brightPixels >= 8 && rawUnchanged && depthMatches,
             "closed own-view pixels prove four source-defined decoded PNG quadrants, a playing glyph and unchanged hardware-depth contour")
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw Failure(label: "cannot encode closed artwork fixture") }
+        try png.write(to: directory.appendingPathComponent("perimeter-closed-artwork.png"), options: .atomic)
         print("MUSIC_CLOSED_ACCESSORIES_OK: originalRGBA=true decoder-to-display=true artworkPixels=true quadrants=4 playingGlyph=true hardwareDepth=true rawContourUnchanged=true")
     }
 
@@ -1438,8 +1590,8 @@ final class MusicRenderHarness: NSObject {
                 && !panel.smokeMusicTargetActive && !panel.smokeMusicVisible && !panel.smokeNoticeVisible
                 && panel.panel.ignoresMouseEvents && self.naturalPaintMatches(panel, progress: 0, after: after)
         }
-        try require(panel.paintReceipt?.frame.surfaceOpacity == 0,
-                    "actual idle paint has no remaining black body opacity")
+        try require(panel.paintReceipt?.frame.surfaceOpacity == (panel.smokeMusicAccessoriesVisible ? 1 : 0),
+                    "idle paints exactly the closed music shell when accessories are visible, otherwise no expanded body")
     }
     private func waitNotice(_ panel: IslandPanelController, notice: RefreshNotice) async throws {
         try await until("native quota priority receives its own natural painted readiness") {
@@ -1457,7 +1609,7 @@ final class MusicRenderHarness: NSObject {
             && receipt.frame.viewport == expected.size && receipt.actualViewport == expected.size
             && receipt.frame.noticeID == panel.smokeNoticeID
             && receipt.frame.musicRevision == panel.smokeMusicPresentationRevision
-            && abs(receipt.frame.surfaceOpacity - panel.geometry.surfaceOpacity(progress: progress)) < 0.000001
+            && abs(receipt.frame.surfaceOpacity - max(receipt.frame.accessoryProgress, panel.geometry.surfaceOpacity(progress: progress))) < 0.000001
     }
     private func compactOCR(_ panel: IslandPanelController, progress requestedProgress: Double? = nil, languages: [String] = ["zh-Hans", "en-US"]) async throws -> [String] {
         let progress = requestedProgress ?? (panel.smokeExpansionOwner == .music ? panel.smokeMusicTargetProgress : panel.geometry.updateProgress)
@@ -1515,7 +1667,7 @@ final class MusicRenderHarness: NSObject {
                     let residual = panel.geometry.contourResidual(progress: paint.frame.progress)
                     let opacity = paint.frame.surfaceOpacity
                     opacityMatchesGeometry = opacityMatchesGeometry
-                        && abs(opacity - panel.geometry.surfaceOpacity(progress: paint.frame.progress)) < 0.000001
+                        && abs(opacity - max(paint.frame.accessoryProgress, panel.geometry.surfaceOpacity(progress: paint.frame.progress))) < 0.000001
                     if residual >= 4 {
                         opaqueSequences.insert(paint.sequence)
                         opacityMatchesGeometry = opacityMatchesGeometry && opacity == 1
@@ -1531,6 +1683,9 @@ final class MusicRenderHarness: NSObject {
         return fadeSequences.count
     }
     private func enterDetails(_ panel: IslandPanelController) async throws {
+        // An intentional fresh hover follows an actual exit from the full shell.
+        let frame = panel.geometry.frame(progress: 1)
+        panel.smokePointer(at: CGPoint(x: frame.maxX + 8, y: frame.midY), now: ProcessInfo.processInfo.systemUptime)
         let began = CACurrentMediaTime()
         panel.smokePointer(inside: true, now: ProcessInfo.processInfo.systemUptime)
         try await dwell(0.14)
@@ -1552,7 +1707,6 @@ final class MusicRenderHarness: NSObject {
         let values = [makeFixture(lookupFailure: .serviceUnavailable(retryAfter: 60)), makeFixture(),
             makeFixture(), makeFixture(lookupFailure: .identityMismatch)]
         let statusPanels = try values.map { try makePassivePanel(MeterModel(demo: true, music: $0.controller)) }
-        let statusFrames = passiveFrameSamples
         let states: [LyricsLookupState] = [.serviceUnavailable, .noMatch, .unavailable, .identityMismatch]
         let labels = ["serviceUnavailable", "noMatch", "unavailable", "identityMismatch"]
         let statuses = ["歌词服务暂不可用，可稍后重试或导入本地 LRC", "未找到匹配歌词，可导入本地 LRC",
@@ -1572,6 +1726,8 @@ final class MusicRenderHarness: NSObject {
                 value.controller.lookupState == states[index] && value.controller.statusText == statuses[index]
             }
         }
+        for panel in statusPanels { try await waitIdle(panel, after: 0) }
+        let statusFrames = passiveFrameSamples
         for _ in 0..<3 {
             for value in values {
                 let request = try await read(value); try await release(value, request, position: 1)

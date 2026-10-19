@@ -91,16 +91,7 @@ struct CompactDetailView: View {
     private func musicQuotaRow(_ window: QuotaWindow) -> some View {
         HStack(spacing: 10) {
             Text(windowTitle(window)).font(.system(size: 10)).lineLimit(1).frame(width: 55, alignment: .leading)
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Color.black
-                    if let remaining = window.remainingPercent, remaining > 0 {
-                        Capsule().fill(quotaPaint(remaining, theme: model.theme, phase: model.skinPhase))
-                            .frame(width: proxy.size.width * remaining / 100)
-                            .opacity(model.degraded || window.resetPending(at: model.now) ? 0.55 : 1)
-                    }
-                }
-            }.frame(height: 3)
+            Spacer(minLength: 4)
             Text(window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "—")
                 .font(.system(size: 11, weight: .medium)).monospacedDigit().frame(width: 38, alignment: .trailing)
         }.frame(height: 20).help(resetLine(window))

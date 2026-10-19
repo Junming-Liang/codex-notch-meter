@@ -29,7 +29,7 @@ final class UpdateRenderHarness: NSObject {
         var duration: NoticeDuration {
             switch self {
             case .standardDwell: return .standard
-            case .longDwell: return .long
+            case .longDwell, .recoveryDwell: return .long
             default: return .short
             }
         }
@@ -85,6 +85,11 @@ final class UpdateRenderHarness: NSObject {
     private var recoveryResetAt: Date?
     private var unchangedActiveVerified = false
     private var recoveryPaintVerified = false
+    private var longDwellPointerSamples = 0
+    private var longDwellSettingChanged = false
+    private var longDwellDuplicateChecks = 0
+    private var longReadinessDelayVerified = false
+    private var longDwellVerified = false
     private var targetVerified = false
     private var oldDeadlineVerified = false
     private var retainsNoticeWhileClosing = false
@@ -423,6 +428,8 @@ final class UpdateRenderHarness: NSObject {
         guard let geometry else { finish(false); return }
         targetReachedAt = nil; closingAt = nil; targetVerified = false; oldDeadlineVerified = false
         noticePaintReadyAt = nil; noticeArmedAt = nil; originalNoticeDeadline = nil
+        longDwellPointerSamples = 0; longDwellSettingChanged = false; longDwellDuplicateChecks = 0
+        longReadinessDelayVerified = false
         lastSampleCount = 0; activeNotice = nil; retainsNoticeWhileClosing = false
         let creationStarted = CACurrentMediaTime()
         model.setUpdateFixture(fixtures[scenario.fixtureIndex].snapshot)
@@ -449,6 +456,7 @@ final class UpdateRenderHarness: NSObject {
         noticePaintReadyAt = nil; noticeArmedAt = nil
         check(notice.isEligible && notice.holdDuration == scenario.duration.seconds,
             "delivery captures selected duration seconds=\(notice.holdDuration)")
+        if scenario == .longDwell { island.smokeDelayNoticeReadiness(seconds: 1.2) }
         check(island.showRefreshNotice(notice), "notice accepted from collapsed or passive state")
         check(island.smokeNoticeVisible && island.smokeNoticeTargetActive && !island.isInteracting
             && island.smokeTargetProgress == island.geometry.updateProgress
@@ -461,13 +469,17 @@ final class UpdateRenderHarness: NSObject {
             check(island.smokeNoticeArmedAt == nil && island.smokeNoticePaintReadyAt == nil,
                 "opening animation cannot start notice dwell before settled paint")
         }
-        // This alters the live setting, not the immutable delivered presentation.
-        model.noticeDuration = notice.duration == .long ? .short : .long
+        // The long case changes its setting during the actual painted hold.
+        if scenario != .longDwell { changeDurationForFutureNotices(to: notice.duration == .long ? .short : .long) }
+        next(.opening, at: now)
+    }
+
+    private func changeDurationForFutureNotices(to duration: NoticeDuration) {
+        model.noticeDuration = duration
         let future = makeNotice(for: fixtures[scenario.fixtureIndex], duration: model.noticeDuration)
         check(activeNotice?.duration == scenario.duration && future?.duration == model.noticeDuration
             && future?.holdDuration != activeNotice?.holdDuration && preferencesUnchanged,
             "setting change affects future notices without changing active duration or writing defaults")
-        next(.opening, at: now)
     }
 
     private func rejectNotice(for fixture: Fixture, island: IslandPanelController, at now: TimeInterval) {
@@ -499,6 +511,11 @@ final class UpdateRenderHarness: NSObject {
             && probe.frame == expected && probe.viewport == expected.size,
             "fresh matching settled native paint precedes expiry arm receipt=\(receipt) paint=\(painted) armed=\(armed)")
         noticePaintReadyAt = painted; noticeArmedAt = armed
+        if scenario == .longDwell {
+            check(longReadinessDelayVerified && armed - receipt >= 1.2,
+                "six-second notice survives delayed readiness before its actual paint receipt arms expiry")
+            originalNoticeDeadline = armed + (activeNotice?.holdDuration ?? 6)
+        }
         return passed
     }
 
@@ -513,13 +530,17 @@ final class UpdateRenderHarness: NSObject {
         case .replacementHold: phaseLimit = (activeNotice?.holdDuration ?? 6) + 1.1
         default: phaseLimit = 4.5
         }
-        guard now - startedAt < 65, elapsed < phaseLimit else {
+        guard now - startedAt < 75, elapsed < phaseLimit else {
             SmokeDiagnostics.mark("update deadline scenario=\(scenario.rawValue) phase=\(phase.rawValue) elapsed=\(elapsed) total=\(now-startedAt)")
             finish(false); return
         }
         guard passed else { finish(false); return }
         if phase != .stopped {
             guard nativeFrameValid(island) else { check(false, "native frame/top-edge/nonactivation invariant"); finish(false); return }
+        }
+        if scenario == .longDwell, (phase == .opening || phase == .holding),
+           island.smokeNoticeTargetActive {
+            verifyLongNoticePointer(island)
         }
         switch phase {
         case .idle where elapsed >= 0.14:
@@ -559,6 +580,13 @@ final class UpdateRenderHarness: NSObject {
                 check(island.smokeNoticeArmedAt == nil && island.smokeNoticePaintReadyAt == nil,
                     "unsettled target has no armed expiry or ready paint")
             }
+            if scenario == .longDwell, now - shownAt >= 0.8, island.smokeNoticeArmedAt == nil {
+                check(island.smokeNoticeVisible && island.smokeNoticeTargetActive
+                    && island.smokeNoticePaintReadyAt == nil && island.smokeNoticeID == activeNotice?.id
+                    && island.smokeTargetProgress == island.geometry.updateProgress && !island.isInteracting,
+                    "readiness beyond the former quarter-second cutoff keeps notice pending without starting dwell")
+                longReadinessDelayVerified = true
+            }
             if scenario == .movingPromotion, island.smokeProgress > 0.02,
                 island.smokeProgress < island.geometry.updateProgress, island.smokeVelocity > 0 {
                 promoteWhileMoving(island, at: now)
@@ -571,6 +599,27 @@ final class UpdateRenderHarness: NSObject {
             guard let armed = noticeArmedAt, let painted = noticePaintReadyAt, let activeNotice else { finish(false); return }
             let held = now - armed, paintedFor = now - painted
             let hold = activeNotice.holdDuration
+            if scenario == .longDwell, island.smokeNoticeTargetActive {
+                if held >= 1 && !longDwellSettingChanged {
+                    changeDurationForFutureNotices(to: .short)
+                    check(activeNotice.duration == .long && activeNotice.holdDuration == 6
+                        && island.smokeNoticeID == activeNotice.id
+                        && island.smokeNoticeArmedAt == armed && island.smokeNoticePaintReadyAt == painted
+                        && originalNoticeDeadline == armed + 6,
+                        "changing six-second notice setting after paint leaves its original expiry intact")
+                    longDwellSettingChanged = true
+                }
+                if longDwellDuplicateChecks < 2, held >= Double(longDwellDuplicateChecks + 1) * 2 {
+                    let before = (island.smokeProgress, island.smokeVelocity, island.panel.frame)
+                    check(island.showRefreshNotice(activeNotice) && island.smokeNoticeTargetActive
+                        && island.smokeNoticeID == activeNotice.id && island.smokeNoticeArmedAt == armed
+                        && island.smokeNoticePaintReadyAt == painted && originalNoticeDeadline == armed + 6
+                        && island.smokeProgress == before.0 && island.smokeVelocity == before.1
+                        && island.panel.frame == before.2,
+                        "replaying identical six-second notice preserves paint, motion and original expiry")
+                    longDwellDuplicateChecks += 1
+                }
+            }
             if island.smokeNoticeTargetActive,
                 island.smokeNoticeArmedAt != armed || island.smokeNoticePaintReadyAt != painted {
                 check(false, "active notice changed its captured paint or expiry deadline")
@@ -599,7 +648,7 @@ final class UpdateRenderHarness: NSObject {
                 let accepted = island.showRefreshNotice(laterNotice)
                 check(!accepted && island.smokeStopped && island.smokeProgress == before.0
                     && island.smokeVelocity == before.1 && island.panel.frame == before.2
-                    && island.smokeNoticeID == before.3, "stopped controller rejects later show/collapse/hover actions")
+                    && island.smokeNoticeID == before.3, "stopped controller rejects later show/collapse/expansion actions")
                 next(.stopped, at: now); return
             }
             if !island.smokeNoticeTargetActive {
@@ -608,6 +657,16 @@ final class UpdateRenderHarness: NSObject {
                 if scenario == .shortDwell || scenario == .standardDwell || scenario == .longDwell {
                     completedDwells.insert(activeNotice.duration)
                     print("UPDATE_DWELL_OK: seconds=\(Int(hold)) armedHeld=\(held) paintHeld=\(paintedFor)")
+                }
+                if scenario == .longDwell {
+                    check(longDwellPointerSamples >= 100 && longDwellSettingChanged && longDwellDuplicateChecks == 2
+                        && longReadinessDelayVerified
+                        && model.noticeDuration == .short && activeNotice.duration == .long && hold == 6
+                        && held >= 6 && paintedFor >= 6 && originalNoticeDeadline == armed + 6
+                        && !island.isInteracting && island.smokeTargetProgress == 0,
+                        "six-second painted hold survives adjacent pointer churn, a shorter future setting and repeated identical notices")
+                    longDwellVerified = passed
+                    print("UPDATE_POINTER_DWELL_OK: seconds=6 held=\(held) adjacent=true settingsCaptured=true repeatedID=true delayedReadiness=true")
                 }
                 if scenario == .secondaryChanged {
                     secondaryVerified = activeNotice.window?.id == "codex:secondary"
@@ -625,6 +684,7 @@ final class UpdateRenderHarness: NSObject {
                 }
                 if scenario == .recoveryDwell {
                     check(unchangedActiveVerified && originalNoticeDeadline == armed + hold
+                        && hold == 6 && held >= hold && paintedFor >= hold
                         && activeNotice.isEligible && activeNotice.change == .updated(reason: .previousReadFailed)
                         && activeNotice.window?.remainingPercent == 50 && activeNotice.result.previousFetchedAt == nil
                         && activeNotice.title == "额度已更新" && activeNotice.detail.contains("未计算")
@@ -665,14 +725,14 @@ final class UpdateRenderHarness: NSObject {
                 check(!island.smokeNoticeVisible && !island.smokeNoticeTargetActive,
                     "full promotion retires notice presentation")
                 check(island.smokeNoticeArmedAt == nil && island.smokeNoticePaintReadyAt == nil,
-                    "hover promotion retires the notice paint and expiry identity")
+                    "explicit dismissal before expansion retires the notice paint and expiry identity")
                 targetVerified = true
             }
             if elapsed >= 2.20 {
                 check(targetVerified && island.smokeTargetExpanded && island.smokeProgress == 1
                     && !island.smokeMotionRunning && island.isInteracting
                     && (originalNoticeDeadline.map { now > $0 + 0.15 } ?? false),
-                    "hover expansion survives superseded notice deadline")
+                    "explicitly requested expansion survives the dismissed notice deadline")
                 if scenario == .movingPromotion, let geometry {
                     check(island.geometry == geometry, "content-fit change remains deferred throughout open interaction")
                 }
@@ -702,26 +762,73 @@ final class UpdateRenderHarness: NSObject {
         }
     }
 
-    private func promoteWhileMoving(_ island: IslandPanelController, at now: TimeInterval) {
-        originalNoticeDeadline = now + (activeNotice?.holdDuration ?? 2)
-        let before = (island.smokeProgress, island.smokeVelocity)
-        let previousTarget = island.smokeTargetProgress
-        // One inside event must promote immediately. The regular helper then makes
-        // the same request again, checking that no second dwell restarts the spring.
-        island.smokePointer(inside: true, now: now)
-        let trace = island.smokeRetarget
-        let continuous = trace.map { event in
+    /// Adjacent global samples straddle the actual shell bottom by only two points.
+    /// They exercise the ordinary pointer path, never the expansion helper.
+    private func verifyNoticePointerProtected(_ island: IslandPanelController, inside: Bool) {
+        let progress = island.smokeProgress, frame = island.geometry.frame(progress: progress)
+        let contour = island.geometry.contourRect(progress: progress)
+        let point = CGPoint(x: frame.minX + contour.midX,
+                            y: frame.maxY - contour.maxY + (inside ? 1 : -1))
+        let before = (island.smokeProgress, island.smokeVelocity, island.panel.frame)
+        let noticeID = island.smokeNoticeID, armed = island.smokeNoticeArmedAt
+        let painted = island.smokeNoticePaintReadyAt, retarget = island.smokeRetarget?.eventTime
+        check(island.geometry.hoverContains(point, progress: progress) == inside,
+            "adjacent notice pointer is on the intended side of the actual shell boundary")
+        island.smokePointer(at: point, now: ProcessInfo.processInfo.systemUptime)
+        check(island.smokeNoticeTargetActive && island.smokeNoticeVisible && island.smokeNoticeID == noticeID
+            && island.smokeExpansionOwner == .quotaNotice && !island.isInteracting && !island.smokeTargetExpanded
+            && island.smokeTargetProgress == island.geometry.updateProgress && island.panel.ignoresMouseEvents
+            && island.smokeNoticeArmedAt == armed && island.smokeNoticePaintReadyAt == painted
+            && island.smokeRetarget?.eventTime == retarget && island.smokeProgress == before.0
+            && island.smokeVelocity == before.1 && island.panel.frame == before.2,
+            "ordinary adjacent pointer cannot dismiss, promote, move or rearm an active notice")
+    }
+
+    private func verifyLongNoticePointer(_ island: IslandPanelController) {
+        verifyNoticePointerProtected(island, inside: longDwellPointerSamples.isMultiple(of: 2))
+        longDwellPointerSamples += 1
+    }
+
+    private func exitStableShellAfterDismissal(_ island: IslandPanelController) {
+        let frame = island.geometry.frame(progress: 1)
+        let contour = island.geometry.contourRect(progress: 1)
+        let point = CGPoint(x: frame.minX + contour.midX, y: frame.maxY - contour.maxY - 5)
+        check(!island.geometry.hoverContains(point, progress: 1),
+            "explicit dismissal is followed by an adjacent exit from the stable full shell")
+        island.smokePointer(at: point, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func retargetPreservesSpring(_ island: IslandPanelController,
+        before: (Double, Double), previousTarget: Double) -> Bool {
+        island.smokeRetarget.map { event in
             var expected = event.before
             expected.advance(target: previousTarget, elapsed: event.consumedElapsed, reduceMotion: false)
             return event.before.progress == before.0 && event.before.velocity == before.1
                 && abs(expected.progress - event.integrated.progress) < 1e-12
                 && abs(expected.velocity - event.integrated.velocity) < 1e-12
-                && event.integrated.velocity > 0
                 && abs(island.smokeProgress - event.integrated.progress) < 1e-12
                 && abs(island.smokeVelocity - event.integrated.velocity) < 1e-12
         } ?? false
-        check(continuous && island.smokeTargetExpanded && island.smokeTargetProgress == 1
-            && !island.smokeNoticeTargetActive, "single pointer event promotes without dwell or position/velocity reset")
+    }
+
+    private func promoteWhileMoving(_ island: IslandPanelController, at now: TimeInterval) {
+        originalNoticeDeadline = now + (activeNotice?.holdDuration ?? 2)
+        verifyNoticePointerProtected(island, inside: true)
+        verifyNoticePointerProtected(island, inside: false)
+        let before = (island.smokeProgress, island.smokeVelocity)
+        let previousTarget = island.smokeTargetProgress
+        island.dismissRefreshNotice()
+        check(retargetPreservesSpring(island, before: before, previousTarget: previousTarget)
+            && !island.smokeNoticeTargetActive && island.smokeTargetProgress == 0,
+            "explicit dismissal preserves moving notice spring state before requesting details")
+        exitStableShellAfterDismissal(island)
+        let beforeExpansion = (island.smokeProgress, island.smokeVelocity)
+        let dismissedTarget = island.smokeTargetProgress
+        check(island.beginSmokeExpansion(), "explicit expansion is accepted only after dismissal and stable-shell exit")
+        check(retargetPreservesSpring(island, before: beforeExpansion, previousTarget: dismissedTarget)
+            && island.smokeVelocity > 0 && island.smokeTargetExpanded && island.smokeTargetProgress == 1
+            && !island.smokeNoticeTargetActive,
+            "explicit expansion after dismissal preserves position and velocity instead of resetting the spring")
         let promoted = (island.smokeProgress, island.smokeVelocity)
         island.beginSmokeExpansion()
         check(island.smokeProgress == promoted.0 && island.smokeVelocity == promoted.1,
@@ -752,11 +859,18 @@ final class UpdateRenderHarness: NSObject {
     private func promoteArmed(_ island: IslandPanelController, at now: TimeInterval) {
         guard let armed = noticeArmedAt, let activeNotice else { finish(false); return }
         originalNoticeDeadline = armed + activeNotice.holdDuration
-        let progress = island.smokeProgress
-        island.beginSmokeExpansion()
+        verifyNoticePointerProtected(island, inside: true)
+        verifyNoticePointerProtected(island, inside: false)
+        island.dismissRefreshNotice()
+        check(!island.smokeNoticeTargetActive && island.smokeNoticeArmedAt == nil
+            && island.smokeNoticePaintReadyAt == nil, "explicit dismissal cancels the armed expiry")
+        exitStableShellAfterDismissal(island)
+        let before = (island.smokeProgress, island.smokeVelocity)
+        let previousTarget = island.smokeTargetProgress
+        check(island.beginSmokeExpansion(), "explicit details request follows dismissal of the armed notice")
         check(island.smokeTargetExpanded && island.smokeTargetProgress == 1 && !island.smokeNoticeTargetActive
-            && island.smokeProgress == progress && island.smokeVelocity == 0,
-            "hover promotion cancels armed expiry without resetting settled position")
+            && retargetPreservesSpring(island, before: before, previousTarget: previousTarget),
+            "explicit expansion after dismissal preserves the former notice spring without a reset")
         targetVerified = false; shownAt = now; next(.expanded, at: now)
     }
 
@@ -767,19 +881,16 @@ final class UpdateRenderHarness: NSObject {
         check(island.showRefreshNotice(activeNotice) && island.smokeNoticeArmedAt == armed
             && island.smokeNoticePaintReadyAt == painted,
             "same-ID notice coalesces without restarting its paint or expiry deadline")
-        model.noticeDuration = .standard
+        model.noticeDuration = .long
         guard let replacement = makeNotice(for: fixtures[1], duration: model.noticeDuration) else { finish(false); return }
-        check(replacement.id != activeNotice.id && replacement.holdDuration == 4
-            && island.showRefreshNotice(replacement), "newer notice captures the changed four-second setting")
+        check(replacement.id != activeNotice.id && replacement.holdDuration == 6
+            && island.showRefreshNotice(replacement), "newer notice captures its own changed six-second setting")
         self.activeNotice = replacement; replacedAt = now
         noticeArmedAt = nil; noticePaintReadyAt = nil
         check(island.smokeNoticeID == replacement.id && island.smokeNoticeTargetActive
             && island.smokeProgress == before.0 && island.smokeVelocity == before.1
             && island.panel.frame == before.2 && island.panel.ignoresMouseEvents,
             "repeat and newer notice coalesce with unchanged position/velocity")
-        model.noticeDuration = .long
-        check(replacement.duration == .standard && preferencesUnchanged,
-            "replacement retains captured duration after another demo-safe setting change")
         next(.replacementHold, at: now)
     }
 
@@ -793,6 +904,11 @@ final class UpdateRenderHarness: NSObject {
         }
         guard let armed = noticeArmedAt, let painted = noticePaintReadyAt else { finish(false); return }
         let held = now - armed, paintedFor = now - painted, hold = activeNotice.holdDuration
+        if held >= 1 && model.noticeDuration != .short {
+            model.noticeDuration = .short
+            check(activeNotice.duration == .long && hold == 6 && preferencesUnchanged,
+                "replacement keeps six seconds when the future-notice setting changes mid-hold to two")
+        }
         if island.smokeNoticeTargetActive,
             island.smokeNoticeArmedAt != armed || island.smokeNoticePaintReadyAt != painted {
             check(false, "replacement changed its captured paint or expiry deadline")
@@ -800,12 +916,14 @@ final class UpdateRenderHarness: NSObject {
         if now >= originalNoticeDeadline + 0.15 && held < hold - 0.15 && !oldDeadlineVerified {
             check(island.smokeNoticeTargetActive && island.smokeNoticeID == activeNotice.id
                 && island.smokeProgress == island.geometry.updateProgress && island.panel.ignoresMouseEvents,
-                "superseded two-second timer cannot dismiss newer four-second notice")
+                "superseded two-second timer cannot dismiss newer six-second notice")
             oldDeadlineVerified = true
         }
         if !island.smokeNoticeTargetActive {
-            check(oldDeadlineVerified && held >= hold - 0.05 && held <= hold + 0.75 && paintedFor >= hold - 0.05,
+            check(oldDeadlineVerified && model.noticeDuration == .short && hold == 6
+                && held >= hold && held <= hold + 0.75 && paintedFor >= hold,
                 "replacement receives its own full painted hold armed=\(held) painted=\(paintedFor) seconds=\(hold)")
+            print("UPDATE_REPLACEMENT_DWELL_OK: seconds=6 held=\(held) settingsCaptured=true oldTimerIgnored=true")
             closingAt = armed + hold; retainsNoticeWhileClosing = true; next(.closing, at: now)
         } else if held > hold + 0.75 { check(false, "replacement expiry did not retire") }
     }
@@ -851,7 +969,7 @@ final class UpdateRenderHarness: NSObject {
             finish(passed && totalSamples >= 20 && nativeProbes >= 20 && expandedChecks == 3
                 && rejectedChecks == 3 && completedDwells == Set(NoticeDuration.allCases) && secondaryVerified
                 && genericVerified == Set(["identityFreeChange", "metadataFreeChange"])
-                && unchangedActiveVerified && recoveryPaintVerified
+                && unchangedActiveVerified && recoveryPaintVerified && longDwellVerified
                 && deliveryChecks == Set(["hover", "menu", "settings", "newest", "accountSwitch", "failure", "disabled",
                     "receivedExpired", "fetchedExpired", "resetDue", "receivedFuture", "fetchedFuture", "ageBoundary",
                     "timedOut", "disconnected", "longGap"]))
@@ -874,7 +992,7 @@ final class UpdateRenderHarness: NSObject {
         finished = true; stop()
         let result = valid && passed
         SmokeDiagnostics.mark("update samples=\(totalSamples) nativeProbes=\(nativeProbes) expandedQuitChecks=\(expandedChecks) elapsed=\(CACurrentMediaTime()-startedAt) scanout=false physicalFeelUnverified=true")
-        print(result ? "UPDATE_OK: numeric-only eligibility, actual 2/4/6-second painted dwell, shared queue/model delivery, generic recovery, unchanged active dwell, settings safety, native hover promotion, coalescing, reduced motion, content fit and retired callbacks passed" : "UPDATE_FAILED: native update-pill contract failed")
+        print(result ? "UPDATE_OK: numeric-only eligibility, actual 2/4/6-second painted dwell, protected adjacent pointer dwell, delayed paint readiness, shared queue/model delivery, generic recovery, unchanged active dwell, settings safety, explicit dismissal and expansion, coalescing, reduced motion, content fit and retired callbacks passed" : "UPDATE_FAILED: native update-pill contract failed")
         completion(result)
     }
     func stop() {
