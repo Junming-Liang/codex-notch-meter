@@ -352,6 +352,8 @@ def parse_receipt(stdout, group, role, source):
             require(row["target"] == mode["target"] and row["owner"] == mode["owner"]
                     and row["frame"] == mode["frame"] and abs(mode["progress"] - row["target"]) <= 0.001,
                     "Convergence checkpoint contradicts its observed mode")
+        validate_final_exit(data)
+        validate_ordinary_visual(data)
         metrics = data["metrics"]
         require(metrics["frameCount"] == len(frames) and metrics["paintCount"] == len(paints), "Trace count mismatch")
         for key in ("maxCallbackGap", "maxApplyDuration", "minScheduledLead", "maxScheduledLead"):
@@ -408,6 +410,102 @@ def validate_delivered_plan(data):
     require(observed == expected, "Delivered input coordinates/content do not match the hashed plan")
 
 
+def validate_ordinary_visual(data):
+    require(data["visualReplayExcludedFromTiming"] is True, "Visual replay must be excluded from timing")
+    rows = data["ordinaryVisualFrames"]
+    require(isinstance(rows, list) and len(rows) == (6 if data["group"] == "ordinary" else 0),
+            "Ordinary visual replay requires exactly six images")
+    for direction, thresholds in (("open", [0.15, 0.40, 0.70]), ("close", [0.80, 0.50, 0.20])):
+        selected = [r for r in rows if r["direction"] == direction]
+        if data["group"] != "ordinary":
+            continue
+        require(len(selected) == 3, "Missing ordinary visual direction")
+        previous_progress, consumed_sequence = (0 if direction == "open" else 1), -1
+        for index, (row, threshold) in enumerate(zip(selected, thresholds), 1):
+            progress = number(row["progress"], "visual progress", 0, 1)
+            require(0 < progress < 1 and row["sample"] == index, "Visual sample is not ordered and in flight")
+            require((progress > previous_progress and progress >= threshold) if direction == "open"
+                    else (progress < previous_progress and progress <= threshold),
+                    "Visual progress must strictly advance through unchanged thresholds")
+            require(type(row["paintSequence"]) is int and type(row["postCaptureSequence"]) is int
+                    and row["paintSequence"] > consumed_sequence and row["postCaptureSequence"] >= row["paintSequence"],
+                    "Visual sample reuses a consumed forced-draw receipt")
+            vector(row["naturalViewport"], 2, "natural visual viewport", True)
+            vector(row["captureViewport"], 2, "captured visual viewport", True)
+            require(row["captureProgress"] == progress and row["naturalViewport"] == row["captureViewport"],
+                    "Visual capture changed progress or viewport")
+            require(row["timedEvidence"] is False and row["scanout"] is False, "Visual evidence boundary changed")
+            previous_progress, consumed_sequence = progress, row["postCaptureSequence"]
+
+
+def validate_final_exit(data):
+    """Reject a settled but stale details receipt after a compressed final exit."""
+    inputs = data["inputs"]
+    last_inside = max((r["index"] for r in inputs if r["kind"] == "pointer" and r["value"] == "inside"), default=-1)
+    exits = [r for r in inputs if r["index"] > last_inside and r["kind"] == "pointer" and r["value"] == "outside"]
+    require(len(exits) >= 3 and exits[-1]["timestamp"] - exits[0]["timestamp"] >= 0.22,
+            "Final actual outside dwell is shorter than hover exit threshold or lacks follow-up inputs")
+    checkpoints = {r["name"]: r for r in data["settlements"]}
+    initial, final = checkpoints["pre-hover"], checkpoints["final"]
+    require(final["owner"] == initial["owner"] and final["target"] == initial["target"]
+            and abs(final["frame"][2] - initial["frame"][2]) <= 0.001,
+            "Final owner/target/width does not restore pre-hover state")
+    require(final["inputIndex"] >= exits[0]["index"] and final["targetStarted"] >= exits[0]["delivered"]
+            and inputs[final["inputIndex"]]["kind"] == "pointer"
+            and inputs[final["inputIndex"]]["value"] == "outside", "Final settlement reuses an earlier transition")
+    observed = number(final["checkpointObservedAt"], "final checkpoint observed", final["t"], RUN_TIMEOUT)
+    painted = number(final["paintObservedAt"], "final natural paint", final["targetStarted"], observed)
+    require(any(abs(r["t"] - painted) <= 0.001 and abs(r["progress"] - final["target"]) <= 0.001
+                for r in data["paints"]), "Final natural paint is not present in the collected receipt trace")
+
+
+def width_trajectory(data):
+    """Descriptive native-shell finite differences, not FPS or perceptual gates.
+
+    Width includes production flare/pixel rounding. Endpoint holds and integer
+    stair-steps are reported, never treated as failures. Drawing contour width
+    is a distinct quantity; latest-paint collection may omit intermediate paints.
+    """
+    if data["group"] != "ordinary":
+        return None
+    rows = data["frames"]
+    segments = []
+    for row in rows:
+        key = (row["generation"], row["target"], row["owner"])
+        if not segments or segments[-1]["key"] != key:
+            segments.append({"key": key, "rows": []})
+        segments[-1]["rows"].append(row)
+    result = []
+    for segment in segments:
+        samples = segment["rows"]
+        speeds, accelerations, plateaus = [], [], []
+        for a, b in zip(samples, samples[1:]):
+            dt = b["t"] - a["t"]
+            if dt <= 0:
+                continue
+            speed = (b["frame"][2] - a["frame"][2]) / dt
+            speeds.append(((a["t"] + b["t"]) / 2, speed))
+            if abs(b["frame"][2] - a["frame"][2]) <= 0.001:
+                if plateaus and abs(plateaus[-1][1] - a["t"]) <= 1e-9:
+                    plateaus[-1][1] = b["t"]
+                else:
+                    plateaus.append([a["t"], b["t"]])
+        for a, b in zip(speeds, speeds[1:]):
+            accelerations.append((b[1] - a[1]) / (b[0] - a[0]))
+        count = len(samples)
+        indices = sorted({round(i * (count - 1) / min(23, max(1, count - 1))) for i in range(min(24, count))})
+        result.append({"generation": segment["key"][0], "target": segment["key"][1], "owner": segment["key"][2],
+                       "start": samples[0]["t"], "end": samples[-1]["t"], "sampleCount": count,
+                       "startWidth": samples[0]["frame"][2], "endWidth": samples[-1]["frame"][2],
+                       "peakAbsWidthVelocityPointsPerSecond": max((abs(v) for _, v in speeds), default=0),
+                       "peakAbsWidthAccelerationPointsPerSecondSquared": max(map(abs, accelerations), default=0),
+                       "plateauSeconds": sum(b - a for a, b in plateaus),
+                       "longestPlateauSeconds": max((b - a for a, b in plateaus), default=0),
+                       "rawSamplesBounded": [{"t": samples[i]["t"], "progress": samples[i]["progress"], "nativeWidth": samples[i]["frame"][2]} for i in indices]})
+    return {"quantity": "native-shell-width-including-flare-and-pixel-rounding", "acceptanceGate": False,
+            "endpointHoldsAreExpected": True, "segments": result}
+
+
 def compare(baseline, candidate):
     require(baseline["group"] == candidate["group"], "Comparison group mismatch")
     require(baseline["inputPlanJSON"] == candidate["inputPlanJSON"]
@@ -433,6 +531,7 @@ def compare(baseline, candidate):
                         for name in baseline_settlements],
         "modeSamples": {"baseline": baseline["modeSamples"], "candidate": candidate["modeSamples"]},
         "elapsed": {"baseline": baseline["elapsed"], "candidate": candidate["elapsed"]},
+        "ordinaryWidthTrajectory": {"baseline": width_trajectory(baseline), "candidate": width_trajectory(candidate)},
         "inputTimingDifferences": [{"index": left["index"], "kind": left["kind"], "planned": left["planned"],
                                     "baselineDelivered": left["delivered"], "candidateDelivered": right["delivered"],
                                     "deliveryDifference": right["delivered"] - left["delivered"]}
@@ -622,6 +721,8 @@ class SelfTests(unittest.TestCase):
         inputs = [{"index": 0, "planned": 0, "delivered": 0.01, "kind": "enabled", "value": enabled},
                   {"index": 1, "planned": 1, "delivered": 1.01, "kind": "pointer", "value": "inside", "point": [500, 366], "timestamp": 1001.01},
                   {"index": 2, "planned": 2, "delivered": 2.01, "kind": "pointer", "value": "outside", "point": [500, 88], "timestamp": 1002.01}]
+        for index, at in ((3, 2.25), (4, 2.50)):
+            inputs.append({"index": index, "planned": at, "delivered": at + 0.01, "kind": "pointer", "value": "outside", "point": [500, 88], "timestamp": 1000 + at + 0.01})
         plan = {"schema": 1, "group": group, "inputLevel": "controller-fixed-global-point",
                 "screen": [0, 0, 1000, 400], "rawNotch": [390, 368, 220, 32],
                 "inside": [500, 366], "outside": [500, 88], "contentHeight": 260, "reduceMotion": False,
@@ -659,6 +760,19 @@ class SelfTests(unittest.TestCase):
                 "metrics": {"frameCount": 4, "paintCount": 4, "maxCallbackGap": 0.02,
                             "maxApplyDuration": 0.001, "minScheduledLead": 0, "maxScheduledLead": 0.02,
                             "targetChanges": 3}, "elapsed": 8}
+        data["visualReplayExcludedFromTiming"] = True
+        data["ordinaryVisualFrames"] = []
+        if group == "ordinary":
+            for direction, progresses in (("open", [0.2, 0.5, 0.8]), ("close", [0.7, 0.4, 0.1])):
+                for index, progress in enumerate(progresses, 1):
+                    data["ordinaryVisualFrames"].append({"direction": direction, "sample": index,
+                        "progress": progress, "captureProgress": progress, "paintSequence": index * 10,
+                        "postCaptureSequence": index * 10 + 1, "naturalViewport": [400, 200],
+                        "captureViewport": [400, 200], "timedEvidence": False, "scanout": False})
+        final = data["settlements"][-1]
+        final.update({"inputIndex": 3, "targetStarted": 2.26, "t": 2.76, "latency": 0.5,
+                      "checkpointObservedAt": 7, "paintObservedAt": 3})
+        data["paints"][-1]["progress"] = 0
         return data
 
     @staticmethod
@@ -669,6 +783,66 @@ class SelfTests(unittest.TestCase):
 
     def parse(self, data):
         return parse_receipt(self.output(data), data["group"], data["role"], data["sourceCommit"])
+
+    def test_final_exit_rejects_stale_or_open_receipts(self):
+        for mutate in (lambda d: d["settlements"][-1].update({"inputIndex": 1}),
+                       lambda d: d["settlements"][-1].update({"targetStarted": 1, "t": 1.5}),
+                       lambda d: d["settlements"][-1].update({"paintObservedAt": 1}),
+                       lambda d: d["settlements"][-1].update({"frame": [0, 0, 500, 200]}),
+                       lambda d: d["settlements"][-1].update({"owner": "details"}),
+                       lambda d: d["inputs"][-1].update({"timestamp": 1002.17}),
+                       lambda d: d["paints"][-1].update({"progress": 1})):
+            data = self.fixture()
+            mutate(data)
+            with self.assertRaises(ValidationError):
+                self.parse(data)
+
+    def test_visual_rejects_duplicate_progress_and_forced_receipts(self):
+        for mutate in (lambda d: d["ordinaryVisualFrames"][1].update({"progress": 0.2, "captureProgress": 0.2}),
+                       lambda d: d["ordinaryVisualFrames"][1].update({"paintSequence": 11}),
+                       lambda d: d["ordinaryVisualFrames"][1].update({"captureProgress": 0.6}),
+                       lambda d: d["ordinaryVisualFrames"][1].update({"captureViewport": [401, 200]})):
+            data = self.fixture()
+            mutate(data)
+            with self.assertRaises(ValidationError):
+                self.parse(data)
+        # Duplicates can exceed all thresholds and still must fail monotonicity.
+        data = self.fixture()
+        for row in data["ordinaryVisualFrames"][:3]:
+            row.update({"progress": 0.9, "captureProgress": 0.9})
+        with self.assertRaisesRegex(ValidationError, "strictly advance"):
+            self.parse(data)
+
+    def test_final_actual_dwell_rejects_run55_compression(self):
+        data = self.fixture()
+        # Planned duration remains 0.50 s, but actual monotonic timestamps
+        # span only 0.160 s. Ordered timestamps alone must not pass this case.
+        for row, at in zip(data["inputs"][2:], [1002.01, 1002.09, 1002.17]):
+            row["timestamp"] = at
+        with self.assertRaisesRegex(ValidationError, "actual outside dwell"):
+            self.parse(data)
+
+    def test_width_samples_are_bounded_and_generations_separate(self):
+        data = self.fixture()
+        template = data["frames"][0]
+        data["frames"] = [dict(template, t=i / 120, generation=i // 60) for i in range(120)]
+        segments = width_trajectory(data)["segments"]
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(all(len(row["rawSamplesBounded"]) == 24 for row in segments))
+        self.assertAlmostEqual(segments[0]["longestPlateauSeconds"], 59 / 120)
+
+    def test_width_trajectory_uses_width_and_reports_plateaus(self):
+        data = self.fixture()
+        for row, width in zip(data["frames"], [226, 300, 300, 400]):
+            row["frame"] = [0, 0, width, 200]
+        trace = width_trajectory(data)
+        self.assertFalse(trace["acceptanceGate"])
+        segment = trace["segments"][0]
+        self.assertEqual(segment["peakAbsWidthVelocityPointsPerSecond"], 100)
+        self.assertEqual(segment["peakAbsWidthAccelerationPointsPerSecondSquared"], 100)
+        self.assertEqual(segment["plateauSeconds"], 1)
+        self.assertEqual(len(segment["rawSamplesBounded"]), 4)
+        self.assertIsNone(width_trajectory(self.fixture("steady-music")))
 
     def test_run50_foundation_decimal_bytes_regression(self):
         # Original synthetic plan from Run 50, ordinary/baseline. Foundation
