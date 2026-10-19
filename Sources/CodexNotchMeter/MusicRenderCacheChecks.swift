@@ -170,19 +170,57 @@ final class MusicRenderCacheChecks {
                 throw Failure(label: "construct-local-event")
             }
             let timestamp = event.timestamp
-            try require(event.window === source && abs(timestamp - requested) < 1e-9, "constructed-event-identity")
-            NSApp.postEvent(event, atStart: false)
-            try await until("accepted-local-event", timeout: 1) {
-                panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == timestamp && $0.point == p }
+            try require(event.window === source && event.eventNumber == number
+                && event.locationInWindow == location && timestamp.isFinite
+                && abs(timestamp - requested) < 1e-9, "constructed-event-identity")
+            // The native queue quantizes timestamps below one nanosecond (also
+            // measured by the independent pointer-ingress gate). Resolve the
+            // unique delivered event first, then bind acceptance exactly to its
+            // delivered timestamp. Construction-time bit equality loses a real
+            // accepted event even though all identity bounds are satisfied.
+            func localEntry() -> IslandPointerEntryReceipt? {
+                let entries = panel.smokePointerEntries.filter { $0.monitor == "local" && $0.eventNumber == number }
+                guard entries.count == 1, let entry = entries.first,
+                      entry.eventType == NSEvent.EventType.mouseMoved.rawValue,
+                      entry.windowNumber == source.windowNumber, entry.localPoint == location, entry.screenPoint == p,
+                      entry.timestamp.isFinite, abs(entry.timestamp - requested) < 1e-9,
+                      abs(entry.timestamp - timestamp) < 1e-9 else { return nil }
+                return entry
             }
-            let entries = panel.smokePointerEntries.filter { $0.monitor == "local" && $0.eventNumber == number }
-            guard entries.count == 1, let entry = entries.first,
-                  let receipt = panel.smokePointerIngress.first(where: { $0.kind == "event" && $0.timestamp == timestamp && $0.point == p }) else {
+            func acceptedReceipt() -> IslandPointerIngressReceipt? {
+                guard let entry = localEntry() else { return nil }
+                return panel.smokePointerIngress.first {
+                    $0.kind == "event" && $0.timestamp == entry.timestamp && $0.point == entry.screenPoint
+                }
+            }
+            NSApp.postEvent(event, atStart: false)
+            do {
+                try await until("accepted-local-event", timeout: 1) { acceptedReceipt() != nil }
+            } catch {
+                // Failure-only, bounded diagnostics distinguish missing delivery,
+                // native identity drift, and production rejection on the next run.
+                let entries = panel.smokePointerEntries.filter { $0.eventNumber == number }.prefix(8)
+                let evidence: [String: Any] = ["eventNumber": number, "windowNumber": source.windowNumber,
+                    "requestedTimestamp": requested, "constructedTimestamp": timestamp,
+                    "expectedPoint": point(p), "expectedLocalPoint": point(location),
+                    "monitorEntries": entries.map { e -> [String: Any] in
+                        ["monitor": e.monitor, "eventType": e.eventType, "windowNumber": e.windowNumber,
+                         "timestamp": e.timestamp, "deltaNanoseconds": (e.timestamp - timestamp) * 1e9,
+                         "screenPoint": point(e.screenPoint), "localPoint": point(e.localPoint),
+                         "stopped": e.stopped, "placementValid": e.placementValid]
+                    },
+                    "recentReceipts": panel.smokePointerIngress.suffix(8).map { r -> [String: Any] in
+                        ["kind": r.kind, "timestamp": r.timestamp, "point": point(r.point)]
+                    }]
+                if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+                   let json = String(data: data, encoding: .utf8) {
+                    print("MUSIC_RENDER_CACHE_INGRESS_DIAGNOSTIC_JSON: " + json)
+                }
+                throw error
+            }
+            guard let entry = localEntry(), let receipt = acceptedReceipt() else {
                 throw Failure(label: "unique-local-event-receipt")
             }
-            try require(entry.eventType == NSEvent.EventType.mouseMoved.rawValue
-                && entry.windowNumber == source.windowNumber && entry.localPoint == location && entry.screenPoint == p
-                && abs(entry.timestamp - timestamp) < 1e-9, "delivered-event-identity")
             constructed.append(["eventNumber": number, "eventType": entry.eventType, "windowNumber": entry.windowNumber,
                 "requestedTimestamp": requested, "constructedTimestamp": timestamp, "deliveredTimestamp": entry.timestamp,
                 "deliveredAt": entry.delivered, "screenPoint": point(p), "localPoint": point(location),

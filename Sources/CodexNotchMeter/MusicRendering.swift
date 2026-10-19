@@ -39,6 +39,15 @@ final class MusicRenderHarness: NSObject {
     private var expandedChecks = 0
     private var lastOCRLines: [MusicOCRLine] = []
     private var lastOCRImage: CGImage?
+    private struct MusicOwnViewCapture {
+        let image: CGImage
+        let geometry: IslandGeometry
+        let nativeFrame: CGRect
+        let scale: CGFloat
+        let musicRevision: UInt64
+        let accessoriesVisible: Bool
+    }
+    private var lastOCRCapture: MusicOwnViewCapture?
     private var nativeExpectations: [ObjectIdentifier: (progress: Double, after: TimeInterval)] = [:]
     private var lyricsRecoveryCompleted = false
     private var lyricsRecoveryOnly: Bool { CommandLine.arguments.contains("--lyrics-recovery-test") }
@@ -150,6 +159,7 @@ final class MusicRenderHarness: NSObject {
     }
     private final class GestureRecoveryObservation {
         var events: [GestureRecoveryEvent] = []
+        var rawEvents: [GestureRecoveryEvent] = []
         var overflow = false
     }
 
@@ -222,14 +232,18 @@ final class MusicRenderHarness: NSObject {
         let observation = GestureRecoveryObservation()
         guard let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { event in
             MainActor.assumeIsolated {
+                let received = GestureRecoveryEvent(number: event.eventNumber,
+                    type: event.type.rawValue, window: event.windowNumber,
+                    requested: event.timestamp, constructed: event.timestamp,
+                    local: event.locationInWindow,
+                    screen: event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow)
+                // Retain a short raw tail only for failed own-event diagnostics;
+                // filtering first would hide a changed event identity entirely.
+                if observation.rawEvents.count == 16 { observation.rawEvents.removeFirst() }
+                observation.rawEvents.append(received)
                 if event.eventNumber >= 24_000 && event.eventNumber < 25_000 {
-                    if observation.events.count < 256 {
-                        observation.events.append(GestureRecoveryEvent(number: event.eventNumber,
-                            type: event.type.rawValue, window: event.windowNumber,
-                            requested: event.timestamp, constructed: event.timestamp,
-                            local: event.locationInWindow,
-                            screen: event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow))
-                    } else { observation.overflow = true }
+                    if observation.events.count < 256 { observation.events.append(received) }
+                    else { observation.overflow = true }
                 }
             }
             return event
@@ -237,6 +251,9 @@ final class MusicRenderHarness: NSObject {
         defer { NSEvent.removeMonitor(monitor); panel.stop(); sourceWindow.close(); fixture.controller.stop() }
         try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
                     "gesture recovery events use a real negative-origin native source window")
+        // The immutable input geometry has no live width-presentation override.
+        // Its full endpoint is the stable envelope on both historical baselines,
+        // including old103, which predates canonicalHoverContains.
         let corridor = panel.smokeMusicGestureCorridor
         let center = CGPoint(x: corridor.midX.rounded(), y: corridor.midY.rounded())
         let outside = CGPoint(x: (geometry.screen.midX + 260).rounded(), y: corridor.midY.rounded())
@@ -254,7 +271,7 @@ final class MusicRenderHarness: NSObject {
         func post(_ point: CGPoint, allowDetails: Bool = false) async throws {
             guard constructed.count < 256 else { throw Failure(label: "gesture recovery event evidence exceeded bound") }
             if let protectedStart {
-                try require(panel.geometry.canonicalHoverContains(point, progress: 1),
+                try require(geometry.hoverContains(point, progress: 1),
                             "post-crossing queue remains inside the unchanged full hover envelope")
                 try require(!panel.smokePointerIngress.dropFirst(protectedStart).contains { $0.kind == "poll" },
                             "live-pointer polling cannot supply an unobserved recovery exit")
@@ -276,13 +293,45 @@ final class MusicRenderHarness: NSObject {
                 window: event.windowNumber, requested: requested, constructed: timestamp, local: local, screen: point)
             constructed.append(evidence); lastRequested = requested; lastConstructed = timestamp
             NSApp.postEvent(event, atStart: false)
-            try await until("gesture recovery queued identity and point reach both installed monitors", timeout: 0.20) {
-                let observed = observation.events.filter { $0.number == number }
-                return observed.count == 1 && observed[0].type == evidence.type && observed[0].window == evidence.window
-                    && abs(observed[0].constructed - requested) < 0.000000001
-                    && abs(observed[0].constructed - timestamp) < 0.000000001
-                    && observed[0].local == local && observed[0].screen == point
-                    && panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == observed[0].constructed && $0.point == point }
+            do {
+                try await until("gesture recovery queued identity and point reach both installed monitors", timeout: 0.20) {
+                    let observed = observation.events.filter { $0.number == number }
+                    return observed.count == 1 && observed[0].type == evidence.type && observed[0].window == evidence.window
+                        && abs(observed[0].constructed - requested) < 0.000000001
+                        && abs(observed[0].constructed - timestamp) < 0.000000001
+                        && observed[0].local == local && observed[0].screen == point
+                        && panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == observed[0].constructed && $0.point == point }
+                }
+            } catch {
+                // Run60 stopped before its first setup event had a joint receipt.
+                // Preserve each actual operand before defer stops the panel; an
+                // absent identity is not proof of a timestamp or coordinate bug.
+                func coordinates(_ value: CGPoint) -> [Double] { [Double(value.x), Double(value.y)] }
+                func entry(_ value: GestureRecoveryEvent) -> [String: Any] {
+                    ["number": value.number, "type": value.type, "window": value.window,
+                     "timestamp": value.constructed, "local": coordinates(value.local), "screen": coordinates(value.screen)]
+                }
+                let observed = observation.events.suffix(16).map(entry)
+                let rawObserved = observation.rawEvents.map(entry)
+                let accepted: [[String: Any]] = panel.smokePointerIngress.suffix(16).map { entry in
+                    ["kind": entry.kind, "timestamp": entry.timestamp, "screen": coordinates(entry.point),
+                     "owner": String(describing: entry.owner), "target": entry.target]
+                }
+                let diagnostic: [String: Any] = ["case": name, "number": number,
+                    "type": evidence.type, "window": evidence.window, "requested": requested,
+                    "constructed": timestamp, "local": coordinates(local), "screen": coordinates(point),
+                    "observed": observed, "rawObserved": rawObserved, "observedCount": observation.events.count,
+                    "observationOverflow": observation.overflow, "accepted": accepted,
+                    "acceptedCount": panel.smokePointerIngress.count, "acceptedOverflow": panel.smokeHistoryOverflow,
+                    "sourceWindowVisible": sourceWindow.isVisible, "sourceWindowNumber": sourceWindow.windowNumber,
+                    "sourceWindowOrigin": coordinates(sourceWindow.frame.origin),
+                    "panelVisible": panel.panel.isVisible, "placementValid": panel.placementIsValid,
+                    "waited": ProcessInfo.processInfo.systemUptime - requested]
+                if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
+                   data.count <= 32_000, let json = String(data: data, encoding: .utf8) {
+                    print("MUSIC_GESTURE_INGRESS_FAILURE_JSON: \(json)")
+                }
+                throw error
             }
             if !allowDetails { try noDetails() }
         }
@@ -440,7 +489,7 @@ final class MusicRenderHarness: NSObject {
         let segment = Array(panel.smokePointerIngress.dropFirst(protectedStart ?? 0))
         try require(!observation.overflow && observation.events.count == constructed.count && !panel.smokeHistoryOverflow
             && !segment.contains { $0.kind == "poll" }
-            && segment.allSatisfy { panel.geometry.canonicalHoverContains($0.point, progress: 1) }
+            && segment.allSatisfy { geometry.hoverContains($0.point, progress: 1) }
             && NSApp.keyWindow === initialKey && !panel.panel.canBecomeKey,
                     "bounded same-envelope native event evidence is complete without polling exit or key-window theft")
         try emitEvidence("complete")
@@ -1541,8 +1590,18 @@ final class MusicRenderHarness: NSObject {
         let initial = try await read(fixture)
         let observedAt = ProcessInfo.processInfo.systemUptime
         let artwork = try originalArtwork()
+        let playbackChangedAt = CACurrentMediaTime()
         try await release(fixture, initial, position: 1, observedAt: observedAt, artwork: artwork)
-        try await waitIdle(panel, after: 0)
+        // Controller publication precedes the panel's queued presentation update.
+        // Do not let an old no-accessory idle paint satisfy this new source edge.
+        try await until("fresh closed artwork reaches its actual accessory endpoint and natural paint") {
+            fixture.controller.isFreshPlaying && fixture.controller.artwork == artwork
+                && panel.smokeMusicAccessoriesVisible && panel.geometry.musicAccessoryProgress == 1
+                && panel.paintReceipt?.frame.accessoryProgress == 1
+                && self.nativeSettled(panel, progress: 0, after: playbackChangedAt)
+                && self.naturalPaintMatches(panel, progress: 0, after: playbackChangedAt)
+        }
+        try await waitIdle(panel, after: playbackChangedAt)
         let idleFrame = panel.panel.frame
         let idleContour = panel.geometry.contourRect(progress: 0)
         let idleFrames = passiveFrameSamples
@@ -2772,10 +2831,17 @@ final class MusicRenderHarness: NSObject {
 
     private func verifyClosedArtwork(_ panel: IslandPanelController, expected: MusicArtwork,
                                      controller: MusicLyricsController) throws {
-        guard let image = lastOCRImage else { throw Failure(label: "missing closed own-view image") }
+        guard let capture = lastOCRCapture else { throw Failure(label: "missing bound closed own-view capture") }
+        let image = capture.image, geometry = capture.geometry
         let bitmap = NSBitmapImageRep(cgImage: image)
-        let scale = screen.backingScaleFactor
-        let rects = panel.geometry.musicAccessoryRects(progress: 0)
+        let scale = capture.scale
+        try require(capture.accessoriesVisible && geometry.musicAccessoryProgress == 1
+            && capture.musicRevision == panel.smokeMusicPresentationRevision
+            && capture.nativeFrame == geometry.frame(progress: 0)
+            && abs(CGFloat(image.width) - capture.nativeFrame.width * scale) <= 2
+            && abs(CGFloat(image.height) - capture.nativeFrame.height * scale) <= 2,
+                    "closed artwork pixels and sampling geometry belong to the same fully visible native capture")
+        let rects = geometry.musicAccessoryRects(progress: 0)
         let top = max(0, (rects.left.height - 20) / 2)
         func color(at point: CGPoint) -> NSColor? {
             bitmap.colorAt(x: Int((point.x * scale).rounded(.down)), y: Int((point.y * scale).rounded(.down)))?.usingColorSpace(.deviceRGB)
@@ -2798,11 +2864,11 @@ final class MusicRenderHarness: NSObject {
                 }
             }
         }
-        let rawContour = panel.geometry.contourFrame
-        let rawUnchanged = abs(rawContour.width - panel.geometry.calibratedNotch.width - 6) < 0.001
-            && abs(rawContour.height - panel.geometry.calibratedNotch.height - 3) < 0.001
-        let depthMatches = panel.geometry.musicAccessoryFrame.height == panel.geometry.notch.height
-            && panel.panel.frame.height <= panel.geometry.notch.height + 4
+        let rawContour = geometry.contourFrame
+        let rawUnchanged = abs(rawContour.width - geometry.calibratedNotch.width - 6) < 0.001
+            && abs(rawContour.height - geometry.calibratedNotch.height - 3) < 0.001
+        let depthMatches = geometry.musicAccessoryFrame.height == geometry.notch.height
+            && capture.nativeFrame.height <= geometry.notch.height + 4
         print("MUSIC_CLOSED_ACCESSORIES_DIAGNOSTIC: sourceMatches=\(controller.artwork == expected) freshPlaying=\(controller.isFreshPlaying) accessoriesVisible=\(panel.smokeMusicAccessoriesVisible) artworkPixels=\(artworkPixels) topLeftRed=\(topLeftRed) topRightCyan=\(topRightCyan) bottomLeftGreen=\(bottomLeftGreen) bottomRightYellow=\(bottomRightYellow) brightIndicatorPixels=\(brightPixels) rawUnchanged=\(rawUnchanged) depthMatches=\(depthMatches) left=\(rects.left) right=\(rects.right)")
         try require(controller.artwork == expected && controller.isFreshPlaying && panel.smokeMusicAccessoriesVisible
             && artworkPixels && brightPixels >= 8 && rawUnchanged && depthMatches,
@@ -2974,7 +3040,13 @@ final class MusicRenderHarness: NSObject {
             "compact own-view capture follows independently observed native readiness")
         let captureRevision = panel.smokeMusicPresentationRevision
         let captureAppearance = panel.panel.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "unknown"
+        let captureGeometry = panel.geometry, captureFrame = panel.panel.frame
+        let captureScale = screen.backingScaleFactor
+        let captureAccessoriesVisible = panel.smokeMusicAccessoriesVisible
         let raster = try ownViewImage(panel, progress: progress)
+        let capture = MusicOwnViewCapture(image: raster.image, geometry: captureGeometry,
+            nativeFrame: captureFrame, scale: captureScale, musicRevision: captureRevision,
+            accessoriesVisible: captureAccessoriesVisible)
         // This harness owns only original synthetic song/text fixtures. Keep the
         // unchanged native-size capture available when OCR fails, without ever
         // capturing the screen, Music.app or a live user's metadata.
@@ -2988,7 +3060,9 @@ final class MusicRenderHarness: NSObject {
         guard let lines = await MusicRasterOCR.recognizeLines(raster.image, languages: languages) else {
             throw Failure(label: "bounded compact Music OCR failed")
         }
-        lastOCRLines = lines; lastOCRImage = raster.image
+        // OCR yields to the main run loop. Bind its raster and geometry together
+        // rather than pairing an old image with a later animated panel state.
+        lastOCRLines = lines; lastOCRImage = raster.image; lastOCRCapture = capture
         let observations = lines.map(\.text)
         let diagnostic: [String: Any] = ["fixture": "original-synthetic-only", "image": filename,
             "width": raster.width, "height": raster.height, "progress": progress,
