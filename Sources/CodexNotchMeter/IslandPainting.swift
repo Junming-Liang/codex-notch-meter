@@ -9,6 +9,7 @@ import NotchCore
 /// reveal follows its remaining distance to idle, keeping the shrinking shell visible.
 struct IslandVisualFrame {
     let progress: Double
+    let frameRevision: UInt64
     let viewport: CGSize
     let noticeID: UUID?
     let musicRevision: UInt64
@@ -16,8 +17,8 @@ struct IslandVisualFrame {
     let accessoryProgress: Double
     let surfaceOpacity: Double
     let railOpacity: Double
-    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, noticeID: UUID? = nil, musicRevision: UInt64 = 0, baseline: Bool = false, musicPerimeter: Bool = false) {
-        self.progress = progress; self.viewport = viewport; self.noticeID = noticeID; self.musicRevision = musicRevision
+    init(geometry: IslandGeometry, progress: Double, viewport: CGSize, frameRevision: UInt64 = 0, noticeID: UUID? = nil, musicRevision: UInt64 = 0, baseline: Bool = false, musicPerimeter: Bool = false) {
+        self.progress = progress; self.frameRevision = frameRevision; self.viewport = viewport; self.noticeID = noticeID; self.musicRevision = musicRevision
         contour = IslandContour(rect: geometry.contourRect(progress: progress), progress: progress,
             cornerAdjustment: geometry.shapeCalibration.corner, referenceDepth: geometry.notch.height)
         let accessory = geometry.showsMusicAccessories ? geometry.musicAccessoryProgress : 0
@@ -36,6 +37,9 @@ struct IslandPaintReceipt {
     let actualViewport: CGSize
     let bodyBounds: CGRect
     let railBounds: CGRect
+    let nativeFrame: CGRect
+    let nativeContentBounds: CGRect
+    let nativeFrameSampledAtPaint: Bool
 }
 
 /// Drawing writes only this non-observable receipt. It never publishes state or queues
@@ -43,10 +47,40 @@ struct IslandPaintReceipt {
 final class IslandPaintStore: @unchecked Sendable {
     private let lock = NSLock()
     private var value: IslandPaintReceipt?
-    func record(_ frame: IslandVisualFrame, actualViewport: CGSize, body: Path, rail: Path) {
+    private var records: [IslandPaintReceipt] = []
+    private var overflow = false
+    private var nativeGeometryProvider: (@MainActor () -> (CGRect, CGRect))?
+    @MainActor func setNativeGeometryProvider(_ provider: @escaping @MainActor () -> (CGRect, CGRect)) {
+        lock.lock(); defer { lock.unlock() }; nativeGeometryProvider = provider
+    }
+    private var nativeFrame: CGRect = .zero
+    private var nativeContentBounds: CGRect = .zero
+    func recordNativeFrame(_ frame: CGRect, contentBounds: CGRect) {
         lock.lock(); defer { lock.unlock() }
+        nativeFrame = frame; nativeContentBounds = contentBounds
+    }
+    var historyOverflow: Bool { lock.lock(); defer { lock.unlock() }; return overflow }
+    private let collectsHistory = CommandLine.arguments.contains("--music-test")
+    func record(_ frame: IslandVisualFrame, actualViewport: CGSize, body: Path, rail: Path) {
+        lock.lock()
+        let provider = nativeGeometryProvider
+        lock.unlock()
+        let actual: (CGRect, CGRect)?
+        if Thread.isMainThread, let provider {
+            actual = MainActor.assumeIsolated { provider() }
+        } else { actual = nil }
+        lock.lock(); defer { lock.unlock() }
+        if let actual { nativeFrame = actual.0; nativeContentBounds = actual.1 }
         value = IslandPaintReceipt(sequence: (value?.sequence ?? 0) &+ 1, observed: CACurrentMediaTime(),
-            frame: frame, actualViewport: actualViewport, bodyBounds: body.boundingRect, railBounds: rail.boundingRect)
+            frame: frame, actualViewport: actualViewport, bodyBounds: body.boundingRect, railBounds: rail.boundingRect,
+            nativeFrame: nativeFrame, nativeContentBounds: nativeContentBounds, nativeFrameSampledAtPaint: actual != nil)
+        if collectsHistory, let value {
+            if records.count >= 4096 { overflow = true; records.removeFirst(2048) }
+            records.append(value)
+        }
+    }
+    func history() -> [IslandPaintReceipt] {
+        lock.lock(); defer { lock.unlock() }; return records
     }
     func latest() -> IslandPaintReceipt? {
         lock.lock(); defer { lock.unlock() }; return value

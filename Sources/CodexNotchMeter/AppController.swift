@@ -22,6 +22,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var collapseHarness: CollapseRenderHarness?
     private var updateHarness: UpdateRenderHarness?
     private var musicHarness: MusicRenderHarness?
+    private var baselineMotionHarness: BaselineMotionComparisonHarness?
     private var animationHarness: SkinAnimationHarness?
     private var animationComplete = false
     private var animationValid = false
@@ -158,7 +159,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--music-test") { runMusicTest() }
+            if CommandLine.arguments.contains("--baseline-motion-test") { runBaselineMotionTest() }
+            else if CommandLine.arguments.contains("--music-test") { runMusicTest() }
             else if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
             else if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
             else if CommandLine.arguments.contains("--display-test") { runDisplayTest() }
@@ -194,7 +196,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         noticeQueue.invalidate()
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); baselineMotionHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -336,6 +338,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         displayHarness?.start()
+    }
+    private func runBaselineMotionTest() {
+        guard CommandLine.arguments.contains("--music-test"), let screen = NSScreen.main else { requestQuit(); return }
+        baselineMotionHarness = BaselineMotionComparisonHarness(screen: screen) { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        baselineMotionHarness?.start()
     }
     private func runMusicTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }

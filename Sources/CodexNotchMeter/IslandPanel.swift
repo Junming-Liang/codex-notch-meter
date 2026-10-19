@@ -16,14 +16,40 @@ final class IslandHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+struct IslandPointerIngressReceipt {
+    let point: CGPoint
+    let timestamp: TimeInterval
+    let kind: String
+    let owner: IslandExpansionOwner
+    let target: Double
+}
+
+private struct IslandRenderState {
+    let geometry: IslandGeometry
+    let progress: Double
+    let revision: UInt64
+}
+struct IslandRenderCommit {
+    let revision: UInt64
+    /// Publication begins here; this is not a post-resize measurement timestamp.
+    let observed: TimeInterval
+    let geometry: IslandGeometry
+    let progress: Double
+    /// Measured after this publication's setFrame; paint independently samples
+    /// the actual window at draw time to reject a mixed old/new revision.
+    let nativeFrame: CGRect
+    let owner: IslandExpansionOwner
+    let target: Double
+}
 @MainActor
 private final class IslandPresentation: ObservableObject {
-    @Published var progress: Double = 0
-    @Published var geometry: IslandGeometry
+    @Published var frame: IslandRenderState
+    var progress: Double { frame.progress }
+    var geometry: IslandGeometry { frame.geometry }
     @Published var notice: RefreshNotice?
     @Published var showingDetails = true
     @Published var showingMusic = false
-    init(geometry: IslandGeometry) { self.geometry = geometry }
+    init(geometry: IslandGeometry) { frame = IslandRenderState(geometry: geometry, progress: 0, revision: 0) }
 }
 
 struct IslandSilhouette: Shape {
@@ -74,7 +100,9 @@ private struct IslandRootView: View {
     let rendered: (Double, CGSize) -> Void
     let paintStore: IslandPaintStore
     var body: some View {
-        let p = presentation.progress
+        let snapshot = presentation.frame
+        let geometry = snapshot.geometry
+        let p = snapshot.progress
         let promoting = presentation.notice != nil || presentation.showingMusic
         let musicHeight = MusicPreviewLayout.contentHeight(line: music.line, nextLine: music.nextLine, width: geometry.compactContentWidth)
         // Reveal thresholds depend on fixed geometry, never on a changing cue.
@@ -82,7 +110,7 @@ private struct IslandRootView: View {
         let detailReveal = promoting ? IslandReveal.smooth((p - promotionProgress) / (1 - promotionProgress)) : IslandReveal.details(p)
         GeometryReader { viewport in
             let visual = IslandVisualFrame(geometry: geometry, progress: p, viewport: viewport.size,
-                noticeID: presentation.notice?.id, musicRevision: music.presentationRevision, baseline: motionProfile.forcesLayout,
+                frameRevision: snapshot.revision, noticeID: presentation.notice?.id, musicRevision: music.presentationRevision, baseline: motionProfile.forcesLayout,
                 musicPerimeter: music.isPlayingForPresentation && music.lyricsModeEnabled)
             let window = model.primaryWindow
             let remaining = window?.remainingPercent
@@ -182,7 +210,20 @@ final class IslandPanelController: NSObject {
     private var gestureHoverGate = IslandGestureHoverGate()
     private var localPointerMonitor: Any?
     private var globalPointerMonitor: Any?
-    private var lastPointerTime: TimeInterval = -.infinity
+    private var lastEventTime: TimeInterval = -.infinity
+    private var lastPollTime: TimeInterval = -.infinity
+    private var lastEventDelivery: TimeInterval = -.infinity
+    private var lastAppliedGestureTime: TimeInterval = -.infinity
+    private var fallbackCrossing = IslandCrossing()
+    private var musicHoverAnchor: CGPoint?
+    private var eventButtons: Set<Int> = []
+    private var buttonStateTime: TimeInterval = -.infinity
+    private(set) var smokeHistoryOverflow = false
+    var smokePaintHistoryOverflow: Bool { paintStore.historyOverflow }
+    private(set) var smokePointerIngress: [IslandPointerIngressReceipt] = []
+    private(set) var smokeRenderCommits: [IslandRenderCommit] = []
+    var smokePaintHistory: [IslandPaintReceipt] { paintStore.history() }
+    private enum PointerSource { case event, poll, synthetic }
     private var accessoryMotion = IslandMotion()
     private var accessoryTarget = false
     private var observedPlaybackRevision: UUID?
@@ -263,6 +304,9 @@ final class IslandPanelController: NSObject {
         if #available(macOS 14.0, *) { hosting.safeAreaRegions = [] }
         hosting.autoresizingMask = [.width, .height]
         panel.contentView = hosting
+        paintStore.setNativeGeometryProvider { [weak panel] in
+            (panel?.frame ?? .zero, panel?.contentView?.bounds ?? .zero)
+        }
         apply(progress: 0)
         panel.orderFrontRegardless()
         apply(progress: 0)
@@ -306,19 +350,37 @@ final class IslandPanelController: NSObject {
     }
     private func apply(progress: Double) {
         guard !stopped else { return }
+        var nextGeometry = presentation.geometry
         if progress == 0, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let pendingGeometry {
-            presentation.geometry = pendingGeometry; self.pendingGeometry = nil
+            nextGeometry = pendingGeometry; self.pendingGeometry = nil
         }
+        nextGeometry.showsMusicAccessories = (accessoryTarget || accessoryMotion.progress > 0)
+            && nextGeometry.canShowMusicAccessories
+        nextGeometry.musicAccessoryProgress = accessoryMotion.progress
         let hadDetails = displaysColoredDetails
         if (progress == 0 && !noticeTargetActive) || (progress == 1 && hover.isExpanded) {
             if presentation.notice != nil { presentation.notice = nil }
             if presentation.showingMusic { presentation.showingMusic = false }
             if !presentation.showingDetails { presentation.showingDetails = true }
         }
-        if presentation.progress != progress { presentation.progress = progress }
+        // Preserve the v1.0.0 publish-then-resize order. The new accessory
+        // geometry and expansion progress are still one immutable revision.
+        let expected = nextGeometry.frame(progress: progress)
+        let changed = presentation.progress != progress || presentation.geometry != nextGeometry
+        let revision = presentation.frame.revision &+ (changed ? 1 : 0)
+        let committedAt = CACurrentMediaTime()
+        if changed {
+            presentation.frame = IslandRenderState(geometry: nextGeometry, progress: progress, revision: revision)
+        }
         if hadDetails != displaysColoredDetails { activityChanged() }
-        let expected = geometry.frame(progress: progress)
         if panel.frame != expected { panel.setFrame(expected, display: motionProfile.forcesLayout) }
+        paintStore.recordNativeFrame(panel.frame, contentBounds: panel.contentView?.bounds ?? .zero)
+        if changed, model.demo, CommandLine.arguments.contains("--music-test") {
+            if smokeRenderCommits.count >= 4096 { smokeHistoryOverflow = true; smokeRenderCommits.removeFirst(2048) }
+            smokeRenderCommits.append(IslandRenderCommit(revision: revision, observed: committedAt,
+                geometry: nextGeometry, progress: progress, nativeFrame: panel.frame,
+                owner: expansionOwner, target: motionTargetValue))
+        }
         if motionProfile.forcesLayout { panel.contentView?.layoutSubtreeIfNeeded() }
         if abs(panel.frame.maxY - geometry.screen.maxY) > 0.5 || abs(panel.frame.width - expected.width) > 0.5 {
             placementIsValid = false
@@ -333,32 +395,80 @@ final class IslandPanelController: NSObject {
         guard !stopped, timer === pointerTimer, placementIsValid else { return }
         observePointer()
     }
+    private func resetCrossings() { crossing.reset(); fallbackCrossing.reset() }
+    private func recordPointer(_ point: CGPoint, timestamp: TimeInterval, kind: String) {
+        guard model.demo, CommandLine.arguments.contains("--music-test") else { return }
+        if smokePointerIngress.count >= 2048 { smokeHistoryOverflow = true; smokePointerIngress.removeFirst(1024) }
+        smokePointerIngress.append(IslandPointerIngressReceipt(point: point, timestamp: timestamp,
+            kind: kind, owner: expansionOwner, target: motionTargetValue))
+    }
     private func observePointer(event: NSEvent? = nil) {
         guard !stopped, placementIsValid else { return }
-        // A complete press/drag/release can fit between fallback polls. Never
-        // interpolate a no-button traversal across one of those event boundaries.
-        if let event, event.type != .mouseMoved { crossing.reset(); return }
-        updatePointer(NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime)
-    }
-    private func updatePointer(_ point: CGPoint, now: TimeInterval, buttonDownOverride: Bool? = nil) {
-        guard !stopped else { return }
-        // Monitors and the fallback can coalesce. A duplicate cannot reset a
-        // valid traversal or replay an older pointer against a newer frame.
-        if buttonDownOverride == nil {
-            guard now > lastPointerTime else { return }
-            lastPointerTime = now
+        let delivered = ProcessInfo.processInfo.systemUptime
+        if let event {
+            // Preserve the event stream. Re-reading mouseLocation here turns a
+            // queued traversal into many copies of the cursor's final position.
+            let isMove = event.type == .mouseMoved
+            // Even a duplicate-timestamp button is a trajectory boundary.
+            if !isMove { resetCrossings(); if !hover.isExpanded { hover.reset() }; musicHoverAnchor = nil }
+            guard event.timestamp.isFinite, event.timestamp >= lastEventTime else { return }
+            if !isMove, event.timestamp >= buttonStateTime {
+                buttonStateTime = event.timestamp
+                switch event.type {
+                case .leftMouseUp, .rightMouseUp, .otherMouseUp: eventButtons.remove(event.buttonNumber)
+                default: eventButtons.insert(event.buttonNumber)
+                }
+            }
+            guard !isMove || event.timestamp > lastEventTime else { return }
+            lastEventTime = event.timestamp; lastEventDelivery = delivered
+            let point = event.window.map { $0.convertPoint(toScreen: event.locationInWindow) }
+                ?? event.locationInWindow
+            guard event.timestamp > lastAppliedGestureTime else {
+                recordPointer(point, timestamp: event.timestamp, kind: "stale")
+                return
+            }
+            fallbackCrossing.reset()
+            guard event.type == .mouseMoved else {
+                resetCrossings(); musicHoverAnchor = nil
+                lastAppliedGestureTime = max(lastAppliedGestureTime, event.timestamp)
+                recordPointer(point, timestamp: event.timestamp, kind: "button")
+                return
+            }
+            updatePointer(point, now: event.timestamp, buttonDownOverride: !eventButtons.isEmpty, source: .event)
+            recordPointer(point, timestamp: event.timestamp, kind: "event")
+        } else {
+            // Polling has its own history. It cannot insert the live cursor into
+            // an event traversal, release its gate, or overwrite its timestamps.
+            guard delivered > lastPollTime, delivered - lastEventDelivery > 0.25 else { return }
+            lastPollTime = delivered
+            crossing.reset()
+            let point = NSEvent.mouseLocation
+            let buttons = NSEvent.pressedMouseButtons
+            // A lost up event must not permanently disable gestures. Polling
+            // reconciles button state only after the event stream is quiet.
+            eventButtons = Set((0..<32).filter { buttons & (1 << $0) != 0 })
+            buttonStateTime = delivered
+            updatePointer(point, now: delivered, buttonDownOverride: buttons != 0, source: .poll)
+            recordPointer(point, timestamp: delivered, kind: "poll")
         }
+    }
+    private func updatePointer(_ point: CGPoint, now: TimeInterval, buttonDownOverride: Bool? = nil,
+                               source: PointerSource = .synthetic) {
+        guard !stopped, point.x.isFinite, point.y.isFinite, now.isFinite else { return }
         // A passive pointer cannot consume the user's configured readable dwell.
         // Keep hover history empty so expiry cannot inherit an already-armed hover.
         if noticeTargetActive {
-            hover.reset(); crossing.reset(); gestureHoverGate.claim()
+            hover.reset(); resetCrossings(); gestureHoverGate.claim()
             panel.ignoresMouseEvents = true
             return
         }
         let gestureEnabled = model.music.isFreshPlaying && passiveMusicAllowed && !noticeTargetActive
-        let action = crossing.update(point: point, now: now, corridor: geometry.musicGestureCorridor,
+        var recognizer = source == .poll ? fallbackCrossing : crossing
+        let action = recognizer.update(point: point, now: now, corridor: geometry.musicGestureCorridor,
             enabled: gestureEnabled, buttonDown: buttonDownOverride ?? (NSEvent.pressedMouseButtons != 0))
-        if let action {
+        if source == .poll { fallbackCrossing = recognizer } else { crossing = recognizer }
+        if let action, source == .synthetic || now > lastAppliedGestureTime {
+            if source != .synthetic { lastAppliedGestureTime = now }
             let hadHover = hover.isExpanded
             model.music.selectLyricsMode(action == .right)
             hover.reset()
@@ -369,14 +479,24 @@ final class IslandPanelController: NSObject {
         }
         // A complete crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
-        if crossing.reservesPointer { updateClickRouting(point); return }
+        if recognizer.reservesPointer { updateClickRouting(point); return }
         if gestureHoverGate.suppresses(insideStableEnvelope: geometry.hoverContains(point, progress: 1)) {
             updateClickRouting(point); return
         }
+        // A moving pointer near the music shell is approaching a gesture, not
+        // asking to open full details. Only a genuinely stationary dwell may do so.
+        if model.music.isFreshPlaying, !hover.isExpanded {
+            if let anchor = musicHoverAnchor,
+               hypot(point.x - anchor.x, point.y - anchor.y) > 0.25 {
+                hover.reset(); musicHoverAnchor = point
+            } else if musicHoverAnchor == nil { musicHoverAnchor = point }
+        } else { musicHoverAnchor = nil }
         let before = hover.isExpanded
-        hover.update(inside: geometry.hoverContains(point, progress: motion.progress), now: now,
-            resumeExpanded: ((presentation.notice != nil || presentation.showingMusic) && motion.progress > 0) || ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
+        hover.update(inside: geometry.hoverContains(point, progress: motion.progress),
+            now: source == .synthetic ? now : ProcessInfo.processInfo.systemUptime,
+            resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         if hover.isExpanded != before {
+            if source != .synthetic { lastAppliedGestureTime = max(lastAppliedGestureTime, now) }
             if hover.isExpanded { hovered(); cancelNoticeTimers(); noticeTargetActive = false; presentation.showingDetails = true }
             else { noticeTargetActive = false }
             startMotion()
@@ -425,7 +545,6 @@ final class IslandPanelController: NSObject {
             stopMotionFrames()
             motion.advance(target: motionTargetValue, elapsed: 0, reduceMotion: true)
             accessoryMotion.advance(expanded: accessoryTarget, elapsed: 0, reduceMotion: true)
-            applyAccessoryGeometry()
             apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation); scheduleNoticeExpiryIfReady()
             return
         }
@@ -450,7 +569,6 @@ final class IslandPanelController: NSObject {
         let previousProgress = max(motion.progress, abs(accessoryMotion.progress - accessoryEndpoint))
         motion.advance(target: motionTargetValue, elapsed: elapsed, reduceMotion: reducedMotion)
         accessoryMotion.advance(expanded: accessoryTarget, elapsed: elapsed, reduceMotion: reducedMotion)
-        applyAccessoryGeometry()
         let began = CACurrentMediaTime()
         var startedCloseDrain = false
         if drainsClosePresentation, let generation = closeDrain.begin(previousProgress: previousProgress,
@@ -520,7 +638,7 @@ final class IslandPanelController: NSObject {
         guard !stopped else { return }
         let previousOwner = expansionOwner
         if observedPlaybackRevision != model.music.playbackRevision || !model.music.isFreshPlaying {
-            crossing.reset(); observedPlaybackRevision = model.music.playbackRevision
+            resetCrossings(); observedPlaybackRevision = model.music.playbackRevision
         }
         musicEligible = model.music.isPlayingForPresentation && model.music.lyricsModeEnabled
         let accessories = model.music.isFreshPlaying && passiveMusicAllowed && geometry.canShowMusicAccessories
@@ -539,29 +657,17 @@ final class IslandPanelController: NSObject {
             startMotion()
         }
     }
-    private func applyAccessoryGeometry() {
-        let visible = accessoryTarget || accessoryMotion.progress > 0
-        var updated = presentation.geometry
-        updated.showsMusicAccessories = visible
-        updated.musicAccessoryProgress = accessoryMotion.progress
-        if presentation.geometry != updated { presentation.geometry = updated }
-        if var pendingGeometry {
-            pendingGeometry.showsMusicAccessories = visible && pendingGeometry.canShowMusicAccessories
-            pendingGeometry.musicAccessoryProgress = accessoryMotion.progress
-            self.pendingGeometry = pendingGeometry
-        }
-    }
 
     func setMusicPresentationAllowed(_ allowed: Bool) {
         guard !stopped, passiveMusicAllowed != allowed else { return }
         let previousOwner = expansionOwner
-        passiveMusicAllowed = allowed; crossing.reset(); gestureHoverGate.reset()
+        passiveMusicAllowed = allowed; resetCrossings(); gestureHoverGate.reset()
         updateMusicPresentation(forceRetarget: expansionOwner != previousOwner)
     }
     @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
         guard !stopped, notice.isEligible, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
         if presentation.notice?.id == notice.id && noticeTargetActive { return true }
-        cancelNoticeTimers(); crossing.reset()
+        cancelNoticeTimers(); resetCrossings()
         // Every new notice, including replacement, acknowledges its own paint revision.
         noticePaintRequiredAfter = CACurrentMediaTime()
         presentation.notice = notice; presentation.showingDetails = false; noticeTargetActive = true
@@ -638,11 +744,11 @@ final class IslandPanelController: NSObject {
     func collapse() {
         guard !stopped else { return }
         cancelNoticeTimers(); noticeTargetActive = false
-        hover.reset(); crossing.reset(); gestureHoverGate.reset(); panel.ignoresMouseEvents = true; startMotion()
+        hover.reset(); resetCrossings(); gestureHoverGate.reset(); panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
         guard !stopped else { return }
-        stopped = true; crossing.reset(); gestureHoverGate.reset()
+        stopped = true; resetCrossings(); gestureHoverGate.reset()
         if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor); self.localPointerMonitor = nil }
         if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor); self.globalPointerMonitor = nil }
         musicSubscription?.cancel(); musicSubscription = nil

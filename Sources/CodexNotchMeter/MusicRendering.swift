@@ -40,6 +40,8 @@ final class MusicRenderHarness: NSObject {
     private var lastOCRLines: [MusicOCRLine] = []
     private var lastOCRImage: CGImage?
     private var nativeExpectations: [ObjectIdentifier: (progress: Double, after: TimeInterval)] = [:]
+    private var pointerVerificationCompleted = false
+    private var pointerVerificationOnly: Bool { CommandLine.arguments.contains("--pointer-ingress-test") }
 
     init(screen: NSScreen, completion: @escaping (Bool) -> Void) {
         self.screen = screen; self.completion = completion
@@ -50,10 +52,11 @@ final class MusicRenderHarness: NSObject {
         guard !started, !finished else { return }
         started = true; startedAt = CACurrentMediaTime(); initialKey = NSApp.keyWindow
         guard CommandLine.arguments.contains("--music-test") else { finish(false); return }
-        let timer = Timer(timeInterval: 150, repeats: false) { [weak self] _ in
+        let deadline: TimeInterval = pointerVerificationOnly ? 45 : 150
+        let timer = Timer(timeInterval: deadline, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.finished else { return }
-                SmokeDiagnostics.mark("music bounded 150-second deadline exceeded")
+                SmokeDiagnostics.mark("music bounded \(Int(deadline))-second deadline exceeded")
                 self.finish(false)
             }
         }
@@ -61,7 +64,8 @@ final class MusicRenderHarness: NSObject {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.run()
+                if self.pointerVerificationOnly { try await self.runPointerVerification() }
+                else { try await self.run() }
                 self.finish(true)
             } catch {
                 self.dumpSyntheticFailureState()
@@ -70,6 +74,55 @@ final class MusicRenderHarness: NSObject {
                 self.finish(false)
             }
         }
+    }
+
+    /// A separate bounded invocation keeps the existing 150-second Music gate
+    /// unchanged: --music-test --pointer-ingress-test.
+    private func runPointerVerification() async throws {
+        let fixture = makeFixture()
+        let model = MeterModel(demo: true, music: fixture.controller)
+        self.model = model
+        fixture.controller.start(); fixture.controller.setEnabled(true)
+        let initial = try await read(fixture)
+        let closed = try makePassivePanel(model)
+        try await waitIdle(closed, after: 0)
+        let playbackStartedAt = CACurrentMediaTime()
+        try await release(fixture, initial, position: 1)
+        try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        try await until("playback start reaches its exact closed accessory endpoint") {
+            closed.geometry.musicAccessoryProgress == 1 && closed.smokeMusicAccessoriesVisible && !closed.smokeMotionRunning
+        }
+        try await waitIdle(closed, after: playbackStartedAt)
+        try require(try verifyMusicClosedTransitionHeight(panel: closed, model: model,
+            after: playbackStartedAt, transition: "playback-start"), "actual playback start preserves closed shell height")
+        let pause = try await read(fixture)
+        let pausedAt = CACurrentMediaTime()
+        try await release(fixture, pause, position: 1, state: .paused)
+        try await until("playback pause reaches its exact normal closed endpoint") {
+            closed.geometry.musicAccessoryProgress == 0 && !closed.smokeMusicAccessoriesVisible && !closed.smokeMotionRunning
+        }
+        try await waitIdle(closed, after: pausedAt)
+        try require(try verifyMusicClosedTransitionHeight(panel: closed, model: model,
+            after: pausedAt, transition: "pause"), "actual playback pause preserves closed shell height")
+        fixture.controller.requestAuthorization()
+        let reconnect = try await read(fixture)
+        let reconnectedAt = CACurrentMediaTime()
+        try await release(fixture, reconnect, position: 1)
+        try await until("playback reconnect reaches its exact closed accessory endpoint") {
+            closed.geometry.musicAccessoryProgress == 1 && closed.smokeMusicAccessoriesVisible && !closed.smokeMotionRunning
+        }
+        try await waitIdle(closed, after: reconnectedAt)
+        try require(try verifyMusicClosedTransitionHeight(panel: closed, model: model,
+            after: reconnectedAt, transition: "reconnect"), "actual fresh reconnect preserves closed shell height")
+        let fresh = try await read(fixture)
+        try await release(fixture, fresh, position: 1)
+        try require(try await verifyMusicClosedHeightAndMask(panel: closed, model: model),
+                    "separate pointer gate verifies unchanged closed height and raw-mask pixels")
+        try verifyRenderCommitHistory(closed, label: "closed-transitions")
+        closed.stop()
+        try await verifyNativePointerIngress(fixture: fixture, model: model)
+        pointerVerificationCompleted = true
+        print("MUSIC_POINTER_GATE_OK: independent=true deadline=45 oldMusicDeadline=150 closedHeightMask=true nativeEventQueue=true")
     }
 
     private func run() async throws {
@@ -1374,6 +1427,366 @@ final class MusicRenderHarness: NSObject {
         return artwork
     }
 
+    /// Exercise NSApplication's actual queue and the installed production local
+    /// monitor. These events never move the system pointer or enter another app;
+    /// this cannot establish delivery through a system global event monitor.
+    private func verifyNativePointerIngress(fixture: MusicFixture, model: MeterModel) async throws {
+        let refresh = try await read(fixture)
+        try await release(fixture, refresh, position: 1)
+        guard let geometry = makeGeometry() else { throw Failure(label: "native pointer ingress geometry unavailable") }
+        let panel = IslandPanelController(model: model, geometry: geometry, startPolling: true,
+            reducedMotionOverride: false, motionSample: { [weak self] _ in self?.passiveFrameSamples += 1 },
+            hovered: {}, refresh: {}, settings: {}, quit: {})
+        passivePanels.append(panel)
+        // Its negative origin is intentional. Event locations use this static
+        // window's base coordinates, never the animated island's current frame.
+        let sourceWindow = TopEdgePanel(contentRect: CGRect(x: -900, y: -700, width: 240, height: 180),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        sourceWindow.isReleasedWhenClosed = false
+        sourceWindow.acceptsMouseMovedEvents = true
+        sourceWindow.ignoresMouseEvents = true
+        sourceWindow.orderFrontRegardless()
+        defer { panel.stop(); sourceWindow.close() }
+        try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
+                    "queued pointer fixture owns a static negative-origin native window")
+        try await waitIdle(panel, after: 0)
+        try require(!panel.smokeLyricsSelected && fixture.controller.isPlayingForPresentation,
+                    "queued pointer fixture starts closed with fresh usable lyrics")
+        let corridor = panel.smokeMusicGestureCorridor
+        let center = corridor.midX
+        var postedEvents = 0
+        var lastPostedTime: TimeInterval = -.infinity
+        var representativeTimes: Set<TimeInterval> = []
+        var gestureSegments: [(name: String, start: TimeInterval, end: TimeInterval, opening: Bool)] = []
+
+        func enqueue(_ point: CGPoint, timestamp: TimeInterval, window: NSWindow?, type: NSEvent.EventType = .mouseMoved) throws {
+            let location = window.map { $0.convertPoint(fromScreen: point) } ?? point
+            guard timestamp > lastPostedTime || (type != .mouseMoved && timestamp == lastPostedTime),
+                  let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: timestamp, windowNumber: window?.windowNumber ?? 0, context: nil,
+                    eventNumber: 70_000 + postedEvents, clickCount: 0, pressure: 0) else {
+                throw Failure(label: "cannot construct ordered native pointer event")
+            }
+            try require(window.map { event.window === $0 } ?? (event.window == nil),
+                        "native queued event retains the intended window or screen coordinate space")
+            postedEvents += 1; lastPostedTime = timestamp
+            NSApp.postEvent(event, atStart: false)
+        }
+        func hasReceipt(_ point: CGPoint, _ timestamp: TimeInterval) -> Bool {
+            panel.smokePointerIngress.contains { receipt in
+                receipt.kind == "event" && abs(receipt.timestamp - timestamp) < 0.000000001
+                    && abs(receipt.point.x - point.x) < 0.000001
+                    && abs(receipt.point.y - point.y) < 0.000001
+            }
+        }
+        func awaitReceipt(_ point: CGPoint, _ timestamp: TimeInterval) async throws {
+            do {
+                try await until("queued event reaches the production local monitor unchanged") {
+                    hasReceipt(point, timestamp)
+                }
+            } catch {
+                print("MUSIC_INGRESS_DIAGNOSTIC: expectedPoint=\(point) expectedTimestamp=\(timestamp) currentPointer=\(NSEvent.mouseLocation) receipts=\(String(reflecting: panel.smokePointerIngress.suffix(12)))")
+                throw error
+            }
+        }
+        func requireNoDetails() throws {
+            try require(!panel.isInteracting && panel.smokeExpansionOwner != .details
+                && panel.smokeTargetProgress != 1,
+                "each delivered moving pointer sample preserves music or idle without a transient details target")
+        }
+        func postPoint(_ point: CGPoint, window: NSWindow?, forbidDetails: Bool = true) async throws {
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            try enqueue(point, timestamp: timestamp, window: window)
+            try await awaitReceipt(point, timestamp)
+            if forbidDetails { try requireNoDetails() }
+        }
+        func postButton(_ point: CGPoint, type: NSEvent.EventType) async throws {
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            try enqueue(point, timestamp: timestamp, window: sourceWindow, type: type)
+            representativeTimes.insert(timestamp)
+            try await until("native button reaches the installed monitor") {
+                panel.smokePointerIngress.contains {
+                    $0.timestamp == timestamp && ($0.kind == "button" || $0.kind == "stale")
+                }
+            }
+            try requireNoDetails()
+        }
+        // Synchronous helper deliberately leaves the posted events queued for
+        // 80 ms. Only the application's ordinary run loop dispatches them later.
+        // A live-position resample cannot reconstruct these three distinct points.
+        func enqueueBackloggedBurst(_ points: [CGPoint], window: NSWindow?) throws -> [(CGPoint, TimeInterval)] {
+            var expected: [(CGPoint, TimeInterval)] = []
+            for (index, point) in points.enumerated() {
+                if index > 0 { Thread.sleep(forTimeInterval: 0.02) }
+                let timestamp = ProcessInfo.processInfo.systemUptime
+                try enqueue(point, timestamp: timestamp, window: window)
+                expected.append((point, timestamp)); representativeTimes.insert(timestamp)
+            }
+            Thread.sleep(forTimeInterval: 0.08)
+            return expected
+        }
+        func burst(open: Bool, y: CGFloat, window: NSWindow?) async throws {
+            let xs = open ? [corridor.minX - 12, center, corridor.maxX + 12]
+                : [corridor.maxX + 12, center, corridor.minX - 12]
+            let expected = try enqueueBackloggedBurst(xs.map { CGPoint(x: $0, y: y) }, window: window)
+            for sample in expected { try await awaitReceipt(sample.0, sample.1) }
+            try require(expected.allSatisfy { hasReceipt($0.0, $0.1) }
+                && ProcessInfo.processInfo.systemUptime - expected[2].1 >= 0.08
+                && panel.smokeLyricsSelected == open,
+                "backlogged native events preserve all original points and times and select the requested direction")
+            try requireNoDetails()
+        }
+
+        let openedAt = CACurrentMediaTime()
+        try await burst(open: true, y: corridor.midY, window: sourceWindow)
+        try await waitMusic(panel, after: openedAt)
+        gestureSegments.append(("window-open", openedAt, CACurrentMediaTime(), true))
+        // This also proves a genuinely negative global coordinate survives the
+        // nonzero native window origin, rather than accidentally double-converting.
+        try await postPoint(CGPoint(x: -780, y: -610), window: sourceWindow)
+
+        let slowRead = try await read(fixture)
+        try await release(fixture, slowRead, position: 1)
+        let bottomY = geometry.contourFrame.minY + 2
+        try require(bottomY < geometry.screen.maxY - 18
+            && bottomY >= corridor.minY && bottomY <= corridor.maxY,
+            "lower closed-shell route is covered even below the former 18-point gesture strip")
+        // First exit the full 400 pt shell, then approach across the music-only
+        // shoulders slowly enough that an old 120 ms moving hover could fire.
+        let closedAt = CACurrentMediaTime()
+        let slowOffsets: [CGFloat] = [230, 190, 176, 174, 172, 170, 162, 150, 140, 100, 0, -100, -140, -170, -210, -230]
+        for offset in slowOffsets {
+            try await postPoint(CGPoint(x: center + offset, y: bottomY), window: sourceWindow)
+            representativeTimes.insert(lastPostedTime)
+            try await dwell(0.045)
+        }
+        try require(!panel.smokeLyricsSelected,
+                    "slow lower-shell reverse crossing closes after a complete exit and side approach")
+        try await waitIdle(panel, after: closedAt)
+        gestureSegments.append(("slow-reverse-close", closedAt, CACurrentMediaTime(), false))
+
+        let nilWindowRead = try await read(fixture)
+        try await release(fixture, nilWindowRead, position: 1)
+        let nilWindowOpenedAt = CACurrentMediaTime()
+        try await burst(open: true, y: bottomY, window: nil)
+        try await waitMusic(panel, after: nilWindowOpenedAt)
+        gestureSegments.append(("screen-open", nilWindowOpenedAt, CACurrentMediaTime(), true))
+
+        let hoverRead = try await read(fixture)
+        try await release(fixture, hoverRead, position: 1)
+        let full = panel.geometry.frame(progress: 1)
+        let outside = CGPoint(x: full.midX, y: full.minY - 8)
+        try await postPoint(outside, window: nil)
+        let musicFrame = panel.geometry.frame(progress: panel.smokeMusicTargetProgress)
+        let stationary = CGPoint(x: musicFrame.midX, y: musicFrame.minY + 10)
+        try require(panel.geometry.hoverContains(stationary, progress: panel.smokeMusicTargetProgress)
+            && !corridor.contains(stationary), "stationary details hover uses visible music body outside the crossing band")
+        // Each delta is below the 0.25 pt tolerance, but cumulative movement is
+        // not. Updating the anchor after every sample would misclassify this
+        // slow approach as a stationary 120 ms dwell and briefly open details.
+        for step in 0..<12 {
+            try await postPoint(CGPoint(x: stationary.x + CGFloat(step) * 0.2, y: stationary.y), window: nil)
+            try await dwell(0.025)
+        }
+        try require(!panel.isInteracting && panel.smokeLyricsSelected,
+                    "cumulative 0.2-point native motion is measured from a fixed hover anchor")
+        let stationaryRead = try await read(fixture)
+        try await release(fixture, stationaryRead, position: 1)
+        try await postPoint(outside, window: nil)
+        let hoveredAt = CACurrentMediaTime()
+        try await postPoint(stationary, window: nil)
+        try await dwell(0.14)
+        let detailsPaintStart = CACurrentMediaTime()
+        let detailsEventStart = ProcessInfo.processInfo.systemUptime
+        try await postPoint(stationary, window: nil, forbidDetails: false)
+        try require(panel.isInteracting && panel.smokeExpansionOwner == .details && panel.smokeTargetProgress == 1,
+                    "two genuinely stationary queued samples retain ordinary intentional details hover")
+        let settleDeadline = CACurrentMediaTime() + 3.6
+        while CACurrentMediaTime() < settleDeadline && !nativeSettled(panel, progress: 1, after: hoveredAt) {
+            try await dwell(0.08)
+            try await postPoint(stationary, window: nil, forbidDetails: false)
+        }
+        try require(nativeSettled(panel, progress: 1, after: hoveredAt) && panel.isInteracting,
+                    "queued stationary hover settles a real nonactivating native details viewport")
+        try await postPoint(outside, window: nil, forbidDetails: false)
+        try await dwell(0.23)
+        try await postPoint(outside, window: nil)
+        let detailsEventEnd = ProcessInfo.processInfo.systemUptime
+        let detailsPaintEnd = CACurrentMediaTime()
+        try await waitMusic(panel, after: detailsPaintEnd)
+        let finalRead = try await read(fixture)
+        try await release(fixture, finalRead, position: 1)
+        let finalCloseAt = CACurrentMediaTime()
+        try await burst(open: false, y: bottomY, window: nil)
+        try await waitIdle(panel, after: finalCloseAt)
+        gestureSegments.append(("screen-close", finalCloseAt, CACurrentMediaTime(), false))
+
+        // Button down/up with exactly the preceding move's timestamp must still
+        // clear a half crossing. Queue both boundaries before dispatch so no
+        // live button sample can accidentally make this negative pass.
+        let buttonRead = try await read(fixture)
+        try await release(fixture, buttonRead, position: 1)
+        try await postPoint(CGPoint(x: center - 230, y: bottomY), window: sourceWindow)
+        try await postPoint(CGPoint(x: corridor.minX + 8, y: bottomY), window: sourceWindow)
+        try await postPoint(CGPoint(x: center, y: bottomY), window: sourceWindow)
+        let boundaryTime = lastPostedTime
+        representativeTimes.insert(boundaryTime)
+        let boundaryPoint = CGPoint(x: center, y: bottomY)
+        let boundaryCount = panel.smokePointerIngress.count
+        try enqueue(boundaryPoint, timestamp: boundaryTime, window: sourceWindow, type: .leftMouseDown)
+        try enqueue(boundaryPoint, timestamp: boundaryTime, window: sourceWindow, type: .leftMouseUp)
+        try await until("same-timestamp native down and up both reach the monitor boundary") {
+            panel.smokePointerIngress.dropFirst(boundaryCount).filter {
+                abs($0.timestamp - boundaryTime) < 0.000000001 && ($0.kind == "button" || $0.kind == "stale")
+            }.count == 2
+        }
+        try await postPoint(CGPoint(x: corridor.maxX - 8, y: bottomY), window: sourceWindow)
+        try await postPoint(CGPoint(x: center + 230, y: bottomY), window: sourceWindow)
+        try require(!panel.smokeLyricsSelected && panel.smokeTargetProgress == 0,
+                    "same-timestamp native button boundaries prevent completion of the prior half crossing")
+
+        let buttonOutside = CGPoint(x: center - 230, y: bottomY)
+        try await postButton(buttonOutside, type: .leftMouseDown)
+        for x in [corridor.minX - 12, corridor.minX + 8, center, corridor.maxX - 8, corridor.maxX + 12] {
+            try await postPoint(CGPoint(x: x, y: bottomY), window: sourceWindow)
+        }
+        try require(!panel.smokeLyricsSelected,
+                    "a held native button rejects mouse-moved crossings even when the system pointer has no pressed button")
+        try await postButton(CGPoint(x: center + 230, y: bottomY), type: .leftMouseUp)
+        let recoveredAt = CACurrentMediaTime()
+        try await burst(open: true, y: bottomY, window: sourceWindow)
+        try await waitMusic(panel, after: recoveredAt)
+        let recoveredCloseAt = CACurrentMediaTime()
+        try await burst(open: false, y: bottomY, window: sourceWindow)
+        try await waitIdle(panel, after: recoveredCloseAt)
+        try require(!panel.smokeLyricsSelected, "native button-up permits fresh independent crossings in both directions")
+
+        try writePointerIngressTrace(panel, representativeTimes: representativeTimes)
+        try verifyRenderCommitHistory(panel, label: "native-input")
+        let commits = panel.smokeRenderCommits
+        let paints = panel.smokePaintHistory.filter { $0.frame.frameRevision > 0 }
+        for segment in gestureSegments {
+            let frames = commits.filter { $0.observed >= segment.start && $0.observed <= segment.end }
+            let revisions = Set(frames.filter { $0.progress > 0 && $0.progress < panel.smokeMusicTargetProgress }.map { $0.revision })
+            let movingPaints = Set(paints.filter { revisions.contains($0.frame.frameRevision) }.map { $0.frame.frameRevision })
+            try require(frames.count >= 3 && movingPaints.count >= 2,
+                        "each settled-to-settled native gesture has distinct intermediate render and paint revisions")
+            for (a, b) in zip(frames, frames.dropFirst()) {
+                let progressDelta = b.progress - a.progress
+                let widthDelta = b.nativeFrame.width - a.nativeFrame.width
+                let heightDelta = b.nativeFrame.height - a.nativeFrame.height
+                let ac = a.geometry.contourRect(progress: a.progress), bc = b.geometry.contourRect(progress: b.progress)
+                try require((segment.opening
+                    ? progressDelta >= 0 && widthDelta >= 0 && heightDelta >= 0 && bc.width >= ac.width && bc.height >= ac.height
+                    : progressDelta <= 0 && widthDelta <= 0 && heightDelta <= 0 && bc.width <= ac.width && bc.height <= ac.height)
+                    && a.nativeFrame.maxY == b.nativeFrame.maxY && a.nativeFrame.midX == b.nativeFrame.midX,
+                    "settled-start native gesture progress and dimensions never reverse or move the top-center anchor")
+            }
+            try require(frames.last?.progress == (segment.opening ? panel.smokeMusicTargetProgress : 0),
+                        "each native gesture history includes its exact settled endpoint")
+            print("MUSIC_GESTURE_SEGMENT_OK: segment=\(segment.name) commits=\(frames.count) movingPaintRevisions=\(movingPaints.count) monotonicProgress=true monotonicDimensions=true fixedAnchor=true endpoint=true")
+        }
+        let unexpectedCommit = commits.contains {
+            ($0.owner == .details || $0.target == 1) && !($0.observed >= detailsPaintStart && $0.observed <= detailsPaintEnd)
+        }
+        let unexpectedPointer = panel.smokePointerIngress.contains {
+            ($0.owner == .details || $0.target == 1) && !($0.timestamp >= detailsEventStart && $0.timestamp <= detailsEventEnd)
+        }
+        try require(!unexpectedCommit && !unexpectedPointer,
+                    "all moving ingress and animation revisions avoid transient details, with painted opening and closing frames")
+        try require(!panel.smokeLyricsSelected && fixture.controller.isPlayingForPresentation
+            && NSApp.keyWindow === initialKey && panel.smokePointerIngress.contains(where: { $0.kind == "poll" }),
+            "queued native input preserves playback and key focus while the real polling fallback is installed")
+        print("MUSIC_NATIVE_INPUT_OK: localEventQueue=true globalSystemDelivery=false queuedPoints=true originalTimestamps=true windowCoordinates=true nilWindowCoordinates=true negativeOrigin=true lowerBand=true slowReverse=true noMovingDetails=true stationaryHover=true fixedHoverAnchor=true equalTimestampButtons=true heldButtons=true postedEvents=\(postedEvents)")
+    }
+
+    private func verifyRenderCommitHistory(_ panel: IslandPanelController, label: String) throws {
+        try require(!panel.smokeHistoryOverflow && !panel.smokePaintHistoryOverflow,
+                    "native pointer and paint histories are complete without truncation")
+        let commits = panel.smokeRenderCommits
+        let paints = panel.smokePaintHistory.filter { $0.frame.frameRevision > 0 }
+        try require(!commits.isEmpty && !paints.isEmpty
+            && Set(commits.map { $0.revision }).count == commits.count,
+            "every immutable native render commit has one unique revision and actual paint evidence")
+        for (a, b) in zip(commits, commits.dropFirst()) {
+            try require(b.revision > a.revision && b.observed >= a.observed,
+                        "immutable render revisions retain their actual publication order")
+        }
+        for (a, b) in zip(paints, paints.dropFirst()) {
+            try require(b.sequence > a.sequence && b.observed >= a.observed && b.frame.frameRevision >= a.frame.frameRevision,
+                        "actual Canvas callbacks cannot regress to an earlier committed geometry revision")
+        }
+        let byRevision = Dictionary(uniqueKeysWithValues: commits.map { ($0.revision, $0) })
+        var maxLatency: TimeInterval = 0
+        for paint in paints {
+            guard let commit = byRevision[paint.frame.frameRevision] else {
+                throw Failure(label: "Canvas paint has no matching native geometry/progress commit")
+            }
+            let contour = IslandContour(rect: commit.geometry.contourRect(progress: commit.progress),
+                progress: commit.progress, cornerAdjustment: commit.geometry.shapeCalibration.corner,
+                referenceDepth: commit.geometry.notch.height)
+            let accessory = commit.geometry.showsMusicAccessories ? commit.geometry.musicAccessoryProgress : 0
+            let matches = paint.observed >= commit.observed
+                && paint.frame.progress == commit.progress && paint.frame.accessoryProgress == accessory
+                && paint.frame.contour == contour && commit.nativeFrame == commit.geometry.frame(progress: commit.progress)
+                && paint.frame.viewport == commit.nativeFrame.size && paint.actualViewport == commit.nativeFrame.size
+                && paint.nativeFrameSampledAtPaint
+                && paint.nativeFrame == commit.nativeFrame
+                && paint.nativeContentBounds == CGRect(origin: .zero, size: commit.nativeFrame.size)
+                && paint.bodyBounds == contourPath(contour, inset: 0, closed: true).boundingRect
+                && paint.railBounds == contourPath(contour, inset: 2, closed: false).boundingRect
+            if !matches {
+                print("MUSIC_COMMIT_DIAGNOSTIC: label=\(label) revision=\(commit.revision) commit=\(String(reflecting: commit)) paint=\(String(reflecting: paint))")
+            }
+            try require(matches, "each actual Canvas revision uses its committed progress, accessory, contour and contemporaneous native frame")
+            maxLatency = max(maxLatency, paint.observed - commit.observed)
+        }
+        print("MUSIC_RENDER_COMMIT_OK: label=\(label) allPaintsMatched=true historyOverflow=false orderedRevisions=true nativeFrameMatched=true commits=\(commits.count) paints=\(paints.count) distinctPaintRevisions=\(Set(paints.map { $0.frame.frameRevision }).count) maxLatencyMs=\(decimal(maxLatency * 1000)) scanout=false")
+    }
+
+    private func writePointerIngressTrace(_ panel: IslandPanelController, representativeTimes: Set<TimeInterval>) throws {
+        func rect(_ value: CGRect) -> [Double] {
+            [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
+        }
+        func size(_ value: CGSize) -> [Double] { [Double(value.width), Double(value.height)] }
+        func event(_ value: IslandPointerIngressReceipt) -> [String: Any] {
+            ["point": [Double(value.point.x), Double(value.point.y)], "timestamp": value.timestamp,
+             "kind": value.kind, "owner": String(describing: value.owner), "target": value.target]
+        }
+        let receipts = panel.smokePointerIngress
+        for receipt in receipts where representativeTimes.contains(receipt.timestamp) {
+            let data = try JSONSerialization.data(withJSONObject: event(receipt), options: [.sortedKeys])
+            guard let line = String(data: data, encoding: .utf8) else { throw Failure(label: "cannot encode native pointer receipt") }
+            print("MUSIC_POINTER_EVENT: \(line)")
+        }
+        let commits: [[String: Any]] = panel.smokeRenderCommits.map {
+            ["revision": $0.revision, "observed": $0.observed, "progress": $0.progress,
+             "accessory": $0.geometry.musicAccessoryProgress, "frame": rect($0.nativeFrame),
+             "contour": rect($0.geometry.contourRect(progress: $0.progress)),
+             "owner": String(describing: $0.owner), "target": $0.target]
+        }
+        let paints: [[String: Any]] = panel.smokePaintHistory.map {
+            ["sequence": $0.sequence, "revision": $0.frame.frameRevision, "observed": $0.observed,
+             "progress": $0.frame.progress, "accessory": $0.frame.accessoryProgress,
+             "viewport": size($0.frame.viewport), "actualViewport": size($0.actualViewport),
+             "nativeFrame": rect($0.nativeFrame), "nativeContentBounds": rect($0.nativeContentBounds),
+             "nativeFrameSampledAtPaint": $0.nativeFrameSampledAtPaint,
+             "contour": rect($0.frame.contour.rect), "bodyBounds": rect($0.bodyBounds), "railBounds": rect($0.railBounds)]
+        }
+        let payload: [String: Any] = ["localEventQueue": true, "globalSystemDelivery": false,
+            "events": receipts.map(event), "commits": commits, "paints": paints,
+            "historyOverflow": panel.smokeHistoryOverflow, "paintHistoryOverflow": panel.smokePaintHistoryOverflow]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .prettyPrinted])
+        let logData = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+        try require(logData.count < 1_000_000, "complete synthetic native trace fits its bounded one-megabyte log budget")
+        guard let logLine = String(data: logData, encoding: .utf8) else { throw Failure(label: "cannot encode complete native trace") }
+        print("MUSIC_POINTER_TRACE_JSON: \(logLine)")
+        let directory = URL(fileURLWithPath: "dist/contour-rendering/music", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: directory.appendingPathComponent("native-pointer-ingress.json"), options: .atomic)
+        print("MUSIC_POINTER_TRACE_OK: representativeEvents=\(receipts.filter { representativeTimes.contains($0.timestamp) }.count) totalEvents=\(receipts.count) artifact=native-pointer-ingress.json")
+    }
+
     /// Replay sparse fast mouse samples through the production controller, then
     /// continue beside/down into the appeared shell rather than teleporting away.
     private func verifyNaturalGestureOwnership(_ panel: IslandPanelController, model: MeterModel, fixture: MusicFixture) async throws {
@@ -2056,7 +2469,9 @@ final class MusicRenderHarness: NSObject {
         finished = true
         let elapsed = CACurrentMediaTime() - startedAt
         stop()
-        let valid = success && elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2
+        let valid = success && (pointerVerificationOnly
+            ? elapsed <= 45 && pointerVerificationCompleted
+            : elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2)
         print(valid ? "MUSIC_OK: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true localViewPixels=true scanout=false"
                     : "MUSIC_FAILED: native synthetic music integration contract failed")
         completion(valid)
