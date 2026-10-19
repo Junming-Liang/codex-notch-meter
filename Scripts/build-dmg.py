@@ -21,8 +21,9 @@ import sys
 import tempfile
 
 
-VERSION = "1.0.2"
-RELEASE_VERSION = "1.0.2"
+VERSION = "1.0.3"
+RELEASE_VERSION = "1.0.3"
+BUNDLE_BUILD = "16"
 APP_NAME = "Codex Notch Meter.app"
 IMAGE_NAME = f"CodexNotchMeter-{RELEASE_VERSION}-universal.dmg"
 INSTRUCTIONS_NAME = "Install - 安装说明.txt"
@@ -136,8 +137,8 @@ def verify_app(app):
     }
     if not isinstance(info, dict) or any(info.get(key) != value for key, value in expected.items()):
         raise RuntimeError(f"Expected the Codex Notch Meter {RELEASE_VERSION} macOS 13+ app")
-    if not isinstance(info.get("CFBundleVersion"), str) or not info["CFBundleVersion"]:
-        raise RuntimeError("Application build number is missing")
+    if info.get("CFBundleVersion") != BUNDLE_BUILD:
+        raise RuntimeError(f"Expected application build {BUNDLE_BUILD}")
     executable = app / "Contents/MacOS/CodexNotchMeter"
     if not stat.S_ISREG(executable.lstat().st_mode) or not os.access(executable, os.X_OK):
         raise RuntimeError("Application executable is missing or not executable")

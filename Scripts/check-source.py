@@ -63,6 +63,7 @@ else:
     version_pins = [
         ('Scripts/build-dmg.py', r'^VERSION = "([^"\n]+)"$', expected_version),
         ('Scripts/build-dmg.py', r'^RELEASE_VERSION = "([^"\n]+)"$', expected_release),
+        ('Scripts/build-dmg.py', r'^BUNDLE_BUILD = "([0-9]+)"$', expected_build),
         ('Scripts/test-build-dmg.py', r'"CFBundleShortVersionString": "([^"\n]+)"', expected_version),
         ('Scripts/test-build-dmg.py', r'"CodexNotchMeterReleaseVersion": "([^"\n]+)"', expected_release),
         ('Scripts/test-build-dmg.py', r'"CFBundleVersion": "([^"\n]+)"', expected_build),
@@ -70,6 +71,12 @@ else:
         ('Sources/NotchCore/LyricsLookup.swift', r'CodexNotchMeter/([^ "\n]+) ', expected_release),
         ('Tests/NotchCoreTests/LyricsLookupTests.swift', r'contains\("CodexNotchMeter/([^ "\n]+) "\)', expected_release),
         ('Sources/NotchCore/RPC.swift', r'"version": "([^"\n]+)"', expected_release),
+        ('Tests/NotchCoreTests/RPCTests.swift', r'XCTAssertEqual\(client\["version"\] as\? String, "([^"\n]+)"\)', expected_release),
+        ('Scripts/test-verify-release-source.py', r'version="([^"\n]+)", bundle_build=', expected_release),
+        ('Scripts/test-verify-release-source.py', r'bundle_build="([0-9]+)"\)', expected_build),
+        ('Scripts/test-verify-release-source.py', r'"CFBundleShortVersionString": "([^"\n]+)"', expected_version),
+        ('Scripts/test-verify-release-source.py', r'"CFBundleVersion": "([0-9]+)"', expected_build),
+        ('Scripts/test-verify-release-source.py', r'"CodexNotchMeterReleaseVersion": "([^"\n]+)"', expected_release),
         ('Sources/CodexNotchMeter/Views.swift', r'Text\("v([^ "\n]+) · 正式版"\)', expected_release),
         ('.github/workflows/macos.yml', r'CodexNotchMeter-([0-9][A-Za-z0-9.+-]*)-universal', expected_release),
         ('.github/workflows/macos.yml', r'--version ([0-9]+\.[0-9]+\.[0-9]+)', expected_release),
@@ -90,10 +97,19 @@ else:
     if '--prerelease' in (root / '.github/workflows/macos.yml').read_text():
         failures.append('Formal release must not retain the prerelease flag')
 workflow = (root / '.github/workflows/macos.yml').read_text()
-notes = (root / 'docs/RELEASE-1.0.2.md').read_text().rstrip()
-inline_notes = re.search(r"          cat > notes.md <<'NOTES'\n(.*?)\n          NOTES", workflow, re.DOTALL)
-if not inline_notes or "\n".join(line[10:] for line in inline_notes.group(1).splitlines()).rstrip() != notes:
-    failures.append('Workflow release notes must match the reviewed bilingual source document exactly')
+# Derive the active notes from the uniquely declared release, so bumping a
+# version cannot accidentally compare the workflow with historical notes.
+if len(releases) == 1:
+    notes_path = root / f'docs/RELEASE-{releases[0]}.md'
+    if not notes_path.is_file():
+        failures.append(f'Active bilingual release notes missing: {notes_path.name}')
+    else:
+        notes = notes_path.read_text().rstrip()
+        if not notes.startswith(f'## Codex Notch Meter v{releases[0]}\n'):
+            failures.append('Release notes heading must match the active release identity')
+        inline_notes = re.search(r"          cat > notes.md <<'NOTES'\n(.*?)\n          NOTES", workflow, re.DOTALL)
+        if not inline_notes or "\n".join(line[10:] for line in inline_notes.group(1).splitlines()).rstrip() != notes:
+            failures.append('Workflow release notes must match the reviewed bilingual source document exactly')
 for guard in ('build-source.json', 'dist/release-source.json', 'HEAD^{tree}', 'GITHUB_RUN_ID', 'git status --porcelain --untracked-files=no'):
     if guard not in app_build:
         failures.append(f'Packaged source binding missing: {guard}')
