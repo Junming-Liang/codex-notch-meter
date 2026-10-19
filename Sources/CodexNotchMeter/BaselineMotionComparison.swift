@@ -174,7 +174,7 @@ final class BaselineMotionComparisonHarness: NSObject {
         }
         timedElapsed = CACurrentMediaTime() - base
         collectingTimedEvidence = false
-        observer?.invalidate(); observer = nil
+        self.observer?.invalidate(); self.observer = nil
         if group == "ordinary" { try await captureOrdinaryVisualRound() }
     }
 
