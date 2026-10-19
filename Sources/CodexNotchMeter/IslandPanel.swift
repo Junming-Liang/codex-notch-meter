@@ -22,6 +22,16 @@ struct IslandPointerIngressReceipt {
     let kind: String
     let owner: IslandExpansionOwner
     let target: Double
+    let hoverDecision: IslandPointerHoverDecision?
+}
+
+/// Present only when the cache fixture's real input reaches hover.update.
+/// The timestamp is that call's exact clock argument, never a delivery proxy.
+struct IslandPointerHoverDecision: Equatable {
+    let timestamp: TimeInterval
+    let inside: Bool
+    let expandedBefore: Bool
+    let expandedAfter: Bool
 }
 
 /// Bounded, synthetic-gate-only evidence from before any input rejection.
@@ -452,11 +462,12 @@ final class IslandPanelController: NSObject {
         if !hover.isExpanded { hover.reset() }
         musicHoverAnchor = nil
     }
-    private func recordPointer(_ point: CGPoint, timestamp: TimeInterval, kind: String) {
+    private func recordPointer(_ point: CGPoint, timestamp: TimeInterval, kind: String,
+                               hoverDecision: IslandPointerHoverDecision? = nil) {
         guard model.demo, CommandLine.arguments.contains("--music-test") else { return }
         if smokePointerIngress.count >= 2048 { smokeHistoryOverflow = true; smokePointerIngress.removeFirst(1024) }
         smokePointerIngress.append(IslandPointerIngressReceipt(point: point, timestamp: timestamp,
-            kind: kind, owner: expansionOwner, target: motionTargetValue))
+            kind: kind, owner: expansionOwner, target: motionTargetValue, hoverDecision: hoverDecision))
     }
     private func observePointer(event: NSEvent? = nil, monitor: String = "poll") {
         if let event, model.demo, CommandLine.arguments.contains("--music-test"),
@@ -504,8 +515,8 @@ final class IslandPanelController: NSObject {
                 recordPointer(point, timestamp: event.timestamp, kind: "button")
                 return
             }
-            updatePointer(point, now: event.timestamp, buttonDownOverride: !eventButtons.isEmpty, source: .event)
-            recordPointer(point, timestamp: event.timestamp, kind: "event")
+            let hoverDecision = updatePointer(point, now: event.timestamp, buttonDownOverride: !eventButtons.isEmpty, source: .event)
+            recordPointer(point, timestamp: event.timestamp, kind: "event", hoverDecision: hoverDecision)
         } else {
             // Polling has its own history. It cannot insert the live cursor into
             // an event traversal, release its gate, or overwrite its timestamps.
@@ -520,19 +531,20 @@ final class IslandPanelController: NSObject {
             // reconciles button state only after the event stream is quiet.
             eventButtons = Set((0..<32).filter { buttons & (1 << $0) != 0 })
             buttonStateTime = delivered
-            updatePointer(point, now: delivered, buttonDownOverride: buttons != 0, source: .poll)
-            recordPointer(point, timestamp: delivered, kind: "poll")
+            let hoverDecision = updatePointer(point, now: delivered, buttonDownOverride: buttons != 0, source: .poll)
+            recordPointer(point, timestamp: delivered, kind: "poll", hoverDecision: hoverDecision)
         }
     }
+    @discardableResult
     private func updatePointer(_ point: CGPoint, now: TimeInterval, buttonDownOverride: Bool? = nil,
-                               source: PointerSource = .synthetic) {
-        guard !stopped, point.x.isFinite, point.y.isFinite, now.isFinite else { return }
+                               source: PointerSource = .synthetic) -> IslandPointerHoverDecision? {
+        guard !stopped, point.x.isFinite, point.y.isFinite, now.isFinite else { return nil }
         // A passive pointer cannot consume the user's configured readable dwell.
         // Keep hover history empty so expiry cannot inherit an already-armed hover.
         if noticeTargetActive {
             hover.reset(); resetCrossings(); gestureHoverGate.claim()
             panel.ignoresMouseEvents = true
-            return
+            return nil
         }
         let corridor = geometry.musicGestureCorridor
         if musicGestureNeedsCorridorExit,
@@ -555,19 +567,19 @@ final class IslandPanelController: NSObject {
                !model.music.lyricsModeEnabled || !model.music.isPlayingForPresentation {
                 releaseMusicGestureToHover()
                 updateClickRouting(point)
-                return
+                return nil
             }
             hover.reset()
             gestureHoverGate.claim(requiresLyrics: action == .right)
             updateMusicPresentation(forceRetarget: hadHover)
             updateClickRouting(point)
-            return
+            return nil
         }
         // A successful crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
-        if recognizer.reservesPointer { updateClickRouting(point); return }
+        if recognizer.reservesPointer { updateClickRouting(point); return nil }
         if gestureHoverGate.suppresses(insideStableEnvelope: geometry.canonicalHoverContains(point, progress: 1)) {
-            updateClickRouting(point); return
+            updateClickRouting(point); return nil
         }
         // A moving pointer near the music shell is approaching a gesture, not
         // asking to open full details. Only a genuinely stationary dwell may do so.
@@ -578,9 +590,18 @@ final class IslandPanelController: NSObject {
             } else if musicHoverAnchor == nil { musicHoverAnchor = point }
         } else { musicHoverAnchor = nil }
         let before = hover.isExpanded
-        hover.update(inside: currentHoverContains(point),
-            now: source == .synthetic ? now : ProcessInfo.processInfo.systemUptime,
+        // Preserve argument evaluation order: hit testing precedes the one clock
+        // read used by the actual hover decision.
+        let inside = currentHoverContains(point)
+        let hoverNow = source == .synthetic ? now : ProcessInfo.processInfo.systemUptime
+        hover.update(inside: inside, now: hoverNow,
             resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
+        let hoverDecision: IslandPointerHoverDecision?
+        if model.demo, CommandLine.arguments.contains("--music-test"),
+           CommandLine.arguments.contains("--music-cache-test"), source != .synthetic {
+            hoverDecision = IslandPointerHoverDecision(timestamp: hoverNow, inside: inside,
+                expandedBefore: before, expandedAfter: hover.isExpanded)
+        } else { hoverDecision = nil }
         if hover.isExpanded != before {
             if source != .synthetic { lastAppliedGestureTime = max(lastAppliedGestureTime, now) }
             if hover.isExpanded { hovered(); cancelNoticeTimers(); noticeTargetActive = false; presentation.showingDetails = true }
@@ -588,6 +609,7 @@ final class IslandPanelController: NSObject {
             startMotion()
         }
         updateClickRouting(point)
+        return hoverDecision
     }
     // Retargeting integrates the springs before the next frame publication. A
     // bridge override belongs to its published progress, so hit-test that same

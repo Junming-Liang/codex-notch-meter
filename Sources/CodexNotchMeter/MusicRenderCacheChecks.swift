@@ -282,6 +282,11 @@ final class MusicRenderCacheChecks {
         func point(_ p: CGPoint) -> [Double] { [Double(p.x), Double(p.y)] }
         func rect(_ r: CGRect) -> [Double] { [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)] }
         func finite(_ value: Double) -> Any { value.isFinite ? value as Any : NSNull() }
+        func hoverDecision(_ value: IslandPointerHoverDecision?) -> Any {
+            guard let value else { return NSNull() }
+            return ["timestamp": finite(value.timestamp), "inside": value.inside,
+                    "expandedBefore": value.expandedBefore, "expandedAfter": value.expandedAfter]
+        }
         func snapshot(_ label: String, eventNumber: Int? = nil) -> [String: Any] {
             let sampledAt = ProcessInfo.processInfo.systemUptime
             return ["label": label, "eventNumber": eventNumber.map { $0 as Any } ?? NSNull(),
@@ -341,7 +346,8 @@ final class MusicRenderCacheChecks {
                     "oracleUsesDeliveredEventsOnly": true, "oracleDoesNotMutateProduction": true,
                     "productionReceipts": receipts.prefix(128).map { r -> [String: Any] in
                         ["kind": r.kind, "timestamp": r.timestamp, "point": point(r.point),
-                         "owner": String(describing: r.owner), "target": r.target]
+                         "owner": String(describing: r.owner), "target": r.target,
+                         "hoverDecision": hoverDecision(r.hoverDecision)]
                     },
                     "productionMonitorEntries": entries.prefix(32).map { e -> [String: Any] in
                         ["monitor": e.monitor, "eventNumber": e.eventNumber, "eventType": e.eventType,
@@ -451,10 +457,19 @@ final class MusicRenderCacheChecks {
                       let entry = localEntry(queued), let receipt = acceptedReceipt(queued) else {
                     throw Failure(label: "unique-local-event-receipt")
                 }
+                if queued.number < 28_003 {
+                    try require(receipt.hoverDecision == nil, "crossing-does-not-reuse-hover-decision")
+                } else {
+                    guard let decision = receipt.hoverDecision else { throw Failure(label: "missing-event-hover-decision") }
+                    try require(decision.timestamp.isFinite && decision.timestamp >= entry.delivered
+                        && decision.inside && decision.expandedAfter == (receipt.owner == .details),
+                        "event-hover-decision-bound-to-actual-delivery")
+                }
                 constructed.append(["eventNumber": queued.number, "eventType": entry.eventType, "windowNumber": entry.windowNumber,
                     "requestedTimestamp": queued.requested, "constructedTimestamp": queued.constructed, "deliveredTimestamp": entry.timestamp,
                     "deliveredAt": entry.delivered, "screenPoint": point(queued.screen), "localPoint": point(queued.local),
-                    "owner": String(describing: receipt.owner), "target": receipt.target])
+                    "owner": String(describing: receipt.owner), "target": receipt.target,
+                    "hoverDecision": hoverDecision(receipt.hoverDecision)])
                 receipts.append(receipt)
             }
             // This is current collection-time state, not a historical per-event
@@ -520,12 +535,16 @@ final class MusicRenderCacheChecks {
         try await until("first-natural-quiet-poll", timeout: 1) {
             panel.smokePointerIngress.contains { $0.kind == "poll" && $0.timestamp > failed.timestamp }
         }
-        guard let firstPoll = panel.smokePointerIngress.first(where: { $0.kind == "poll" && $0.timestamp > failed.timestamp }) else {
+        guard let firstPoll = panel.smokePointerIngress.first(where: { $0.kind == "poll" && $0.timestamp > failed.timestamp }),
+              let firstPollHover = firstPoll.hoverDecision else {
             throw Failure(label: "missing-first-poll")
         }
         try require(firstPoll.point == endpoint && firstPoll.owner == .idle && firstPoll.target == 0
             && firstPoll.timestamp - failedEntry.delivered > 0.25 && !panel.isInteracting,
             "first-poll-starts-fresh-hover-dwell")
+        try require(firstPollHover.timestamp.isFinite && firstPollHover.timestamp >= firstPoll.timestamp
+            && firstPollHover.inside && !firstPollHover.expandedBefore && !firstPollHover.expandedAfter,
+            "first-poll-has-actual-idle-hover-decision")
         observations.append(snapshot("after-first-quiet-poll"))
         recoveryStage = "stationary-event-recovery"
         // Queue stationary input after the quiet-period poll, then keep events
@@ -540,7 +559,8 @@ final class MusicRenderCacheChecks {
         }
         guard let detailsEvent = panel.smokePointerIngress.first(where: {
             $0.kind == "event" && $0.timestamp > firstPoll.timestamp && $0.owner == .details
-        }), let lastEvent = panel.smokePointerIngress.last(where: { $0.kind == "event" }) else {
+        }), let detailsHover = detailsEvent.hoverDecision,
+           let lastEvent = panel.smokePointerIngress.last(where: { $0.kind == "event" }) else {
             throw Failure(label: "event-stream-did-not-recover-details")
         }
         guard let firstStationary = queuedEvents.first(where: { $0.number == 28_003 }),
@@ -561,24 +581,33 @@ final class MusicRenderCacheChecks {
         try require(firstStationaryEntry.timestamp == firstEvent.timestamp
             && firstEvent.timestamp > firstPoll.timestamp
             && preTakeover.allSatisfy {
-                $0.kind == "poll" && $0.point == endpoint && $0.owner == .idle && $0.target == 0
+                guard let decision = $0.hoverDecision else { return false }
+                return $0.kind == "poll" && $0.point == endpoint && $0.owner == .idle && $0.target == 0
                     && $0.timestamp >= firstPoll.timestamp && $0.timestamp < firstStationaryEntry.delivered
+                    && decision.timestamp.isFinite && decision.timestamp >= $0.timestamp
+                    && decision.timestamp < firstStationaryEntry.delivered && decision.inside
+                    && !decision.expandedBefore && !decision.expandedAfter
             }, "quiet-polls-precede-actual-event-takeover")
         let eventStream = panel.smokePointerIngress[firstEventIndex...lastEventIndex]
-        let recovery = detailsEvent.timestamp - firstPoll.timestamp
+        let recovery = detailsHover.timestamp - firstPollHover.timestamp
         try require(recovery >= 0.12 && recovery < 0.8 && detailsEvent.point == endpoint
+            && detailsHover.inside && !detailsHover.expandedBefore && detailsHover.expandedAfter
             && !eventStream.contains(where: { $0.kind == "poll" }),
             "events-recover-before-recognizer-timeout")
         recoveryStage = "final-natural-quiet-poll"
         try await until("quiet-poll-retains-details", timeout: 1) {
             panel.smokePointerIngress.contains { $0.kind == "poll" && $0.timestamp > lastEvent.timestamp && $0.owner == .details }
         }
-        guard let finalPoll = panel.smokePointerIngress.first(where: { $0.kind == "poll" && $0.timestamp > lastEvent.timestamp }) else {
+        guard let finalPoll = panel.smokePointerIngress.first(where: { $0.kind == "poll" && $0.timestamp > lastEvent.timestamp }),
+              let finalPollHover = finalPoll.hoverDecision else {
             throw Failure(label: "missing-final-poll")
         }
         let lastDelivered = panel.smokePointerEntries.last(where: { $0.eventNumber == 28_008 })?.delivered ?? .infinity
         try require(finalPoll.owner == .details && finalPoll.point == endpoint
             && finalPoll.timestamp - lastDelivered > 0.25, "final-poll-keeps-details")
+        try require(finalPollHover.timestamp.isFinite && finalPollHover.timestamp >= finalPoll.timestamp
+            && finalPollHover.inside && finalPollHover.expandedBefore && finalPollHover.expandedAfter,
+            "final-poll-has-actual-expanded-hover-decision")
         observations.append(snapshot("after-final-quiet-poll"))
         recoveryStage = "natural-details-paint"
         try await until("recovered-natural-details-paint", timeout: 2) {
@@ -586,7 +615,7 @@ final class MusicRenderCacheChecks {
             let expected = panel.geometry.frame(progress: 1), probe = panel.motionProbe
             return !probe.running && probe.requestedProgress == 1 && probe.renderedProgress == 1
                 && probe.frame == expected && probe.viewport == expected.size && probe.visible && probe.nonKey
-                && paint.observed >= detailsEvent.timestamp && paint.frame.progress == 1
+                && paint.observed >= detailsHover.timestamp && paint.frame.progress == 1
                 && paint.actualViewport == expected.size && paint.nativeFrame == expected
         }
         let receipts = panel.smokePointerIngress.filter { $0.timestamp >= began }
@@ -596,12 +625,12 @@ final class MusicRenderCacheChecks {
             "recovery-no-exit-or-new-lyrics")
         func receipt(_ r: IslandPointerIngressReceipt) -> [String: Any] {
             ["kind": r.kind, "owner": String(describing: r.owner), "target": r.target,
-             "point": point(r.point), "timestamp": r.timestamp]
+             "point": point(r.point), "timestamp": r.timestamp, "hoverDecision": hoverDecision(r.hoverDecision)]
         }
         recoveryCompleted = true
         return ["syntheticPollLocation": true, "nativeLocalEvents": true, "globalSystemDelivery": false,
             "actualTimerPolling": true, "naturalPaint": true, "noEnvelopeExit": true,
-            "unavailableLyrics": true, "eventRecoverySeconds": recovery,
+            "unavailableLyrics": true, "eventRecoverySeconds": recovery, "recoveryClock": "hover-decision-uptime",
             "firstPollQuietSeconds": firstPoll.timestamp - failedEntry.delivered,
             "constructed": constructed,
             "sequence": [receipt(failed), receipt(firstPoll), receipt(firstEvent), receipt(detailsEvent), receipt(finalPoll)]]
