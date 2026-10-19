@@ -160,7 +160,79 @@ final class MusicRenderCacheChecks {
         try require(path.allSatisfy { geometry.canonicalHoverContains($0, progress: 1) }, "crossing-stays-in-envelope")
         let began = ProcessInfo.processInfo.systemUptime
         var constructed: [[String: Any]] = []
+        var observations: [[String: Any]] = []
+        var recoveryStage = "initial-crossing"
+        var recoveryCompleted = false
         func point(_ p: CGPoint) -> [Double] { [Double(p.x), Double(p.y)] }
+        func rect(_ r: CGRect) -> [Double] { [Double(r.minX), Double(r.minY), Double(r.width), Double(r.height)] }
+        func finite(_ value: Double) -> Any { value.isFinite ? value as Any : NSNull() }
+        func snapshot(_ label: String, eventNumber: Int? = nil) -> [String: Any] {
+            let sampledAt = ProcessInfo.processInfo.systemUptime
+            return ["label": label, "eventNumber": eventNumber.map { $0 as Any } ?? NSNull(),
+                "sampledAt": sampledAt, "elapsed": sampledAt - began,
+                "endpoint": point(endpoint), "currentHoverContains": panel.smokeCurrentHoverContains(endpoint),
+                "stableEnvelopeContains": panel.geometry.canonicalHoverContains(endpoint, progress: 1),
+                "progress": panel.smokeProgress, "hoverSnapshotProgress": panel.smokeHoverSnapshotProgress,
+                "accessoryProgress": panel.smokeAccessoryProgress,
+                "publishedAccessoryProgress": panel.geometry.musicAccessoryProgress,
+                "showsMusicAccessories": panel.geometry.showsMusicAccessories,
+                "frame": rect(panel.panel.frame), "closedFrame": rect(panel.geometry.frame(progress: 0)),
+                "contourFrame": rect(panel.geometry.contourFrame), "corridor": rect(panel.geometry.musicGestureCorridor),
+                "visible": panel.panel.isVisible, "placementValid": panel.placementIsValid,
+                "motionRunning": panel.smokeMotionRunning, "owner": String(describing: panel.smokeExpansionOwner),
+                "target": panel.smokeTargetProgress, "freshPlaying": controller.isFreshPlaying,
+                "usableLyrics": controller.isPlayingForPresentation, "selected": controller.lyricsModeEnabled,
+                "inputState": panel.smokeMusicInputState(at: endpoint).map { $0 as Any } ?? NSNull()]
+        }
+        observations.append(snapshot("before-first-post"))
+        defer {
+            if !recoveryCompleted {
+                // Diagnostic only: replay the first three *delivered* native
+                // samples through a separate pure recognizer. This cannot change
+                // production history or make an uncompleted crossing pass.
+                var oracle = IslandCrossing(), oracleRows: [[String: Any]] = []
+                var previousTime: TimeInterval?
+                var completedRight = false
+                for number in 28_000...28_002 {
+                    let entries = panel.smokePointerEntries.filter { $0.monitor == "local" && $0.eventNumber == number }
+                    guard entries.count == 1, let entry = entries.first else { continue }
+                    let action = oracle.update(point: entry.screenPoint, now: entry.timestamp,
+                        corridor: corridor, enabled: true, buttonDown: !entry.buttons.isEmpty)
+                    completedRight = completedRight || action == .right
+                    oracleRows.append(["eventNumber": number, "timestamp": entry.timestamp,
+                        "gapFromPrevious": previousTime.map { finite(entry.timestamp - $0) } ?? NSNull(),
+                        "point": point(entry.screenPoint), "buttons": entry.buttons,
+                        "action": action == .right ? "right" : (action == .left ? "left" : "none"),
+                        "reservesPointer": oracle.reservesPointer, "locked": oracle.isLocked])
+                    previousTime = entry.timestamp
+                }
+                let receipts = panel.smokePointerIngress.filter { $0.timestamp >= began }
+                let entries = panel.smokePointerEntries.filter { (28_000...28_008).contains($0.eventNumber) }
+                let evidence: [String: Any] = ["stage": recoveryStage,
+                    "constructed": constructed, "snapshots": observations,
+                    "finalSnapshot": snapshot("failure"), "initialCrossingOracle": oracleRows,
+                    "initialCrossingOracleCompletedRight": completedRight,
+                    "oracleUsesDeliveredEventsOnly": true, "oracleDoesNotMutateProduction": true,
+                    "productionReceipts": receipts.prefix(128).map { r -> [String: Any] in
+                        ["kind": r.kind, "timestamp": r.timestamp, "point": point(r.point),
+                         "owner": String(describing: r.owner), "target": r.target]
+                    },
+                    "productionMonitorEntries": entries.prefix(32).map { e -> [String: Any] in
+                        ["monitor": e.monitor, "eventNumber": e.eventNumber, "eventType": e.eventType,
+                         "windowNumber": e.windowNumber, "point": point(e.screenPoint),
+                         "timestamp": e.timestamp, "deliveredAt": e.delivered,
+                         "lastEventTime": finite(e.lastEventTime), "lastAppliedGestureTime": finite(e.lastAppliedGestureTime),
+                         "buttonStateTime": finite(e.buttonStateTime), "buttons": e.buttons,
+                         "stopped": e.stopped, "placementValid": e.placementValid]
+                    },
+                    "receiptCount": receipts.count, "receiptTruncated": receipts.count > 128,
+                    "monitorEntryCount": entries.count, "monitorEntriesTruncated": entries.count > 32]
+                if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+                   data.count <= 131_072, let json = String(data: data, encoding: .utf8) {
+                    print("MUSIC_RENDER_CACHE_RECOVERY_DIAGNOSTIC_JSON: " + json)
+                } else { print("MUSIC_RENDER_CACHE_RECOVERY_DIAGNOSTIC_FAILED: bounded-json-encoding") }
+            }
+        }
         func post(_ p: CGPoint) async throws -> IslandPointerIngressReceipt {
             let number = 28_000 + constructed.count, requested = ProcessInfo.processInfo.systemUptime
             let location = source.convertPoint(fromScreen: p)
@@ -225,6 +297,7 @@ final class MusicRenderCacheChecks {
                 "requestedTimestamp": requested, "constructedTimestamp": timestamp, "deliveredTimestamp": entry.timestamp,
                 "deliveredAt": entry.delivered, "screenPoint": point(p), "localPoint": point(location),
                 "owner": String(describing: receipt.owner), "target": receipt.target])
+            observations.append(snapshot("after-accepted-event", eventNumber: number))
             return receipt
         }
         var failed: IslandPointerIngressReceipt?
@@ -238,6 +311,7 @@ final class MusicRenderCacheChecks {
         try require(controller.isFreshPlaying && !controller.isPlayingForPresentation && !controller.lyricsModeEnabled
             && failed.owner == .idle && failed.target == 0 && !panel.isInteracting,
             "unavailable-lyrics-open-does-not-claim")
+        recoveryStage = "first-natural-quiet-poll"
         try await until("first-natural-quiet-poll", timeout: 1) {
             panel.smokePointerIngress.contains { $0.kind == "poll" && $0.timestamp > failed.timestamp }
         }
@@ -247,6 +321,8 @@ final class MusicRenderCacheChecks {
         try require(firstPoll.point == endpoint && firstPoll.owner == .idle && firstPoll.target == 0
             && firstPoll.timestamp - failedEntry.delivered > 0.25 && !panel.isInteracting,
             "first-poll-starts-fresh-hover-dwell")
+        observations.append(snapshot("after-first-quiet-poll"))
+        recoveryStage = "stationary-event-recovery"
         // Immediately replace the event history after its quiet-period poll,
         // then keep events flowing faster than the 250 ms poll guard. A timeout
         // of the old 1.2 s recognizer cannot make this negative control pass.
@@ -266,6 +342,7 @@ final class MusicRenderCacheChecks {
             && !panel.smokePointerIngress.contains(where: {
                 $0.kind == "poll" && $0.timestamp > firstPoll.timestamp && $0.timestamp < detailsEvent.timestamp
             }), "events-recover-before-recognizer-timeout")
+        recoveryStage = "final-natural-quiet-poll"
         try await until("quiet-poll-retains-details", timeout: 1) {
             panel.smokePointerIngress.contains { $0.kind == "poll" && $0.timestamp > lastEvent.timestamp && $0.owner == .details }
         }
@@ -275,6 +352,8 @@ final class MusicRenderCacheChecks {
         let lastDelivered = panel.smokePointerEntries.last(where: { $0.eventNumber == 28_008 })?.delivered ?? .infinity
         try require(finalPoll.owner == .details && finalPoll.point == endpoint
             && finalPoll.timestamp - lastDelivered > 0.25, "final-poll-keeps-details")
+        observations.append(snapshot("after-final-quiet-poll"))
+        recoveryStage = "natural-details-paint"
         try await until("recovered-natural-details-paint", timeout: 2) {
             guard let paint = panel.paintReceipt else { return false }
             let expected = panel.geometry.frame(progress: 1), probe = panel.motionProbe
@@ -292,6 +371,7 @@ final class MusicRenderCacheChecks {
             ["kind": r.kind, "owner": String(describing: r.owner), "target": r.target,
              "point": point(r.point), "timestamp": r.timestamp]
         }
+        recoveryCompleted = true
         return ["syntheticPollLocation": true, "nativeLocalEvents": true, "globalSystemDelivery": false,
             "actualTimerPolling": true, "naturalPaint": true, "noEnvelopeExit": true,
             "unavailableLyrics": true, "eventRecoverySeconds": recovery,

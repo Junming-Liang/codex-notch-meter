@@ -989,6 +989,23 @@ final class IslandPanelController: NSObject {
     }
     /// Location-only fixture seam for the actual polling path. This does not
     /// establish delivery through a system global monitor or move the cursor.
+    /// Synthetic cache-gate diagnosis only; no normal input trace or mutation.
+    func smokeMusicInputState(at point: CGPoint) -> [String: Any]? {
+        guard model.demo, CommandLine.arguments.contains("--music-test"),
+              CommandLine.arguments.contains("--music-cache-test") else { return nil }
+        func finite(_ value: TimeInterval) -> Any { value.isFinite ? value as Any : NSNull() }
+        let anchor: Any = musicHoverAnchor.map { [Double($0.x), Double($0.y)] as Any } ?? NSNull()
+        return ["gestureSuppressed": gestureHoverGate.isSuppressing,
+            "needsCorridorExit": musicGestureNeedsCorridorExit,
+            "eventTracking": crossing.isTracking, "eventReserves": crossing.reservesPointer,
+            "eventLocked": crossing.isLocked, "pollTracking": fallbackCrossing.isTracking,
+            "pollReserves": fallbackCrossing.reservesPointer, "pollLocked": fallbackCrossing.isLocked,
+            "hoverExpanded": hover.isExpanded, "insideCurrentHover": currentHoverContains(point),
+            "hoverAnchor": anchor,
+            "lastEventTime": finite(lastEventTime), "lastEventDelivery": finite(lastEventDelivery),
+            "lastAppliedGestureTime": finite(lastAppliedGestureTime), "lastPollTime": finite(lastPollTime),
+            "buttonStateTime": finite(buttonStateTime), "buttons": eventButtons.sorted()]
+    }
     func smokeSetPolledPointer(_ point: CGPoint?) {
         guard model.demo, CommandLine.arguments.contains("--music-test"), !stopped else { return }
         if let point, !point.x.isFinite || !point.y.isFinite { return }

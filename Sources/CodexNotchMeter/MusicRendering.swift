@@ -154,6 +154,7 @@ final class MusicRenderHarness: NSObject {
         let window: Int
         let requested: TimeInterval
         let constructed: TimeInterval
+        let deliveredAt: TimeInterval
         let local: CGPoint
         let screen: CGPoint
     }
@@ -221,6 +222,14 @@ final class MusicRenderHarness: NSObject {
         try require(fixture.controller.isFreshPlaying && fixture.controller.isPlayingForPresentation == startsUsable
             && !fixture.controller.lyricsModeEnabled, "gesture recovery source has its exact requested eligibility")
         guard let geometry = makeGeometry() else { throw Failure(label: "gesture recovery native geometry unavailable") }
+        // Refresh an already-aged snapshot before the bounded setup phase.
+        // The readiness predicate still requires real freshness throughout setup.
+        if let snapshot = fixture.controller.syntheticPlaybackSnapshot,
+           ProcessInfo.processInfo.systemUptime - snapshot.observedAt >= 5 - 3.6 {
+            let fresh = try await read(fixture)
+            try await release(fixture, fresh, position: name == "gap" ? 12 : 1)
+        }
+        let panelCreatedAt = CACurrentMediaTime()
         let panel = IslandPanelController(model: model, geometry: geometry, startPolling: true,
             reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
         passivePanels.append(panel)
@@ -235,7 +244,7 @@ final class MusicRenderHarness: NSObject {
                 let received = GestureRecoveryEvent(number: event.eventNumber,
                     type: event.type.rawValue, window: event.windowNumber,
                     requested: event.timestamp, constructed: event.timestamp,
-                    local: event.locationInWindow,
+                    deliveredAt: ProcessInfo.processInfo.systemUptime, local: event.locationInWindow,
                     screen: event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow)
                 // Retain a short raw tail only for failed own-event diagnostics;
                 // filtering first would hide a changed event identity entirely.
@@ -290,7 +299,8 @@ final class MusicRenderHarness: NSObject {
                 && event.window === sourceWindow && event.locationInWindow == local,
                         "gesture recovery construction preserves ordered timestamp and unique 16-bit identity")
             let evidence = GestureRecoveryEvent(number: number, type: event.type.rawValue,
-                window: event.windowNumber, requested: requested, constructed: timestamp, local: local, screen: point)
+                window: event.windowNumber, requested: requested, constructed: timestamp,
+                deliveredAt: 0, local: local, screen: point)
             constructed.append(evidence); lastRequested = requested; lastConstructed = timestamp
             NSApp.postEvent(event, atStart: false)
             do {
@@ -309,7 +319,9 @@ final class MusicRenderHarness: NSObject {
                 func coordinates(_ value: CGPoint) -> [Double] { [Double(value.x), Double(value.y)] }
                 func entry(_ value: GestureRecoveryEvent) -> [String: Any] {
                     ["number": value.number, "type": value.type, "window": value.window,
-                     "timestamp": value.constructed, "local": coordinates(value.local), "screen": coordinates(value.screen)]
+                     "timestamp": value.constructed, "deliveredAt": value.deliveredAt,
+                     "deliveryWait": value.deliveredAt - requested,
+                     "local": coordinates(value.local), "screen": coordinates(value.screen)]
                 }
                 let observed = observation.events.suffix(16).map(entry)
                 let rawObserved = observation.rawEvents.map(entry)
@@ -408,6 +420,19 @@ final class MusicRenderHarness: NSObject {
                 && panel.panel.ignoresMouseEvents,
                         "queued stationary hardware point restores correct click-through routing")
         }
+        // Run61 had complete first-event receipts when the waiting task resumed
+        // beyond its 0.20-second deadline. Establish cold native readiness first,
+        // separating bounded setup work from the strict event stream.
+        // No event deadline, crossing interval or recovery dwell is extended.
+        try await until("gesture recovery cold setup reaches fresh accessories and matching natural idle paint") {
+            fixture.controller.isFreshPlaying && panel.smokeMusicAccessoriesVisible
+                && panel.geometry.musicAccessoryProgress == 1
+                && panel.paintReceipt?.frame.accessoryProgress == 1
+                && panel.smokeExpansionOwner == .idle && sourceWindow.isVisible
+                && self.nativeSettled(panel, progress: 0, after: panelCreatedAt)
+                && self.naturalPaintMatches(panel, progress: 0, after: panelCreatedAt)
+        }
+        print("MUSIC_GESTURE_SETUP_DIAGNOSTIC: kind=\(name) elapsed=\(decimal(CACurrentMediaTime() - panelCreatedAt)) deadline=3.6 nativeIdle=true accessoryEndpoint=1 naturalPaint=true sourceFresh=true eventDeadline=0.20")
         try await hold(outside, seconds: 0.75)
         let readyDeadline = CACurrentMediaTime() + 2.5
         while !nativeSettled(panel, progress: 0, after: 0) && CACurrentMediaTime() < readyDeadline {
