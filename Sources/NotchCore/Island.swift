@@ -110,6 +110,20 @@ public struct IslandGeometry: Equatable, Sendable {
     public var showsMusicAccessories = false
     /// Driven on the same frame clock as expansion, including playback edges.
     public var musicAccessoryProgress: Double = 1
+    /// Latched only for a non-music idle -> hover interaction. Shared music geometry is the default.
+    public var ordinaryHoverWidth = false
+    public var widthPresentation: IslandWidthPresentation?
+    public var expandedContentCenterX: CGFloat {
+        var canonical = self; canonical.widthPresentation = nil
+        return canonical.frame(progress: 1).minX + canonical.contourRect(progress: 1).midX
+    }
+    public var motionHorizontalBounds: ClosedRange<Double> {
+        let scale = min(2, max(0.5, notch.height / 32))
+        let flare = min(0.5, max(0, 4 * scale - 3))
+        let left = ceil(screen.minX * backingScale) / backingScale
+        let right = floor(screen.maxX * backingScale) / backingScale
+        return Double(left + flare)...Double(right - flare)
+    }
     public var expandedSize: CGSize { frame(progress: 1).size }
     public let contentHeight: CGFloat
     public let compactWidth: CGFloat
@@ -191,7 +205,11 @@ public struct IslandGeometry: Equatable, Sendable {
             return IslandContour(rect: CGRect(x: frame.minX, y: 0, width: frame.width, height: frame.height),
                 progress: p, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height)
         }
-        let current = contour(progress), idle = contour(0)
+        let current = contour(progress)
+        var reference = self; reference.widthPresentation = nil
+        let idleFrame = reference.drawingFrame(progress: 0)
+        let idle = IslandContour(rect: CGRect(x: idleFrame.minX, y: 0, width: idleFrame.width, height: idleFrame.height),
+            progress: 0, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height)
         let distances = [
             abs(current.rect.height - idle.rect.height),
             abs(current.rect.minX + current.shoulder - idle.rect.minX - idle.shoulder),
@@ -253,7 +271,42 @@ public struct IslandGeometry: Equatable, Sendable {
         return CGRect(x: contour.minX - native.minX, y: native.maxY - contour.maxY,
             width: contour.width, height: contour.height)
     }
+    /// Exact analytic width velocity; shared geometry is unchanged unless explicitly latched.
+    public func widthSample(progress: Double, velocity: Double = 0, accessoryVelocity: Double = 0) -> IslandWidthSample {
+        if let current = widthPresentation, current.progress == progress { return current.sample }
+        let p = min(1, max(0, progress))
+        func ease(_ q: Double) -> (Double, Double) {
+            if q <= 0 { return (0, 0) }; if q >= 1 { return (1, 0) }
+            return (q * q * (3 - 2 * q), 6 * q * (1 - q))
+        }
+        let base = Double(contourFrame.width), full = Double(expandedContourFrame.width)
+        let c0 = Double(calibratedNotch.midX), dc = Double(expandedContourFrame.midX - calibratedNotch.midX)
+        if ordinaryHoverWidth {
+            let q = ease(p / updateProgress)
+            return IslandWidthSample(width: base + (full - base) * q.0, center: c0 + dc * q.0,
+                widthVelocity: (full - base) * q.1 / updateProgress * velocity,
+                centerVelocity: dc * q.1 / updateProgress * velocity)
+        }
+        let a = showsMusicAccessories ? min(1, max(0, musicAccessoryProgress)) : 0
+        let wing = Double(musicAccessoryFrame.width) - base
+        let closed = base + wing * a, compact = Double(compactWidth)
+        let lower = musicProgress(contentHeight: 48), upper = musicProgress(contentHeight: 90)
+        let q = ease(p / lower), d = ease((p - upper) / (1 - upper))
+        return IslandWidthSample(width: closed + (compact - closed) * q.0 + (full - compact) * d.0,
+            center: c0 + dc * q.0,
+            widthVelocity: (compact - closed) * q.1 / lower * velocity
+                + (full - compact) * d.1 / (1 - upper) * velocity
+                + (showsMusicAccessories ? wing * accessoryVelocity * (1 - q.0) : 0),
+            centerVelocity: dc * q.1 / lower * velocity)
+    }
     private func drawingFrame(progress: Double) -> CGRect {
+        if ordinaryHoverWidth || widthPresentation?.progress == progress {
+            let p = min(1, max(0, progress.isFinite ? progress : 0))
+            let value = widthSample(progress: p)
+            let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * CGFloat(p)
+            return CGRect(x: CGFloat(value.center - value.width / 2), y: screen.maxY - height,
+                width: CGFloat(value.width), height: height)
+        }
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
         let accessory = showsMusicAccessories ? CGFloat(min(1, max(0, musicAccessoryProgress))) : 0
         let closedWidth = contourFrame.width + (musicAccessoryFrame.width - contourFrame.width) * accessory
@@ -283,6 +336,11 @@ public struct IslandGeometry: Equatable, Sendable {
         let right = ceil(contour.maxX * scale) / scale
         let bottom = floor(contour.minY * scale) / scale
         return CGRect(x: left, y: bottom, width: right - left, height: screen.maxY - bottom)
+    }
+    /// Gesture reservation uses the stable full endpoint, not an interrupted presentation.
+    public func canonicalHoverContains(_ point: CGPoint, progress: Double) -> Bool {
+        var value = self; value.widthPresentation = nil
+        return value.hoverContains(point, progress: progress)
     }
     public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
         // Never use visibleFrame: the island is attached to the physical top edge.

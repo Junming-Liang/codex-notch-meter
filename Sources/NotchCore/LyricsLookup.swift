@@ -92,7 +92,7 @@ public enum LRCLIBLookup {
     public static let requestTimeout: TimeInterval = 10
     public static let minimumRequestGap: TimeInterval = 0.3
     public static let durationTolerance: TimeInterval = 2
-    public static let userAgent = "CodexNotchMeter/1.0.3 (https://github.com/Junming-Liang/codex-notch-meter)"
+    public static let userAgent = "CodexNotchMeter/1.1.0 (https://github.com/Junming-Liang/codex-notch-meter)"
 
     /// A search response at this ceiling may be truncated, so it cannot prove
     /// uniqueness. Reject it rather than selecting from a partial candidate set.
