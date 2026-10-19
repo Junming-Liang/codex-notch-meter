@@ -36,6 +36,8 @@ def receipts_valid(stdout: str) -> bool:
     auto_pause = one(r'^MUSIC_AUTO_PAUSE_NOTICE_OK: hold=' + number + r' expected=4 dwellUnchanged=true lyricEmpty=true owner=idle$')
     auto_reduced = one(r'^MUSIC_AUTO_REDUCED_OK: hold=' + number + r' expected=2 sequence=music-notice-music-idle motionFrames=0 passive=true$')
     close_paint = one(r'^MUSIC_AUTO_CLOSE_PAINT_OK: intermediateFrames=(\d+) opacityDecreased=true opaqueBefore4pt=true idleOpacity=0 naturalPaint=true$')
+    notice_pointer = one(r'^MUSIC_NOTICE_POINTER_DWELL_OK: seconds=6 held=([0-9.]+) pointerSamples=(\d+) musicUpdates=(\d+)$')
+    natural_pointer = one(r'^MUSIC_NATURAL_POINTER_OK: sparse30Hz=true adjacentExit=true downwardExit=true noDetailsRetarget=true coupledCloseReady=true movingPaints=(\d+) sharedContour=true scanout=false$')
     cooldown = one(r'^MUSIC_LOOKUP_COOLDOWN_OK: observed=' + number + r' retryAfter=60 polls=3 lookupCalls=1 synthetic=true$')
     retirements = re.findall(
         r'^MUSIC_RETIRE_OK: kind=(disable|sleep|stop) readerCancelled=true lookupCancelled=true '
@@ -44,6 +46,7 @@ def receipts_valid(stdout: str) -> bool:
     states = re.findall(r'^MUSIC_STATE_OK: kind=(unknown|stopped) freshSample=true previousLine=true cleared=true$', stdout, re.MULTILINE)
     cleanup = one(r'^MUSIC_CLEANUP_OK: controllers=(\d+) pendingRequests=0 panelStopped=true$')
     fixed = (
+        'MUSIC_PERIMETER_OK: skins=5 states=compact,details,details-no-wings coloredOutside=true usedBlack=true innerBlack=true ownViewPixels=true scanout=false',
         'MUSIC_SOURCE_OK: reason=timedOut lineEmpty=true titleEmpty=true',
         'MUSIC_DENIED_OK: explicitRetryPrompt=true followupPrompt=false idle=3.15 noAutomaticRetry=true',
         'MUSIC_SYNTHETIC_OK: defaultReader=silent defaultLookup=reject defaultImporter=reject',
@@ -82,7 +85,7 @@ def receipts_valid(stdout: str) -> bool:
     )
     lines = stdout.splitlines()
     singleton_prefixes = {line.split(':', 1)[0] for line in fixed} | {
-        'MUSIC_DISABLED_OK', 'MUSIC_CONSENT_OK', 'MUSIC_TIMELINE_OK', 'MUSIC_STALE_OK',
+        'MUSIC_NOTICE_POINTER_DWELL_OK', 'MUSIC_NATURAL_POINTER_OK', 'MUSIC_DISABLED_OK', 'MUSIC_CONSENT_OK', 'MUSIC_TIMELINE_OK', 'MUSIC_STALE_OK',
         'MUSIC_STALE_EMPTY_OK', 'MUSIC_PAINT_OK', 'MUSIC_OK', 'MUSIC_CLEANUP_OK',
         'MUSIC_CLOSED_STALE_OK', 'MUSIC_PREVIEW_STALE_OK', 'MUSIC_PREVIEW_LAYOUT_OK',
         'MUSIC_GESTURE_CLOSED_NOTICE_OK', 'MUSIC_AUTO_PRIORITY_OK', 'MUSIC_AUTO_PAINT_OK',
@@ -102,7 +105,10 @@ def receipts_valid(stdout: str) -> bool:
             and 0.30 <= float(timeline) <= 5 and 5 <= float(stale) <= 7
             and 5 <= float(stale_empty) <= 7):
         return False
-    if int(close_paint) < 1:
+    if notice_pointer is None or not (6 <= float(notice_pointer[0]) <= 7.5
+            and int(notice_pointer[1]) >= 20 and int(notice_pointer[2]) >= 2):
+        return False
+    if natural_pointer is None or int(natural_pointer) < 6 or int(close_paint) < 1:
         return False
     hold, playing_updates, lyric_updates = auto_priority
     if not (6 <= float(hold) <= 7.5 and int(playing_updates) >= 2 and int(lyric_updates) >= 2
@@ -140,7 +146,10 @@ def receipts_valid(stdout: str) -> bool:
 
 def self_test() -> int:
     """Exercise parser rejection with invented receipts; never run or certify UI."""
-    sample = '''MUSIC_DISABLED_OK: observed=3.151 reads=0 lookups=0 imports=0
+    sample = '''MUSIC_NOTICE_POINTER_DWELL_OK: seconds=6 held=6.02 pointerSamples=200 musicUpdates=3
+MUSIC_NATURAL_POINTER_OK: sparse30Hz=true adjacentExit=true downwardExit=true noDetailsRetarget=true coupledCloseReady=true movingPaints=12 sharedContour=true scanout=false
+MUSIC_PERIMETER_OK: skins=5 states=compact,details,details-no-wings coloredOutside=true usedBlack=true innerBlack=true ownViewPixels=true scanout=false
+MUSIC_DISABLED_OK: observed=3.151 reads=0 lookups=0 imports=0
 MUSIC_CONSENT_OK: enablePrompt=true ordinaryPrompt=false pollGap=1.020 preOptInLookups=0
 MUSIC_TIMELINE_OK: forwardSeek=true backwardSeek=true pausedCleared=0.360
 MUSIC_STALE_OK: age=5.040 freshness=5 lineEmpty=true titleEmpty=true
@@ -210,6 +219,8 @@ SMOKE_OK: synthetic orderly shutdown
             if receipts_valid(altered):
                 raise AssertionError('missing, duplicate or malformed receipt was accepted: ' + line)
     changes = (
+        ('movingPaints=12', 'movingPaints=0'), ('noDetailsRetarget=true', 'noDetailsRetarget=false'),
+        ('usedBlack=true', 'usedBlack=false'), ('skins=5', 'skins=4'),
         ('intermediateFrames=8', 'intermediateFrames=0'), ('idleOpacity=0', 'idleOpacity=1'),
         ('legacyWordAbsent=true', 'legacyWordAbsent=false'), ('opaqueBefore4pt=true', 'opaqueBefore4pt=false'),
         ('hold=6.020', 'hold=5.999'), ('hold=4.030', 'hold=3.999'), ('hold=2.010', 'hold=1.999'),

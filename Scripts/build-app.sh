@@ -5,8 +5,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "App packaging requires macOS and Xcode Command Line Tools." >&2
   exit 1
 fi
-version="1.0.1"
-release_version="1.0.1"
+version="1.0.2"
+release_version="1.0.2"
 args=(-c release --product CodexNotchMeter)
 path_args=(-c release --show-bin-path)
 if [[ "${1:-}" == "--universal" ]]; then
@@ -14,6 +14,11 @@ if [[ "${1:-}" == "--universal" ]]; then
   path_args+=(--arch arm64 --arch x86_64)
 elif [[ $# -gt 0 ]]; then
   echo "Usage: $0 [--universal]" >&2; exit 2
+fi
+# A source-bound package must not attribute dirty tracked code to an older commit.
+if [[ -n "$(git status --porcelain --untracked-files=no)" || -n "$(git ls-files --others --exclude-standard Sources Scripts Package.swift)" ]]; then
+  echo "Commit source changes before creating a source-bound application package." >&2
+  exit 1
 fi
 swift build "${args[@]}"
 bin_dir="$(swift build "${path_args[@]}")"
@@ -30,7 +35,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleExecutable</key><string>CodexNotchMeter</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
-<key>CFBundleVersion</key><string>14</string>
+<key>CFBundleVersion</key><string>15</string>
 <key>CodexNotchMeterReleaseVersion</key><string>$release_version</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -51,6 +56,19 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+python3 - "$version" "$app/Contents/Resources/build-source.json" <<'SOURCE'
+import json, os, pathlib, subprocess, sys
+metadata = {
+    "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+    "run_id": os.environ.get("GITHUB_RUN_ID", "0"),
+    "repository": os.environ.get("GITHUB_REPOSITORY", "Junming-Liang/codex-notch-meter"),
+    "version": sys.argv[1],
+}
+encoded = (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode()
+pathlib.Path(sys.argv[2]).write_bytes(encoded)
+pathlib.Path("dist/release-source.json").write_bytes(encoded)
+SOURCE
 plutil -lint "$app/Contents/Info.plist"
 # Ad-hoc signing uses no identity, certificate, account or paid developer service.
 codesign --force --sign - --timestamp=none "$app"

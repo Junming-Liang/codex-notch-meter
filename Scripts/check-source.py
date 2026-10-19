@@ -72,6 +72,8 @@ else:
         ('Sources/NotchCore/RPC.swift', r'"version": "([^"\n]+)"', expected_release),
         ('Sources/CodexNotchMeter/Views.swift', r'Text\("v([^ "\n]+) · 正式版"\)', expected_release),
         ('.github/workflows/macos.yml', r'CodexNotchMeter-([0-9][A-Za-z0-9.+-]*)-universal', expected_release),
+        ('.github/workflows/macos.yml', r'--version ([0-9]+\.[0-9]+\.[0-9]+)', expected_release),
+        ('.github/workflows/macos.yml', r'--bundle-build ([0-9]+)', expected_build),
         ('.github/workflows/macos.yml', r'(?:refs/tags/v|release create v|tag_name == "v|description: Publish v|## Codex Notch Meter v|--title "v)([0-9][A-Za-z0-9.+-]*)', expected_release),
     ]
     for filename, pattern, expected in version_pins:
@@ -87,6 +89,14 @@ else:
             failures.append('DMG identity must use the explicit release version')
     if '--prerelease' in (root / '.github/workflows/macos.yml').read_text():
         failures.append('Formal release must not retain the prerelease flag')
+workflow = (root / '.github/workflows/macos.yml').read_text()
+notes = (root / 'docs/RELEASE-1.0.2.md').read_text().rstrip()
+inline_notes = re.search(r"          cat > notes.md <<'NOTES'\n(.*?)\n          NOTES", workflow, re.DOTALL)
+if not inline_notes or "\n".join(line[10:] for line in inline_notes.group(1).splitlines()).rstrip() != notes:
+    failures.append('Workflow release notes must match the reviewed bilingual source document exactly')
+for guard in ('build-source.json', 'dist/release-source.json', 'HEAD^{tree}', 'GITHUB_RUN_ID', 'git status --porcelain --untracked-files=no'):
+    if guard not in app_build:
+        failures.append(f'Packaged source binding missing: {guard}')
 subprocess.run(['bash', '-n', str(root / 'Scripts/build-app.sh')], check=True)
 summary = {'swift_source_files': len(sources), 'swift_test_files': len(list((root / 'Tests').rglob('*.swift'))),
            'static_checks': 'FAIL' if failures else 'PASS', 'failures': failures,

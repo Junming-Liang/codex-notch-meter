@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-RUN_TIMEOUT_SECONDS = 70  # Native harness is bounded at 65 s, including real 2/4/6 s dwells.
+RUN_TIMEOUT_SECONDS = 80  # Native harness: 75 s; adds 6-second recovery/replacement and delayed-paint coverage.
 
 
 def receipt_checks(stdout: str) -> dict[str, bool]:
@@ -47,10 +47,16 @@ def receipt_checks(stdout: str) -> dict[str, bool]:
         rf'UPDATE_UNCHANGED_ACTIVE_OK: publications=0 sameID=true samePaint=true sameDeadline=true armedHeld={number} paintHeld={number}',
     )
     recovery_paint_ok = len(recovery_paint) == 1 and all(
-        1.95 <= float(armed) <= 2.75 and float(painted) >= 1.95
+        5.95 <= float(armed) <= 6.75 and float(painted) >= 5.95
         for armed, painted in recovery_paint
     )
+    pointer_dwell = receipts('UPDATE_POINTER_DWELL_OK:',
+        rf'UPDATE_POINTER_DWELL_OK: seconds=6 held={number} adjacent=true settingsCaptured=true repeatedID=true delayedReadiness=true')
+    replacement_dwell = receipts('UPDATE_REPLACEMENT_DWELL_OK:',
+        rf'UPDATE_REPLACEMENT_DWELL_OK: seconds=6 held={number} settingsCaptured=true oldTimerIgnored=true')
     return {
+        'replacement_dwell': len(replacement_dwell) == 1 and 6 <= float(replacement_dwell[0][0]) <= 6.75,
+        'pointer_dwell': len(pointer_dwell) == 1 and 6 <= float(pointer_dwell[0][0]) <= 6.75,
         'aggregate': sum(line.startswith('UPDATE_OK:') for line in lines) == 1,
         'shutdown': sum(line.startswith('SMOKE_OK:') for line in lines) == 1,
         'no_assertion_failures': not any(line.startswith(('UPDATE_FAILED:', 'UPDATE_ASSERT_FAILED:', 'SMOKE_FAILED:')) for line in lines),
@@ -79,6 +85,25 @@ def receipt_checks(stdout: str) -> dict[str, bool]:
         'unchanged_active': recovery_paint_ok and unchanged_active == recovery_paint,
         'settings': receipts('UPDATE_SETTINGS_OK:', r'UPDATE_SETTINGS_OK: model restored and persisted preferences untouched') == [()],
     }
+
+
+def self_test() -> int:
+    """Only parser controls, never a native-execution receipt."""
+    line = 'UPDATE_POINTER_DWELL_OK: seconds=6 held=6.02 adjacent=true settingsCaptured=true repeatedID=true delayedReadiness=true'
+    assert receipt_checks(line)['pointer_dwell']
+    controls = ['', line + '\n' + line, line.replace('6.02', '1.02'),
+                line.replace('6.02', '7.02'), line.replace('6.02', 'nan')]
+    controls += [line.replace(field + '=true', field + '=false')
+                 for field in ('adjacent', 'settingsCaptured', 'repeatedID', 'delayedReadiness')]
+    for bad in controls:
+        assert not receipt_checks(bad)['pointer_dwell']
+    replacement = 'UPDATE_REPLACEMENT_DWELL_OK: seconds=6 held=6.02 settingsCaptured=true oldTimerIgnored=true'
+    assert receipt_checks(replacement)['replacement_dwell']
+    for bad in ['', replacement + '\n' + replacement, replacement.replace('6.02', '4.02'),
+                replacement.replace('oldTimerIgnored=true', 'oldTimerIgnored=false')]:
+        assert not receipt_checks(bad)['replacement_dwell']
+    print(f'UPDATE_RECEIPT_SELF_TEST_OK: assertions={6 + len(controls)} nativeAppRun=false')
+    return 0
 
 
 def main() -> int:
@@ -120,4 +145,4 @@ def main() -> int:
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(self_test() if sys.argv[1:] == ['--self-test'] else main())
