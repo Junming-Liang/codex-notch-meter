@@ -1,0 +1,45 @@
+name: Music input focused verification (not release)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Exact current commit to verify; this run never publishes release assets
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  focused-input:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind diagnostic to exact dispatched source
+        id: source
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          expected = os.environ['EXPECTED_SOURCE_SHA']
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert re.fullmatch(r'[0-9a-f]{40}', expected) and expected == actual == os.environ['GITHUB_SHA']
+          print(f'FOCUSED_INPUT_SOURCE: sha={actual} run={os.environ["GITHUB_RUN_ID"]} releaseEligible=false')
+          PY
+      - name: Build source-bound native-architecture test application
+        id: package
+        run: bash Scripts/build-app.sh --app-only
+      - name: Exact historical red and all nine native gesture cases
+        run: |
+          python3 Scripts/check-native-gesture-recovery.py --self-test
+          python3 Scripts/check-native-gesture-recovery.py --red-green
+      - name: Independent event-poll cache and indicator lifecycle gate
+        if: ${{ always() && !cancelled() && steps.source.outcome == 'success' && steps.package.outcome == 'success' }}
+        run: |
+          python3 Scripts/check-native-music-cache.py --self-test
+          python3 Scripts/check-native-music-cache.py
+      - name: Diagnostic completion is not release acceptance
+        run: echo 'FOCUSED_INPUT_OK releaseEligible=false fullWorkflowStillRequired=true'
