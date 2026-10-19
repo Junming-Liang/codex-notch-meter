@@ -552,6 +552,10 @@ final class MusicRenderHarness: NSObject {
             if crossingStates.count < 24 { crossingStates.append(liveState(phase)) }
         }
         func emitEvidence(_ stage: String) throws {
+            guard let protectedStart else {
+                throw Failure(label: "gesture recovery evidence has no accepted crossing boundary")
+            }
+            let protectedSegment = panel.smokePointerIngress.dropFirst(protectedStart)
             let rows: [[String: Any]] = try constructed.map { value in
                 guard let observed = observation.events.first(where: { $0.number == value.number }),
                       let accepted = panel.smokePointerIngress.first(where: { $0.kind == "event" && $0.timestamp == observed.constructed && $0.point == value.screen }) else {
@@ -569,7 +573,8 @@ final class MusicRenderHarness: NSObject {
             }
             let evidence: [String: Any] = ["kind": name, "stage": stage, "events": rows, "overflow": false,
                 "crossingStart": crossingStart, "crossingEnd": crossingEnd, "corridor": [Double(corridor.minX), Double(corridor.minY), Double(corridor.width), Double(corridor.height)],
-                "sameEnvelope": true, "pollAfterCrossing": false, "details": panel.isInteracting,
+                "sameEnvelope": protectedSegment.allSatisfy { geometry.hoverContains($0.point, progress: 1) },
+                "pollAfterCrossing": protectedSegment.contains { $0.kind == "poll" }, "details": panel.isInteracting,
                 "selected": panel.smokeLyricsSelected, "owner": String(describing: panel.smokeExpansionOwner)]
             let data = try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys])
             guard data.count <= 160_000, let json = String(data: data, encoding: .utf8) else {
@@ -644,9 +649,20 @@ final class MusicRenderHarness: NSObject {
         crossingStates.append(liveState("before-open-crossing"))
         try await cross(open: true)
         crossingEnd = constructed.count
-        protectedStart = panel.smokePointerIngress.count
+        guard let finalCrossingEvent = constructed.last,
+              let observedFinalCrossingEvent = observation.events.first(where: { $0.number == finalCrossingEvent.number }),
+              let finalCrossingReceiptIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "event" && $0.timestamp == observedFinalCrossingEvent.constructed && $0.point == finalCrossingEvent.screen
+              }) else { throw Failure(label: "gesture recovery has no accepted final crossing event") }
+        // The queue waiter can resume after a real poll. Protect from the actual
+        // last crossing receipt, never from the later task-resumption boundary.
+        protectedStart = finalCrossingReceiptIndex + 1
+        let openedAt = observedFinalCrossingEvent.constructed
+        phase = "post-crossing-protection"
+        try require(!panel.smokePointerIngress.dropFirst(finalCrossingReceiptIndex + 1).contains { $0.kind == "poll" },
+                    "live-pointer polling cannot supply an unobserved recovery exit")
         phase = "opening-interruption-precondition"
-        if startsUsable {
+        if ["lost-opening", "pause-opening", "quota-interruption"].contains(name) {
             let movingDeadline = CACurrentMediaTime() + 0.20
             while panel.smokeProgress == 0 && panel.smokeMotionRunning && CACurrentMediaTime() < movingDeadline {
                 try await post(CGPoint(x: (corridor.minX + corridor.width * 0.98).rounded(), y: corridor.midY.rounded()))
@@ -655,6 +671,11 @@ final class MusicRenderHarness: NSObject {
             try require(panel.smokeLyricsSelected && panel.smokeExpansionOwner == .music && panel.smokeMotionRunning
                 && panel.smokeProgress > 0 && panel.smokeProgress < panel.smokeMusicTargetProgress,
                         "usable queued crossing begins genuine native opening before interruption")
+        } else if name == "successful-reverse" {
+            // This case closes an established opening; only the three actual
+            // interruption cases above require observation strictly in flight.
+            try require(panel.smokeLyricsSelected && panel.smokeExpansionOwner == .music && panel.smokeMusicTargetActive,
+                        "successful queued opening selects the active native Music target")
         } else {
             try require(!panel.smokeLyricsSelected && !panel.smokeMusicTargetActive && !fixture.controller.isPlayingForPresentation,
                         "unusable queued crossing is rejected without selecting lyric mode")
@@ -691,8 +712,12 @@ final class MusicRenderHarness: NSObject {
             try await requireRecovered("paused opening recovers ordinary stationary hover without an envelope exit")
         } else if name == "successful-reverse" {
             try await hold(center, seconds: 0.65)
-            try require(panel.smokeLyricsSelected && panel.smokeMusicTargetActive,
-                        "successful opening remains protected against same-region stationary details")
+            try require(panel.smokeLyricsSelected && panel.smokeMusicTargetActive && panel.smokeMusicVisible
+                && panel.smokeExpansionOwner == .music && !panel.smokeNoticeTargetActive && !panel.isInteracting
+                && panel.panel.ignoresMouseEvents
+                && nativeSettled(panel, progress: panel.smokeMusicTargetProgress, after: openedAt)
+                && naturalPaintMatches(panel, progress: panel.smokeMusicTargetProgress, after: openedAt),
+                        "successful opening settles with natural Music paint while protected against same-region stationary details")
             try await cross(open: false)
             try await hold(center, seconds: 0.70)
             try require(!panel.smokeLyricsSelected && !panel.smokeMusicTargetActive && !panel.isInteracting,
