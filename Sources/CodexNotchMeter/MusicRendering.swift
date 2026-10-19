@@ -169,9 +169,19 @@ final class MusicRenderHarness: NSObject {
     /// exact screen point/time reached IslandPanel's installed local monitor.
     /// No controller pointer injection, cursor warp, user data or screen capture.
     private func runGestureRecoveryVerification() async throws {
+        var caseFailures: [String] = []
         for name in ["no-match", "loading", "before-first-cue", "gap", "lost-opening",
                      "late-availability", "pause-opening", "successful-reverse", "quota-interruption"] {
-            try await verifyGestureRecoveryCase(name)
+            do { try await verifyGestureRecoveryCase(name) }
+            catch {
+                // The exact first trap remains fail-fast on every build. Later
+                // independent cases still provide evidence in this bounded run;
+                // their failures can never produce a gate/cleanup success receipt.
+                if name == "no-match" || finished || Task.isCancelled { throw error }
+                let reason = (error as? Failure)?.label ?? "fixture operation failed"
+                caseFailures.append("\(name): \(reason)")
+                print("MUSIC_GESTURE_CASE_DIAGNOSTIC: kind=\(name) completed=false reason=\(String(reflecting: reason))")
+            }
         }
         for value in fixtures {
             value.controller.stop()
@@ -190,6 +200,9 @@ final class MusicRenderHarness: NSObject {
         let finalCounts = await countsFor(fixtures)
         try require(pending == 0 && counts == finalCounts && passivePanels.allSatisfy { $0.smokeStopped },
                     "gesture recovery retires all native panels and real provider continuations")
+        if !caseFailures.isEmpty {
+            throw Failure(label: "gesture recovery independent case failures: " + caseFailures.joined(separator: "; "))
+        }
         print("MUSIC_GESTURE_RECOVERY_CLEANUP_OK: controllers=9 pendingRequests=0 countsStable=true panelsStopped=true monitorsRemoved=true")
         gestureRecoveryCompleted = true
         print("MUSIC_GESTURE_RECOVERY_GATE_OK: independent=true deadline=100 oldMusicDeadline=150 oldPointerDeadline=45 cases=9 nativeEventQueue=true controllerInjection=false scanout=false")
@@ -197,6 +210,15 @@ final class MusicRenderHarness: NSObject {
 
     private func verifyGestureRecoveryCase(_ name: String) async throws {
         let fixture = makeFixture()
+        var caseCompleted = false
+        var failureDiagnostic: (() -> Void)?
+        defer {
+            if !caseCompleted && failureDiagnostic == nil {
+                print("MUSIC_GESTURE_CASE_DIAGNOSTIC: kind=\(name) phase=source-setup fresh=\(fixture.controller.isFreshPlaying) usable=\(fixture.controller.isPlayingForPresentation) selected=\(fixture.controller.lyricsModeEnabled) readCursor=\(fixture.readCursor) importCursor=\(fixture.importCursor)")
+            }
+            fixture.controller.stop()
+        }
+        print("MUSIC_GESTURE_CASE_STARTED: kind=\(name) independentFixture=true")
         let model = MeterModel(demo: true, music: fixture.controller)
         self.model = model
         fixture.controller.start(); fixture.controller.setEnabled(true)
@@ -238,6 +260,7 @@ final class MusicRenderHarness: NSObject {
         sourceWindow.isReleasedWhenClosed = false
         sourceWindow.acceptsMouseMovedEvents = true; sourceWindow.ignoresMouseEvents = true
         sourceWindow.orderFrontRegardless()
+        defer { panel.stop(); sourceWindow.close() }
         let observation = GestureRecoveryObservation()
         guard let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { event in
             MainActor.assumeIsolated {
@@ -257,9 +280,11 @@ final class MusicRenderHarness: NSObject {
             }
             return event
         }) else { throw Failure(label: "cannot install unchanged own-event observation monitor") }
-        defer { NSEvent.removeMonitor(monitor); panel.stop(); sourceWindow.close(); fixture.controller.stop() }
-        try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
-                    "gesture recovery events use a real negative-origin native source window")
+        defer {
+            // Capture live operands before stop() clears playback and retires motion.
+            if !caseCompleted { failureDiagnostic?() }
+            NSEvent.removeMonitor(monitor)
+        }
         // The immutable input geometry has no live width-presentation override.
         // Its full endpoint is the stable envelope on both historical baselines,
         // including old103, which predates canonicalHoverContains.
@@ -273,6 +298,104 @@ final class MusicRenderHarness: NSObject {
         var crossingStart = -1
         var crossingEnd = -1
         var expectedDetails = false
+        var phase = "native-setup"
+        var crossingStates: [[String: Any]] = []
+        func diagnosticNumber(_ value: Double) -> Any { value.isFinite ? value as Any : NSNull() }
+        func diagnosticPoint(_ value: CGPoint) -> [Double] { [Double(value.x), Double(value.y)] }
+        func liveState(_ stage: String) -> [String: Any] {
+            let now = ProcessInfo.processInfo.systemUptime
+            let snapshot = fixture.controller.syntheticPlaybackSnapshot
+            return ["stage": stage, "sampledAt": now, "fresh": fixture.controller.isFreshPlaying,
+                "usable": fixture.controller.isPlayingForPresentation, "selected": panel.smokeLyricsSelected,
+                "localLyrics": fixture.controller.hasLocalLyrics, "line": fixture.controller.line,
+                "sourceObservedAt": snapshot.map { diagnosticNumber($0.observedAt) } ?? NSNull(),
+                "sourceAge": snapshot.map { diagnosticNumber(now - $0.observedAt) } ?? NSNull(),
+                "readCursor": fixture.readCursor, "owner": String(describing: panel.smokeExpansionOwner),
+                "progress": panel.smokeProgress, "target": panel.smokeTargetProgress,
+                "running": panel.smokeMotionRunning,
+                "musicVisible": panel.smokeMusicVisible, "details": panel.isInteracting,
+                "insideCurrentHover": panel.geometry.hoverContains(center, progress: panel.smokeProgress),
+                "events": constructed.count, "accepted": panel.smokePointerIngress.count]
+        }
+        failureDiagnostic = {
+            // Diagnostic only: replay the actual accepted samples, including the
+            // preceding outside hold and polls, through independent pure models.
+            // Always-enabled geometry/time replay cannot establish production
+            // eligibility or gate state and is never used as a success assertion.
+            var eventOracle = IslandCrossing(), pollOracle = IslandCrossing()
+            let ordered = panel.smokePointerIngress.enumerated().sorted {
+                $0.element.timestamp == $1.element.timestamp ? $0.offset < $1.offset
+                    : $0.element.timestamp < $1.element.timestamp
+            }
+            var acceptedRows: [[String: Any]] = []
+            for (index, entry) in ordered {
+                var action: IslandCrossing.Direction? = nil
+                let buttonDown: Bool
+                let observedEventButtonDown: Bool?
+                if entry.kind == "event" {
+                    // Historical raw-entry recording is flag-gated and normally
+                    // absent in this mode. Absence is unknown, never observed up.
+                    observedEventButtonDown = panel.smokePointerEntries.first { $0.monitor == "local" && $0.timestamp == entry.timestamp && $0.screenPoint == entry.point }.map { !$0.buttons.isEmpty }
+                    buttonDown = observedEventButtonDown ?? false
+                    pollOracle.reset()
+                    action = eventOracle.update(point: entry.point, now: entry.timestamp, corridor: corridor, enabled: true, buttonDown: buttonDown)
+                } else if entry.kind == "poll" {
+                    observedEventButtonDown = nil
+                    buttonDown = false // Unknown poll buttons, assumed up only for this auxiliary replay.
+                    eventOracle.reset()
+                    action = pollOracle.update(point: entry.point, now: entry.timestamp, corridor: corridor, enabled: true)
+                } else {
+                    observedEventButtonDown = nil
+                    buttonDown = false; eventOracle.reset(); pollOracle.reset()
+                }
+                acceptedRows.append(["deliveryIndex": index, "kind": entry.kind,
+                    "timestamp": diagnosticNumber(entry.timestamp), "screen": diagnosticPoint(entry.point),
+                    "owner": String(describing: entry.owner), "target": entry.target,
+                    "oracleAction": action.map { String(describing: $0) } ?? "none",
+                    "oracleEventLocked": eventOracle.isLocked, "oraclePollLocked": pollOracle.isLocked,
+                    "observedEventButtonDown": observedEventButtonDown.map { $0 as Any } ?? NSNull(),
+                    "oracleButtonDown": buttonDown, "oracleButtonsAssumed": observedEventButtonDown == nil])
+            }
+            let postedRows: [[String: Any]] = constructed.map { entry in
+                let observed = observation.events.filter { $0.number == entry.number }
+                return ["number": entry.number, "window": entry.window,
+                    "requested": diagnosticNumber(entry.requested), "constructed": diagnosticNumber(entry.constructed),
+                    "screen": diagnosticPoint(entry.screen), "local": diagnosticPoint(entry.local),
+                    "observed": observed.map { value -> [String: Any] in
+                        ["timestamp": diagnosticNumber(value.constructed), "deliveredAt": diagnosticNumber(value.deliveredAt),
+                         "screen": diagnosticPoint(value.screen), "local": diagnosticPoint(value.local)]
+                    }]
+            }
+            let entryRows: [[String: Any]] = panel.smokePointerEntries.suffix(256).map { entry in
+                ["monitor": entry.monitor, "number": entry.eventNumber, "type": entry.eventType,
+                 "window": entry.windowNumber, "timestamp": diagnosticNumber(entry.timestamp),
+                 "deliveredAt": diagnosticNumber(entry.delivered), "screen": diagnosticPoint(entry.screenPoint),
+                 "lastEventTime": diagnosticNumber(entry.lastEventTime),
+                 "lastAppliedGestureTime": diagnosticNumber(entry.lastAppliedGestureTime),
+                 "buttons": entry.buttons, "stopped": entry.stopped, "placementValid": entry.placementValid]
+            }
+            let probe = panel.motionProbe
+            let diagnostic: [String: Any] = ["kind": name, "phase": phase, "beforeCleanup": true,
+                "state": liveState("failure"), "crossingStates": crossingStates,
+                "native": ["observedAt": probe.observed, "renderedAt": probe.renderedAt,
+                    "renderedProgress": probe.renderedProgress, "requestedProgress": probe.requestedProgress,
+                    "visible": probe.visible, "running": probe.running,
+                    "frame": [Double(probe.frame.minX), Double(probe.frame.minY), Double(probe.frame.width), Double(probe.frame.height)]],
+                "crossingStart": crossingStart, "crossingEnd": crossingEnd,
+                "corridor": [Double(corridor.minX), Double(corridor.minY), Double(corridor.width), Double(corridor.height)],
+                "outside": diagnosticPoint(outside), "posted": postedRows,
+                "entries": entryRows, "rawEntriesAvailable": !entryRows.isEmpty,
+                "accepted": Array(acceptedRows.suffix(512)),
+                "acceptedCount": panel.smokePointerIngress.count,
+                "evidenceOverflow": observation.overflow || panel.smokeHistoryOverflow || panel.smokePointerEntriesOverflow,
+                "oracle": "pure geometry/time only; source histories reset each other; enabled=true; buttons unknown unless a raw event entry exists, otherwise assumed false; production remains authoritative"]
+            if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
+               data.count <= 384_000, let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_GESTURE_CASE_DIAGNOSTIC_JSON: \(json)")
+            } else { print("MUSIC_GESTURE_CASE_DIAGNOSTIC: kind=\(name) boundedEvidenceEncoding=false") }
+        }
+        try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
+                    "gesture recovery events use a real negative-origin native source window")
         func noDetails() throws {
             try require(!panel.isInteracting && panel.smokeExpansionOwner != .details && panel.smokeTargetProgress != 1,
                         "queued moving or protected sample never promotes transient details")
@@ -359,14 +482,18 @@ final class MusicRenderHarness: NSObject {
             let fractions: [CGFloat] = open ? [-0.04, 0.02, 0.25, 0.52, 0.75, 0.98]
                 : [1.04, 0.98, 0.75, 0.48, 0.25, 0.02]
             for (index, fraction) in fractions.enumerated() {
+                phase = "\(open ? "open" : "reverse")-crossing-\(index)"
                 try await post(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded()))
+                if crossingStates.count < 24 { crossingStates.append(liveState(phase)) }
                 if index < fractions.count - 1 { try await dwell(0.012) }
             }
         }
         func emitEvidence(_ stage: String) throws {
-            let rows: [[String: Any]] = constructed.map { value in
-                let observed = observation.events.first { $0.number == value.number }!
-                let accepted = panel.smokePointerIngress.first { $0.kind == "event" && $0.timestamp == observed.constructed && $0.point == value.screen }!
+            let rows: [[String: Any]] = try constructed.map { value in
+                guard let observed = observation.events.first(where: { $0.number == value.number }),
+                      let accepted = panel.smokePointerIngress.first(where: { $0.kind == "event" && $0.timestamp == observed.constructed && $0.point == value.screen }) else {
+                    throw Failure(label: "gesture recovery evidence is missing its actual queued receipt")
+                }
                 return ["number": value.number, "type": value.type, "window": value.window,
                         "requested": value.requested, "constructed": value.constructed,
                         "delivered": observed.constructed, "local": [Double(value.local.x), Double(value.local.y)],
@@ -388,6 +515,7 @@ final class MusicRenderHarness: NSObject {
             print("MUSIC_GESTURE_RECOVERY_EVENTS_JSON: \(json)")
         }
         func requireRecovered(_ label: String) async throws {
+            phase = "stationary-recovery"
             // Every sample stays in the same visible corridor. It never leaves
             // either the corridor or full envelope to clear an old gesture gate.
             try await hold(center, seconds: 0.70, allowDetails: true)
@@ -433,6 +561,7 @@ final class MusicRenderHarness: NSObject {
                 && self.naturalPaintMatches(panel, progress: 0, after: panelCreatedAt)
         }
         print("MUSIC_GESTURE_SETUP_DIAGNOSTIC: kind=\(name) elapsed=\(decimal(CACurrentMediaTime() - panelCreatedAt)) deadline=3.6 nativeIdle=true accessoryEndpoint=1 naturalPaint=true sourceFresh=true eventDeadline=0.20")
+        phase = "outside-setup"
         try await hold(outside, seconds: 0.75)
         let readyDeadline = CACurrentMediaTime() + 2.5
         while !nativeSettled(panel, progress: 0, after: 0) && CACurrentMediaTime() < readyDeadline {
@@ -442,14 +571,18 @@ final class MusicRenderHarness: NSObject {
                     "gesture recovery starts at a settled native closed shell with a visible stationary target")
         // Refresh from the actual polling provider before beginning any bounded
         // gesture segment; no fake timestamp or freshness extension is used.
+        phase = "fresh-provider-read"
         let fresh = try await read(fixture)
         try await release(fixture, fresh, position: name == "gap" ? 12 : 1)
+        crossingStates.append(liveState("after-fresh-read"))
         let pendingPause: MusicFixtureCall<Bool>?
         if name == "pause-opening" { pendingPause = try await read(fixture) } else { pendingPause = nil }
         crossingStart = constructed.count
+        crossingStates.append(liveState("before-open-crossing"))
         try await cross(open: true)
         crossingEnd = constructed.count
         protectedStart = panel.smokePointerIngress.count
+        phase = "opening-interruption-precondition"
         if startsUsable {
             let movingDeadline = CACurrentMediaTime() + 0.20
             while panel.smokeProgress == 0 && panel.smokeMotionRunning && CACurrentMediaTime() < movingDeadline {
@@ -463,6 +596,7 @@ final class MusicRenderHarness: NSObject {
             try require(!panel.smokeLyricsSelected && !panel.smokeMusicTargetActive && !fixture.controller.isPlayingForPresentation,
                         "unusable queued crossing is rejected without selecting lyric mode")
         }
+        phase = "\(name)-semantic-check"
         if name == "no-match" {
             print("MUSIC_GESTURE_RECOVERY_SETUP_OK: kind=no-match actualLookup=true freshPlaying=true usable=false selected=false nativeCrossing=true sameEnvelope=true")
             try await requireRecovered("rejected no-match crossing recovers stationary same-region hover without a full-envelope exit")
@@ -519,6 +653,7 @@ final class MusicRenderHarness: NSObject {
                     "bounded same-envelope native event evidence is complete without polling exit or key-window theft")
         try emitEvidence("complete")
         print("MUSIC_GESTURE_RECOVERY_CASE_OK: kind=\(name) nativeQueue=true sameEnvelope=true pollingExit=false details=\(expectedDetails) selected=\(panel.smokeLyricsSelected) events=\(constructed.count)")
+        caseCompleted = true
     }
 
     private struct LyricsRecoveryFixture {
