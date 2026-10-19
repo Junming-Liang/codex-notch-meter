@@ -81,8 +81,33 @@ def strict_json(text):
         raise ValidationError(f"Nonfinite JSON number: {value}")
     try:
         return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid)
-    except (ValueError, TypeError) as error:
+    except (ValueError, TypeError, RecursionError) as error:
         raise ValidationError(f"Invalid JSON: {error}") from error
+
+
+def same_json_structure(left, right):
+    """Reject type/shape substitutions, including Python's True == 1 shortcut."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_json_structure(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json_structure(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def verify_plan_bytes(data):
+    """Hash the actual Foundation UTF-8 bytes, without cross-library rewriting."""
+    text = data["inputPlanJSON"]
+    require(isinstance(text, str), "Exact input-plan JSON is missing")
+    try:
+        raw = text.encode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise ValidationError("Exact input-plan JSON is not valid UTF-8") from error
+    require(0 < len(raw) <= 65_536, "Exact input-plan JSON exceeds its bounded size")
+    require(digest(raw) == data["inputPlanSHA256"], "Input-plan digest does not match its exact UTF-8 JSON bytes")
+    decoded = strict_json(text)
+    require(same_json_structure(decoded, data["inputPlan"]), "Exact input-plan JSON contradicts its structured plan")
 
 
 def bounded_read(path):
@@ -246,8 +271,7 @@ def parse_receipt(stdout, group, role, source):
         require(isinstance(data["inputPlan"], dict) and data["inputPlan"], "Missing common input plan")
         plan_hash = data["inputPlanSHA256"]
         require(isinstance(plan_hash, str) and re.fullmatch(r"[0-9a-f]{64}", plan_hash), "Invalid input-plan digest")
-        canonical = json.dumps(data["inputPlan"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        require(digest(canonical) == plan_hash, "Input-plan digest does not match its canonical JSON")
+        verify_plan_bytes(data)
         inputs = data["inputs"]
         require(isinstance(inputs, list) and 2 <= len(inputs) <= 100, "Missing or excessive delivered inputs")
         last_planned, last_delivered, last_pointer_timestamp = -1, -1, -1
@@ -386,8 +410,9 @@ def validate_delivered_plan(data):
 
 def compare(baseline, candidate):
     require(baseline["group"] == candidate["group"], "Comparison group mismatch")
-    require(baseline["inputPlan"] == candidate["inputPlan"]
-            and baseline["inputPlanSHA256"] == candidate["inputPlanSHA256"], "Baseline/candidate input plans differ")
+    require(baseline["inputPlanJSON"] == candidate["inputPlanJSON"]
+            and same_json_structure(baseline["inputPlan"], candidate["inputPlan"])
+            and baseline["inputPlanSHA256"] == candidate["inputPlanSHA256"], "Baseline/candidate exact input-plan bytes or structures differ")
     require([{key: value for key, value in row.items() if key not in ("delivered", "timestamp")} for row in baseline["inputs"]]
             == [{key: value for key, value in row.items() if key not in ("delivered", "timestamp")} for row in candidate["inputs"]],
             "Delivered input content/global coordinates differ between roles")
@@ -602,7 +627,8 @@ class SelfTests(unittest.TestCase):
                 "inside": [500, 366], "outside": [500, 88], "contentHeight": 260, "reduceMotion": False,
                 "motionProfile": "adaptive", "enabled": enabled,
                 "steps": [{"at": row["planned"], "kind": row["kind"], "value": row["value"], "point": row["point"]} for row in inputs[1:]]}
-        plan_hash = digest(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode())
+        plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+        plan_hash = digest(plan_json.encode())
         frame = [0, 0, 400, 200]
         names = ["pre-hover", "details-open", "details-reopened", "final"]
         if group == "playback-edge":
@@ -620,7 +646,7 @@ class SelfTests(unittest.TestCase):
                 "success": True, "historyOverflow": False, "synthetic": True, "controllerLevelInput": True, "nativeIngress": False,
                 "scanout": False, "baselineHasMusicWings": False,
                 "paintCollection": "latest-receipt-observer", "paintSequenceGaps": 1,
-                "inputPlan": plan, "inputPlanSHA256": plan_hash, "inputs": inputs,
+                "inputPlan": plan, "inputPlanJSON": plan_json, "inputPlanSHA256": plan_hash, "inputs": inputs,
                 "frames": [{"sequence": i, "t": i, "scheduled": i + 0.01, "generation": 1,
                             "source": "synthetic-fixture", "progress": i / 3, "velocity": 0,
                             "target": 1, "owner": "details", "frame": frame,
@@ -643,6 +669,72 @@ class SelfTests(unittest.TestCase):
 
     def parse(self, data):
         return parse_receipt(self.output(data), data["group"], data["role"], data["sourceCommit"])
+
+    def test_run50_foundation_decimal_bytes_regression(self):
+        # Original synthetic plan from Run 50, ordinary/baseline. Foundation
+        # emits eight decimal spellings that Python shortens after parsing.
+        exact = '{"backingScale":1,"contentHeight":260,"document":"[00:00]Amber paper birds cross the bay","duration":120,"enabled":false,"group":"ordinary","inputLevel":"controller-fixed-global-point","inside":[512,734],"motionProfile":"adaptive","outside":[512,456],"position":1,"rawNotch":[402,736,220,32],"reduceMotion":false,"schema":1,"screen":[0,0,1024,768],"steps":[{"at":0.94999999999999996,"kind":"checkpoint","value":"pre-hover"},{"at":1.05,"kind":"pointer","point":[512,734],"value":"inside"},{"at":1.21,"kind":"pointer","point":[512,734],"value":"inside"},{"at":2.0499999999999998,"kind":"checkpoint","value":"details-open"},{"at":2.6499999999999999,"kind":"pointer","point":[512,456],"value":"outside"},{"at":2.8900000000000001,"kind":"pointer","point":[512,456],"value":"outside"},{"at":2.96,"kind":"pointer","point":[512,734],"value":"inside"},{"at":3.1200000000000001,"kind":"pointer","point":[512,734],"value":"inside"},{"at":4.0999999999999996,"kind":"checkpoint","value":"details-reopened"},{"at":4.2999999999999998,"kind":"pointer","point":[512,456],"value":"outside"},{"at":4.54,"kind":"pointer","point":[512,456],"value":"outside"},{"at":5.5499999999999998,"kind":"checkpoint","value":"final"}],"track":"Original Synthetic Baseline"}'
+        data = {"inputPlanJSON": exact, "inputPlan": strict_json(exact),
+                "inputPlanSHA256": "ddad192f3f8f7e1744a8bf43d98b89d8bc52929f7d6af497690b105a39143297"}
+        self.assertEqual(digest(exact.encode()), data["inputPlanSHA256"])
+        rewritten = json.dumps(data["inputPlan"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.assertEqual(digest(rewritten.encode()), "7e7e0ca9cf20b0c073963855679a93bcc7466867bf8e06dd629cbfd83f9499b3")
+        self.assertNotEqual(digest(rewritten.encode()), data["inputPlanSHA256"])
+        self.assertEqual([step["at"] for step in data["inputPlan"]["steps"]],
+                         [0.95, 1.05, 1.21, 2.05, 2.65, 2.89, 2.96, 3.12, 4.1, 4.3, 4.54, 5.55])
+        verify_plan_bytes(data)
+
+    def test_native_receipt_accepts_original_foundation_number_bytes(self):
+        data = self.fixture()
+        data["inputPlan"]["steps"][0]["at"] = 0.95
+        data["inputs"][1]["planned"] = 0.95
+        exact = json.dumps(data["inputPlan"], sort_keys=True, separators=(",", ":")).replace("0.95", "0.94999999999999996")
+        data["inputPlanJSON"] = exact
+        data["inputPlanSHA256"] = digest(exact.encode())
+        self.assertEqual(self.parse(data)["inputPlanJSON"], exact)
+
+    def test_plan_byte_tampering_rejected_without_rehashing(self):
+        data = self.fixture()
+        for replacement in (data["inputPlanJSON"] + " ", data["inputPlanJSON"].replace("260", "261")):
+            changed = copy.deepcopy(data)
+            changed["inputPlanJSON"] = replacement
+            with self.assertRaises(ValidationError):
+                self.parse(changed)
+
+    def test_rehashed_plan_structure_or_boolean_substitution_rejected(self):
+        for before, after in (("260", "261"), ('"enabled":false', '"enabled":0'),
+                              ('"outside":[500,88]', '"outside":[500,89]')):
+            data = self.fixture()
+            data["inputPlanJSON"] = data["inputPlanJSON"].replace(before, after)
+            data["inputPlanSHA256"] = digest(data["inputPlanJSON"].encode())
+            with self.subTest(before=before), self.assertRaises(ValidationError):
+                self.parse(data)
+
+    def test_rehashed_duplicate_or_nonfinite_plan_rejected(self):
+        for suffix in (',"schema":2}', ',"invalid":NaN}'):
+            data = self.fixture()
+            data["inputPlanJSON"] = data["inputPlanJSON"][:-1] + suffix
+            data["inputPlanSHA256"] = digest(data["inputPlanJSON"].encode())
+            with self.subTest(suffix=suffix), self.assertRaises(ValidationError):
+                self.parse(data)
+
+    def test_invalid_plan_wire_type_size_or_utf8_rejected(self):
+        for value in (None, {}, "", " " * 65_537, "\ud800"):
+            data = self.fixture()
+            data["inputPlanJSON"] = value
+            with self.subTest(kind=type(value).__name__), self.assertRaises(ValidationError):
+                self.parse(data)
+
+    def test_cross_role_equivalent_but_different_plan_bytes_rejected(self):
+        baseline, candidate = self.fixture(), self.fixture(role="candidate")
+        candidate["inputPlanJSON"] += " "
+        candidate["inputPlanSHA256"] = digest(candidate["inputPlanJSON"].encode())
+        # Each independently verifies its own bytes and identical structure;
+        # the A/B pair still rejects the different byte identity and digest.
+        self.parse(baseline)
+        self.parse(candidate)
+        with self.assertRaises(ValidationError):
+            compare(baseline, candidate)
 
     def test_all_six_synthetic_receipts_parse(self):
         for group in GROUPS:
