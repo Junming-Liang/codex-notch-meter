@@ -462,7 +462,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Text("v1.1.0 · 正式版").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("v1.1.1 · 正式版").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("刷新额度") { model.refresh() }.disabled(model.refreshing || model.demo)
                 Button(action: quit) { Label("退出应用", systemImage: "power") }.help("退出 Codex Notch Meter（⌘Q）")

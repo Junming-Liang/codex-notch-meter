@@ -22,6 +22,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var collapseHarness: CollapseRenderHarness?
     private var updateHarness: UpdateRenderHarness?
     private var musicHarness: MusicRenderHarness?
+    private var musicCacheHarness: MusicRenderCacheChecks?
     private var ordinaryMotionHarness: OrdinaryMotionRenderHarness?
     private var baselineMotionHarness: BaselineMotionComparisonHarness?
     private var animationHarness: SkinAnimationHarness?
@@ -162,6 +163,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if smokeMode {
             if CommandLine.arguments.contains("--ordinary-motion-test") { runOrdinaryMotionTest() }
             else if CommandLine.arguments.contains("--baseline-motion-test") { runBaselineMotionTest() }
+            else if CommandLine.arguments.contains("--music-cache-test") { runMusicCacheTest() }
             else if CommandLine.arguments.contains("--music-test") { runMusicTest() }
             else if CommandLine.arguments.contains("--update-test") { runUpdateTest() }
             else if CommandLine.arguments.contains("--collapse-test") { runCollapseTest() }
@@ -198,7 +200,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         noticeQueue.invalidate()
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
-        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); baselineMotionHarness?.stop(); ordinaryMotionHarness?.stop(); animationHarness?.stop()
+        contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); musicCacheHarness?.stop(); baselineMotionHarness?.stop(); ordinaryMotionHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
             SmokeDiagnostics.mark("model shutdown started")
@@ -354,6 +356,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         baselineMotionHarness?.start()
+    }
+    private func runMusicCacheTest() {
+        guard CommandLine.arguments.contains("--music-test") else { requestQuit(); return }
+        musicCacheHarness = MusicRenderCacheChecks { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        musicCacheHarness?.start()
     }
     private func runMusicTest() {
         guard let screen = NSScreen.main else { requestQuit(); return }

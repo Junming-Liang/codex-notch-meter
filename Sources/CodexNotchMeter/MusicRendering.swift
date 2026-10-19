@@ -42,6 +42,8 @@ final class MusicRenderHarness: NSObject {
     private var nativeExpectations: [ObjectIdentifier: (progress: Double, after: TimeInterval)] = [:]
     private var lyricsRecoveryCompleted = false
     private var lyricsRecoveryOnly: Bool { CommandLine.arguments.contains("--lyrics-recovery-test") }
+    private var gestureRecoveryCompleted = false
+    private var gestureRecoveryOnly: Bool { CommandLine.arguments.contains("--gesture-recovery-test") }
     private var pointerVerificationCompleted = false
     private var pointerVerificationOnly: Bool { CommandLine.arguments.contains("--pointer-ingress-test") }
 
@@ -54,8 +56,8 @@ final class MusicRenderHarness: NSObject {
         guard !started, !finished else { return }
         started = true; startedAt = CACurrentMediaTime(); initialKey = NSApp.keyWindow
         guard CommandLine.arguments.contains("--music-test") else { finish(false); return }
-        guard !(pointerVerificationOnly && lyricsRecoveryOnly) else { finish(false); return }
-        let deadline: TimeInterval = lyricsRecoveryOnly ? 90 : (pointerVerificationOnly ? 45 : 150)
+        guard [pointerVerificationOnly, lyricsRecoveryOnly, gestureRecoveryOnly].filter({ $0 }).count <= 1 else { finish(false); return }
+        let deadline: TimeInterval = gestureRecoveryOnly ? 100 : (lyricsRecoveryOnly ? 90 : (pointerVerificationOnly ? 45 : 150))
         let timer = Timer(timeInterval: deadline, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.finished else { return }
@@ -67,7 +69,8 @@ final class MusicRenderHarness: NSObject {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                if self.lyricsRecoveryOnly { try await self.runLyricsRecoveryVerification() }
+                if self.gestureRecoveryOnly { try await self.runGestureRecoveryVerification() }
+                else if self.lyricsRecoveryOnly { try await self.runLyricsRecoveryVerification() }
                 else if self.pointerVerificationOnly { try await self.runPointerVerification() }
                 else { try await self.run() }
                 self.finish(true)
@@ -134,6 +137,314 @@ final class MusicRenderHarness: NSObject {
         try await verifyNativePointerIngress(fixture: fixture, model: model)
         pointerVerificationCompleted = true
         print("MUSIC_POINTER_GATE_OK: independent=true deadline=45 oldMusicDeadline=150 closedHeightMask=true nativeEventQueue=true")
+    }
+
+    private struct GestureRecoveryEvent {
+        let number: Int
+        let type: UInt
+        let window: Int
+        let requested: TimeInterval
+        let constructed: TimeInterval
+        let local: CGPoint
+        let screen: CGPoint
+    }
+    private final class GestureRecoveryObservation {
+        var events: [GestureRecoveryEvent] = []
+        var overflow = false
+    }
+
+    /// Independent, bounded own-event queue fixture. An unchanged observation
+    /// monitor records identity; production receipts separately prove that the
+    /// exact screen point/time reached IslandPanel's installed local monitor.
+    /// No controller pointer injection, cursor warp, user data or screen capture.
+    private func runGestureRecoveryVerification() async throws {
+        for name in ["no-match", "loading", "before-first-cue", "gap", "lost-opening",
+                     "late-availability", "pause-opening", "successful-reverse", "quota-interruption"] {
+            try await verifyGestureRecoveryCase(name)
+        }
+        for value in fixtures {
+            value.controller.stop()
+            await value.reader.releaseAll(.unavailable(.cancelled))
+            await value.lookup.releaseAll(.unavailable)
+            await value.importer.releaseAll(.unavailable)
+        }
+        let counts = await countsFor(fixtures)
+        try await dwell(0.10)
+        var pending = 0
+        for value in fixtures {
+            pending += await value.reader.pendingCount()
+            pending += await value.lookup.pendingCount()
+            pending += await value.importer.pendingCount()
+        }
+        let finalCounts = await countsFor(fixtures)
+        try require(pending == 0 && counts == finalCounts && passivePanels.allSatisfy { $0.smokeStopped },
+                    "gesture recovery retires all native panels and real provider continuations")
+        print("MUSIC_GESTURE_RECOVERY_CLEANUP_OK: controllers=9 pendingRequests=0 countsStable=true panelsStopped=true monitorsRemoved=true")
+        gestureRecoveryCompleted = true
+        print("MUSIC_GESTURE_RECOVERY_GATE_OK: independent=true deadline=100 oldMusicDeadline=150 oldPointerDeadline=45 cases=9 nativeEventQueue=true controllerInjection=false scanout=false")
+    }
+
+    private func verifyGestureRecoveryCase(_ name: String) async throws {
+        let fixture = makeFixture()
+        let model = MeterModel(demo: true, music: fixture.controller)
+        self.model = model
+        fixture.controller.start(); fixture.controller.setEnabled(true)
+        let initial = try await read(fixture)
+        try await release(fixture, initial, position: name == "gap" ? 12 : 1)
+        var pendingLookup: MusicFixtureCall<MusicLookupInput>?
+        switch name {
+        case "no-match", "loading", "late-availability":
+            fixture.controller.setOnlineLookupEnabled(true)
+            let request = try await lookup(fixture)
+            if name == "no-match" {
+                try require(await fixture.lookup.release(request.id, .noMatch), "complete actual no-match lookup")
+                try await until("actual no-match state reaches gesture fixture") { fixture.controller.lookupState == .noMatch }
+            } else { pendingLookup = request }
+        case "before-first-cue":
+            try await importDocument(fixture, text: "[01:00]\(Self.firstLine)", expectedCurrent: "")
+        case "gap":
+            try await importDocument(fixture, text: "[00:00]\(Self.firstLine)\n[00:05]\n[01:00]\(Self.secondLine)", expectedCurrent: "")
+        default:
+            try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        }
+        let startsUsable = ["lost-opening", "pause-opening", "successful-reverse", "quota-interruption"].contains(name)
+        try require(fixture.controller.isFreshPlaying && fixture.controller.isPlayingForPresentation == startsUsable
+            && !fixture.controller.lyricsModeEnabled, "gesture recovery source has its exact requested eligibility")
+        guard let geometry = makeGeometry() else { throw Failure(label: "gesture recovery native geometry unavailable") }
+        let panel = IslandPanelController(model: model, geometry: geometry, startPolling: true,
+            reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
+        passivePanels.append(panel)
+        let sourceWindow = TopEdgePanel(contentRect: CGRect(x: -900, y: -700, width: 240, height: 180),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        sourceWindow.isReleasedWhenClosed = false
+        sourceWindow.acceptsMouseMovedEvents = true; sourceWindow.ignoresMouseEvents = true
+        sourceWindow.orderFrontRegardless()
+        let observation = GestureRecoveryObservation()
+        guard let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { event in
+            MainActor.assumeIsolated {
+                if event.eventNumber >= 24_000 && event.eventNumber < 25_000 {
+                    if observation.events.count < 256 {
+                        observation.events.append(GestureRecoveryEvent(number: event.eventNumber,
+                            type: event.type.rawValue, window: event.windowNumber,
+                            requested: event.timestamp, constructed: event.timestamp,
+                            local: event.locationInWindow,
+                            screen: event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow))
+                    } else { observation.overflow = true }
+                }
+            }
+            return event
+        }) else { throw Failure(label: "cannot install unchanged own-event observation monitor") }
+        defer { NSEvent.removeMonitor(monitor); panel.stop(); sourceWindow.close(); fixture.controller.stop() }
+        try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
+                    "gesture recovery events use a real negative-origin native source window")
+        let corridor = panel.smokeMusicGestureCorridor
+        let center = CGPoint(x: corridor.midX.rounded(), y: corridor.midY.rounded())
+        let outside = CGPoint(x: (geometry.screen.midX + 260).rounded(), y: corridor.midY.rounded())
+        var constructed: [GestureRecoveryEvent] = []
+        var lastRequested: TimeInterval = -.infinity
+        var lastConstructed: TimeInterval = -.infinity
+        var protectedStart: Int?
+        var crossingStart = -1
+        var crossingEnd = -1
+        var expectedDetails = false
+        func noDetails() throws {
+            try require(!panel.isInteracting && panel.smokeExpansionOwner != .details && panel.smokeTargetProgress != 1,
+                        "queued moving or protected sample never promotes transient details")
+        }
+        func post(_ point: CGPoint, allowDetails: Bool = false) async throws {
+            guard constructed.count < 256 else { throw Failure(label: "gesture recovery event evidence exceeded bound") }
+            if let protectedStart {
+                try require(panel.geometry.canonicalHoverContains(point, progress: 1),
+                            "post-crossing queue remains inside the unchanged full hover envelope")
+                try require(!panel.smokePointerIngress.dropFirst(protectedStart).contains { $0.kind == "poll" },
+                            "live-pointer polling cannot supply an unobserved recovery exit")
+            }
+            let requested = ProcessInfo.processInfo.systemUptime
+            let number = 24_000 + constructed.count
+            let local = sourceWindow.convertPoint(fromScreen: point)
+            guard let event = NSEvent.mouseEvent(with: .mouseMoved, location: local, modifierFlags: [],
+                timestamp: requested, windowNumber: sourceWindow.windowNumber, context: nil,
+                eventNumber: number, clickCount: 0, pressure: 0) else {
+                throw Failure(label: "cannot construct gesture recovery native event")
+            }
+            let timestamp = event.timestamp
+            try require(requested > lastRequested && timestamp > lastConstructed && timestamp.isFinite
+                && abs(timestamp - requested) < 0.000000001 && event.eventNumber == number
+                && event.window === sourceWindow && event.locationInWindow == local,
+                        "gesture recovery construction preserves ordered timestamp and unique 16-bit identity")
+            let evidence = GestureRecoveryEvent(number: number, type: event.type.rawValue,
+                window: event.windowNumber, requested: requested, constructed: timestamp, local: local, screen: point)
+            constructed.append(evidence); lastRequested = requested; lastConstructed = timestamp
+            NSApp.postEvent(event, atStart: false)
+            try await until("gesture recovery queued identity and point reach both installed monitors", timeout: 0.20) {
+                let observed = observation.events.filter { $0.number == number }
+                return observed.count == 1 && observed[0].type == evidence.type && observed[0].window == evidence.window
+                    && abs(observed[0].constructed - requested) < 0.000000001
+                    && abs(observed[0].constructed - timestamp) < 0.000000001
+                    && observed[0].local == local && observed[0].screen == point
+                    && panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == observed[0].constructed && $0.point == point }
+            }
+            if !allowDetails { try noDetails() }
+        }
+        func hold(_ point: CGPoint, seconds: TimeInterval, allowDetails: Bool = false) async throws {
+            let deadline = CACurrentMediaTime() + seconds
+            repeat {
+                try await post(point, allowDetails: allowDetails)
+                try await dwell(0.035)
+            } while CACurrentMediaTime() < deadline
+            try await post(point, allowDetails: allowDetails)
+        }
+        func cross(open: Bool) async throws {
+            let fractions: [CGFloat] = open ? [-0.04, 0.02, 0.25, 0.52, 0.75, 0.98]
+                : [1.04, 0.98, 0.75, 0.48, 0.25, 0.02]
+            for (index, fraction) in fractions.enumerated() {
+                try await post(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded()))
+                if index < fractions.count - 1 { try await dwell(0.012) }
+            }
+        }
+        func emitEvidence(_ stage: String) throws {
+            let rows: [[String: Any]] = constructed.map { value in
+                let observed = observation.events.first { $0.number == value.number }!
+                let accepted = panel.smokePointerIngress.first { $0.kind == "event" && $0.timestamp == observed.constructed && $0.point == value.screen }!
+                return ["number": value.number, "type": value.type, "window": value.window,
+                        "requested": value.requested, "constructed": value.constructed,
+                        "delivered": observed.constructed, "local": [Double(value.local.x), Double(value.local.y)],
+                        "screen": [Double(value.screen.x), Double(value.screen.y)],
+                        "observedLocal": [Double(observed.local.x), Double(observed.local.y)],
+                        "observedScreen": [Double(observed.screen.x), Double(observed.screen.y)],
+                        "accepted": true, "acceptedTimestamp": accepted.timestamp,
+                        "acceptedScreen": [Double(accepted.point.x), Double(accepted.point.y)],
+                        "acceptedOwner": String(describing: accepted.owner), "acceptedTarget": accepted.target]
+            }
+            let evidence: [String: Any] = ["kind": name, "stage": stage, "events": rows, "overflow": false,
+                "crossingStart": crossingStart, "crossingEnd": crossingEnd, "corridor": [Double(corridor.minX), Double(corridor.minY), Double(corridor.width), Double(corridor.height)],
+                "sameEnvelope": true, "pollAfterCrossing": false, "details": panel.isInteracting,
+                "selected": panel.smokeLyricsSelected, "owner": String(describing: panel.smokeExpansionOwner)]
+            let data = try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys])
+            guard data.count <= 160_000, let json = String(data: data, encoding: .utf8) else {
+                throw Failure(label: "gesture recovery native evidence exceeds bounded JSON size")
+            }
+            print("MUSIC_GESTURE_RECOVERY_EVENTS_JSON: \(json)")
+        }
+        func requireRecovered(_ label: String) async throws {
+            // Every sample stays in the same visible corridor. It never leaves
+            // either the corridor or full envelope to clear an old gesture gate.
+            try await hold(center, seconds: 0.70, allowDetails: true)
+            if name == "no-match" {
+                try require(!observation.overflow && observation.events.count == constructed.count
+                    && !panel.smokeHistoryOverflow && !panel.smokePointerIngress.dropFirst(protectedStart ?? 0).contains { $0.kind == "poll" },
+                            "first trap has complete queued native evidence with no live-pointer exit")
+                try emitEvidence("first-trap")
+            }
+            try require(panel.isInteracting && panel.smokeExpansionOwner == .details && panel.smokeTargetProgress == 1,
+                        label)
+            expectedDetails = true
+            let deadline = CACurrentMediaTime() + 2.5
+            while CACurrentMediaTime() < deadline && !nativeSettled(panel, progress: 1, after: 0) {
+                try await hold(center, seconds: 0.07, allowDetails: true)
+            }
+            // This stationary point is in the hardware corridor, outside the
+            // clickable details body. Correct live routing here is click-through.
+            try require(nativeSettled(panel, progress: 1, after: 0) && panel.isInteracting
+                && panel.verifyExpandedLayout(includePixels: false)
+                && !panel.geometry.interactiveContains(center) && panel.panel.ignoresMouseEvents,
+                        "recovered stationary hover settles real nonactivating details with hardware click-through")
+            // This helper probes clickable content and a passive corner, leaving
+            // routing at that corner. Check it separately, then restore routing
+            // through an accepted native event at the original stationary point.
+            try require(panel.verifySmokeClickRouting(),
+                        "recovered details route content clicks and preserve passive corners")
+            try await post(center, allowDetails: true)
+            try require(panel.isInteracting && panel.smokeExpansionOwner == .details
+                && panel.panel.ignoresMouseEvents,
+                        "queued stationary hardware point restores correct click-through routing")
+        }
+        try await hold(outside, seconds: 0.75)
+        let readyDeadline = CACurrentMediaTime() + 2.5
+        while !nativeSettled(panel, progress: 0, after: 0) && CACurrentMediaTime() < readyDeadline {
+            try await hold(outside, seconds: 0.07)
+        }
+        try require(nativeSettled(panel, progress: 0, after: 0) && panel.geometry.hoverContains(center, progress: 0),
+                    "gesture recovery starts at a settled native closed shell with a visible stationary target")
+        // Refresh from the actual polling provider before beginning any bounded
+        // gesture segment; no fake timestamp or freshness extension is used.
+        let fresh = try await read(fixture)
+        try await release(fixture, fresh, position: name == "gap" ? 12 : 1)
+        let pendingPause: MusicFixtureCall<Bool>?
+        if name == "pause-opening" { pendingPause = try await read(fixture) } else { pendingPause = nil }
+        crossingStart = constructed.count
+        try await cross(open: true)
+        crossingEnd = constructed.count
+        protectedStart = panel.smokePointerIngress.count
+        if startsUsable {
+            let movingDeadline = CACurrentMediaTime() + 0.20
+            while panel.smokeProgress == 0 && panel.smokeMotionRunning && CACurrentMediaTime() < movingDeadline {
+                try await post(CGPoint(x: (corridor.minX + corridor.width * 0.98).rounded(), y: corridor.midY.rounded()))
+                try await dwell(0.003)
+            }
+            try require(panel.smokeLyricsSelected && panel.smokeExpansionOwner == .music && panel.smokeMotionRunning
+                && panel.smokeProgress > 0 && panel.smokeProgress < panel.smokeMusicTargetProgress,
+                        "usable queued crossing begins genuine native opening before interruption")
+        } else {
+            try require(!panel.smokeLyricsSelected && !panel.smokeMusicTargetActive && !fixture.controller.isPlayingForPresentation,
+                        "unusable queued crossing is rejected without selecting lyric mode")
+        }
+        if name == "no-match" {
+            print("MUSIC_GESTURE_RECOVERY_SETUP_OK: kind=no-match actualLookup=true freshPlaying=true usable=false selected=false nativeCrossing=true sameEnvelope=true")
+            try await requireRecovered("rejected no-match crossing recovers stationary same-region hover without a full-envelope exit")
+        } else if ["loading", "before-first-cue", "gap"].contains(name) {
+            try await requireRecovered("rejected \(name) crossing recovers stationary same-region hover")
+        } else if name == "lost-opening" {
+            fixture.controller.clearLocalLyrics()
+            try await post(center)
+            try require(!fixture.controller.isPlayingForPresentation && fixture.controller.lyricsModeEnabled,
+                        "usable lyric loss during opening hides content while preserving explicit selected mode")
+            try await requireRecovered("lyric loss during opening releases stationary hover without an envelope exit")
+        } else if name == "late-availability" {
+            guard let pendingLookup else { throw Failure(label: "missing actual pending late lyric lookup") }
+            try await post(center)
+            try require(await fixture.lookup.release(pendingLookup.id, .matched(document("[00:00]\(Self.firstLine)"))),
+                        "late availability completes the original real pending lookup")
+            try await hold(center, seconds: 0.10, allowDetails: true)
+            try require(fixture.controller.isPlayingForPresentation && !fixture.controller.lyricsModeEnabled
+                && !panel.smokeMusicTargetActive, "late fresh availability cannot finish or resurrect a rejected crossing")
+            try await requireRecovered("late fresh lookup preserves recovered stationary hover and requires a new gesture")
+        } else if name == "pause-opening" {
+            // Hold the actual next read before opening would delay the interruption.
+            // A paused snapshot through that still-pending provider is immediate.
+            guard let pause = pendingPause else { throw Failure(label: "missing real pending pause provider") }
+            try await release(fixture, pause, position: 1, state: .paused)
+            try await post(center, allowDetails: true)
+            try require(!fixture.controller.isFreshPlaying && !fixture.controller.isPlayingForPresentation
+                && fixture.controller.lyricsModeEnabled, "pause preserves selected mode while cancelling open eligibility")
+            try await requireRecovered("paused opening recovers ordinary stationary hover without an envelope exit")
+        } else if name == "successful-reverse" {
+            try await hold(center, seconds: 0.65)
+            try require(panel.smokeLyricsSelected && panel.smokeMusicTargetActive,
+                        "successful opening remains protected against same-region stationary details")
+            try await cross(open: false)
+            try await hold(center, seconds: 0.70)
+            try require(!panel.smokeLyricsSelected && !panel.smokeMusicTargetActive && !panel.isInteracting,
+                        "successful reverse remains protected against stationary details until full exit")
+        } else if name == "quota-interruption" {
+            let notice = try makeNotice(duration: .short)
+            try require(panel.showRefreshNotice(notice), "quota interrupts an actual successful native lyric opening")
+            try await hold(center, seconds: 0.40)
+            try require(panel.smokeNoticeTargetActive && panel.smokeExpansionOwner == .quotaNotice,
+                        "active quota notice retains independent stationary input protection")
+            panel.dismissRefreshNotice()
+            try await hold(center, seconds: 0.40)
+            try require(!panel.smokeNoticeTargetActive && panel.smokeLyricsSelected && !panel.isInteracting,
+                        "dismissed quota cannot leak its stationary dwell into details")
+        }
+        let segment = Array(panel.smokePointerIngress.dropFirst(protectedStart ?? 0))
+        try require(!observation.overflow && observation.events.count == constructed.count && !panel.smokeHistoryOverflow
+            && !segment.contains { $0.kind == "poll" }
+            && segment.allSatisfy { panel.geometry.canonicalHoverContains($0.point, progress: 1) }
+            && NSApp.keyWindow === initialKey && !panel.panel.canBecomeKey,
+                    "bounded same-envelope native event evidence is complete without polling exit or key-window theft")
+        try emitEvidence("complete")
+        print("MUSIC_GESTURE_RECOVERY_CASE_OK: kind=\(name) nativeQueue=true sameEnvelope=true pollingExit=false details=\(expectedDetails) selected=\(panel.smokeLyricsSelected) events=\(constructed.count)")
     }
 
     private struct LyricsRecoveryFixture {
@@ -3071,12 +3382,17 @@ final class MusicRenderHarness: NSObject {
         finished = true
         let elapsed = CACurrentMediaTime() - startedAt
         stop()
-        let valid = success && (lyricsRecoveryOnly
+        let valid = success && (gestureRecoveryOnly
+            ? elapsed <= 100 && gestureRecoveryCompleted
+            : (lyricsRecoveryOnly
             ? elapsed <= 90 && lyricsRecoveryCompleted
             : (pointerVerificationOnly
                 ? elapsed <= 45 && pointerVerificationCompleted
-                : elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2))
-        if lyricsRecoveryOnly {
+                : elapsed <= 150 && paintedChecks == 1 && passivePaintChecks == 22 && legacyLabelChecks == 23 && expandedChecks == 2)))
+        if gestureRecoveryOnly {
+            print(valid ? "MUSIC_GESTURE_RECOVERY_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true nativeQueue=true scanout=false"
+                        : "MUSIC_GESTURE_RECOVERY_FAILED: native synthetic gesture recovery contract failed")
+        } else if lyricsRecoveryOnly {
             print(valid ? "MUSIC_LYRICS_RECOVERY_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true realPolling=true controllerOnly=true scanout=false"
                         : "MUSIC_LYRICS_RECOVERY_FAILED: native synthetic recovery contract failed")
         } else {

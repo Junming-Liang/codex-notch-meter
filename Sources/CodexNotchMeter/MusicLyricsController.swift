@@ -26,7 +26,34 @@ final class MusicLyricsController: ObservableObject {
     @Published private(set) var isFreshPlaying = false
     @Published private(set) var lyricsModeEnabled = false
     @Published private(set) var artwork: MusicArtwork?
+    /// Same bounded pixels as artwork, prepared once per change and retired with
+    /// that value. Frame-driven SwiftUI layout never constructs another image.
+    private(set) var artworkImage: CGImage?
+    private var syntheticArtworkImageBuilds: UInt64 = 0
+    private var previewHeightCache = MusicPreviewLayout.Cache()
     var playbackRevision: UUID { trackRevision }
+
+    func previewContentHeight(width: CGFloat) -> CGFloat {
+        previewHeightCache.contentHeight(trackRevision: trackRevision, line: line, nextLine: nextLine,
+            width: width, countSyntheticMeasurement: synthetic)
+    }
+
+    var syntheticArtworkImageBuildCount: UInt64? { synthetic ? syntheticArtworkImageBuilds : nil }
+    var syntheticPreviewHeightMeasurementCount: UInt64? { synthetic ? previewHeightCache.syntheticMeasurementCount : nil }
+
+    private func setArtwork(_ value: MusicArtwork?) {
+        guard artwork != value else { return }
+        artworkImage = value.flatMap { art in
+            if synthetic { syntheticArtworkImageBuilds &+= 1 }
+            guard let provider = CGDataProvider(data: art.rgbaBytes as CFData),
+                  let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+            return CGImage(width: art.pixelWidth, height: art.pixelHeight, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: art.bytesPerRow, space: colorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue), provider: provider,
+                decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        }
+        artwork = value
+    }
 
     /// Session choice; unavailable content never invents a lyric or opens a card.
     func selectLyricsMode(_ value: Bool) {
@@ -230,7 +257,9 @@ final class MusicLyricsController: ObservableObject {
         } else { retainedLyrics = nil }
         let hadPresentation = isPlayingForPresentation || isFreshPlaying || !line.isEmpty || !nextLine.isEmpty
         if isPlayingForPresentation { isPlayingForPresentation = false }
-        isFreshPlaying = false; artwork = nil
+        if isFreshPlaying { isFreshPlaying = false }
+        setArtwork(nil)
+        previewHeightCache.clear()
         nextLine = ""; isSynchronized = false
         if hadPresentation { presentationRevision &+= 1 }
         trackRevision = UUID()
@@ -305,6 +334,7 @@ final class MusicLyricsController: ObservableObject {
             }
             if current?.track != value.track {
                 trackRevision = UUID()
+                previewHeightCache.clear()
                 presentationRevision &+= 1
                 lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
                 importTask?.cancel(); importTask = nil
@@ -320,7 +350,9 @@ final class MusicLyricsController: ObservableObject {
                                   sampledAt: value.observedAt, now: now) else {
                 receive(.unavailable(.invalidResponse)); return
             }
-            current = value; needsAuthorization = false; trackTitle = value.track.title
+            current = value
+            if needsAuthorization { needsAuthorization = false }
+            if trackTitle != value.track.title { trackTitle = value.track.title }
             if let retained = retainedLyrics {
                 // Consume the slot on the first validated sample, even when it
                 // is another song. Never carry A through B and revive it later.
@@ -333,7 +365,7 @@ final class MusicLyricsController: ObservableObject {
                     if !retained.isLocal { lookupState = .matched }
                 }
             }
-            if artwork != value.artwork { artwork = value.artwork }
+            setArtwork(value.artwork)
             refreshLine()
             beginLookupIfNeeded()
         }
@@ -343,7 +375,9 @@ final class MusicLyricsController: ObservableObject {
         guard enabled, onlineLookupEnabled, active, !stopped, !hasLocalLyrics,
               lookupTask == nil, canImport, let value = current else { return }
         guard clock() >= lookupNotBefore else {
-            lookupState = lookupCooldownState; statusText = lookupStatusText
+            if lookupState != lookupCooldownState { lookupState = lookupCooldownState }
+            let status = lookupStatusText
+            if statusText != status { statusText = status }
             return
         }
         if lookupGeneration == timeline.generation {
@@ -419,7 +453,12 @@ final class MusicLyricsController: ObservableObject {
         let previous = (line, nextLine, isSynchronized, isPlayingForPresentation, isFreshPlaying)
         let preview = timeline.preview(at: now)
         var selection = preview.selection
-        nextLine = ""; isSynchronized = false
+        // Derive the final presentation before publishing. An unchanged playback
+        // poll still advances freshness/timers, but cannot invalidate every view
+        // or briefly publish an empty next cue / unsynchronized current cue.
+        var text = "", followingText = "", synchronized = false
+        var title = trackTitle
+        let status: String
         // An unavailable lyric document intentionally short-circuits the pure
         // timeline. Source freshness still governs the visible song metadata.
         if let value = current {
@@ -434,29 +473,32 @@ final class MusicLyricsController: ObservableObject {
         } else { playing = false }
         switch selection {
         case .line(_, let cue):
-            line = cue.text; nextLine = preview.nextCue?.text ?? ""; isSynchronized = true
-            statusText = current?.state == .paused ? "已暂停" : "同步歌词"
-        case .plain(let lines): line = lines.first ?? ""; statusText = "纯文本歌词 · 未同步"
-        case .instrumental: line = ""; statusText = "纯音乐"
-        case .beforeFirstLine: line = ""; statusText = "等待第一句歌词"
-        case .gap: line = ""; statusText = "间奏"
-        case .ended: line = ""; statusText = "播放已结束"
-        case .stale: line = ""; trackTitle = ""; statusText = "Music 播放信息已过期"
-        case .waitingForPlayback: line = ""; statusText = "等待播放位置"
-        case .unavailable:
-            line = ""
-            statusText = lookupStatusText
+            text = cue.text; followingText = preview.nextCue?.text ?? ""; synchronized = true
+            status = current?.state == .paused ? "已暂停" : "同步歌词"
+        case .plain(let lines): text = lines.first ?? ""; status = "纯文本歌词 · 未同步"
+        case .instrumental: status = "纯音乐"
+        case .beforeFirstLine: status = "等待第一句歌词"
+        case .gap: status = "间奏"
+        case .ended: status = "播放已结束"
+        case .stale: title = ""; status = "Music 播放信息已过期"
+        case .waitingForPlayback: status = "等待播放位置"
+        case .unavailable: status = lookupStatusText
         }
         // Pause hides the music presentation immediately; keep only internal
         // track/document identity so a fresh resume can select its current cue.
         if current?.state == .paused {
-            line = ""; nextLine = ""; isSynchronized = false
-            if !trackTitle.isEmpty { statusText = "已暂停" }
+            text = ""; followingText = ""; synchronized = false
         }
+        let finalStatus = current?.state == .paused && !title.isEmpty ? "已暂停" : status
+        let eligible = playing && preview.isEligible && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !eligible { text = ""; followingText = ""; synchronized = false }
+        if trackTitle != title { trackTitle = title }
+        if line != text { line = text }
+        if nextLine != followingText { nextLine = followingText }
+        if isSynchronized != synchronized { isSynchronized = synchronized }
+        if statusText != finalStatus { statusText = finalStatus }
         if isFreshPlaying != playing { isFreshPlaying = playing }
-        if !playing { artwork = nil }
-        let eligible = playing && preview.isEligible && !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if !eligible { line = ""; nextLine = ""; isSynchronized = false }
+        if !playing { setArtwork(nil) }
         if isPlayingForPresentation != eligible { isPlayingForPresentation = eligible }
         if previous.0 != line || previous.1 != nextLine || previous.2 != isSynchronized || previous.3 != eligible || previous.4 != playing {
             presentationRevision &+= 1

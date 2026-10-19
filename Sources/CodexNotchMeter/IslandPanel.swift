@@ -123,7 +123,7 @@ private struct IslandRootView: View {
         let geometry = snapshot.geometry
         let p = snapshot.progress
         let promoting = presentation.notice != nil || presentation.showingMusic
-        let musicHeight = MusicPreviewLayout.contentHeight(line: music.line, nextLine: music.nextLine, width: geometry.compactContentWidth)
+        let musicHeight = music.previewContentHeight(width: geometry.compactContentWidth)
         // Reveal thresholds depend on fixed geometry, never on a changing cue.
         let promotionProgress = presentation.notice != nil ? geometry.updateProgress : geometry.musicProgress(contentHeight: 90)
         let detailReveal = promoting ? IslandReveal.smooth((p - promotionProgress) / (1 - promotionProgress)) : IslandReveal.details(p)
@@ -176,7 +176,8 @@ private struct IslandRootView: View {
                 .overlay(alignment: .topLeading) {
                     if geometry.showsMusicAccessories {
                         let rects = geometry.musicAccessoryRects(progress: p)
-                        MusicClosedAccessories(music: music, left: rects.left, right: rects.right)
+                        MusicClosedAccessories(music: music, left: rects.left, right: rects.right,
+                            visible: geometry.musicAccessoryProgress > 0 && p < geometry.musicProgress(contentHeight: 48))
                             .opacity(geometry.musicAccessoryProgress * (1 - IslandReveal.smooth(p / geometry.musicProgress(contentHeight: 48))))
                             .allowsHitTesting(false).accessibilityHidden(p > 0)
                     }
@@ -239,6 +240,8 @@ final class IslandPanelController: NSObject {
     private var hover = IslandHoverState()
     private var crossing = IslandCrossing()
     private var gestureHoverGate = IslandGestureHoverGate()
+    private var musicGestureNeedsCorridorExit = false
+    private var smokePolledPointer: CGPoint?
     private var localPointerMonitor: Any?
     private var globalPointerMonitor: Any?
     private var lastEventTime: TimeInterval = -.infinity
@@ -435,6 +438,16 @@ final class IslandPanelController: NSObject {
         observePointer()
     }
     private func resetCrossings() { crossing.reset(); fallbackCrossing.reset() }
+    private func releaseMusicGestureToHover() {
+        gestureHoverGate.reset()
+        // The event and fallback histories intentionally reset each other.
+        // Keep this cancellation outside either recognizer so switching sources
+        // cannot reserve the same stationary endpoint again after a failed open.
+        musicGestureNeedsCorridorExit = true
+        resetCrossings()
+        if !hover.isExpanded { hover.reset() }
+        musicHoverAnchor = nil
+    }
     private func recordPointer(_ point: CGPoint, timestamp: TimeInterval, kind: String) {
         guard model.demo, CommandLine.arguments.contains("--music-test") else { return }
         if smokePointerIngress.count >= 2048 { smokeHistoryOverflow = true; smokePointerIngress.removeFirst(1024) }
@@ -443,7 +456,8 @@ final class IslandPanelController: NSObject {
     }
     private func observePointer(event: NSEvent? = nil, monitor: String = "poll") {
         if let event, model.demo, CommandLine.arguments.contains("--music-test"),
-           CommandLine.arguments.contains("--pointer-ingress-test") {
+           CommandLine.arguments.contains("--pointer-ingress-test")
+            || CommandLine.arguments.contains("--music-cache-test") {
             if smokePointerEntries.count < 256 {
                 smokePointerEntries.append(IslandPointerEntryReceipt(monitor: monitor,
                     eventNumber: event.eventNumber, eventType: event.type.rawValue, windowNumber: event.windowNumber,
@@ -494,7 +508,9 @@ final class IslandPanelController: NSObject {
             guard delivered > lastPollTime, delivered - lastEventDelivery > 0.25 else { return }
             lastPollTime = delivered
             crossing.reset()
-            let point = NSEvent.mouseLocation
+            // Native fixtures may supply a synthetic location without moving
+            // the system cursor. The real timer, quiet guard and clock still run.
+            let point = smokePolledPointer ?? NSEvent.mouseLocation
             let buttons = NSEvent.pressedMouseButtons
             // A lost up event must not permanently disable gestures. Polling
             // reconciles button state only after the event stream is quiet.
@@ -514,22 +530,36 @@ final class IslandPanelController: NSObject {
             panel.ignoresMouseEvents = true
             return
         }
-        let gestureEnabled = model.music.isFreshPlaying && passiveMusicAllowed && !noticeTargetActive
+        let corridor = geometry.musicGestureCorridor
+        if musicGestureNeedsCorridorExit,
+           point.x < corridor.minX || point.x > corridor.maxX
+            || point.y < corridor.minY || point.y > corridor.maxY {
+            musicGestureNeedsCorridorExit = false
+            resetCrossings()
+        }
+        let gestureEnabled = model.music.isFreshPlaying && passiveMusicAllowed
+            && !musicGestureNeedsCorridorExit && !noticeTargetActive
         var recognizer = source == .poll ? fallbackCrossing : crossing
-        let action = recognizer.update(point: point, now: now, corridor: geometry.musicGestureCorridor,
+        let action = recognizer.update(point: point, now: now, corridor: corridor,
             enabled: gestureEnabled, buttonDown: buttonDownOverride ?? (NSEvent.pressedMouseButtons != 0))
         if source == .poll { fallbackCrossing = recognizer } else { crossing = recognizer }
         if let action, source == .synthetic || now > lastAppliedGestureTime {
             if source != .synthetic { lastAppliedGestureTime = now }
             let hadHover = hover.isExpanded
             model.music.selectLyricsMode(action == .right)
+            if action == .right,
+               !model.music.lyricsModeEnabled || !model.music.isPlayingForPresentation {
+                releaseMusicGestureToHover()
+                updateClickRouting(point)
+                return
+            }
             hover.reset()
-            gestureHoverGate.claim()
+            gestureHoverGate.claim(requiresLyrics: action == .right)
             updateMusicPresentation(forceRetarget: hadHover)
             updateClickRouting(point)
             return
         }
-        // A complete crossing owns this corridor until exit. Stationary center
+        // A successful crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
         if recognizer.reservesPointer { updateClickRouting(point); return }
         if gestureHoverGate.suppresses(insideStableEnvelope: geometry.canonicalHoverContains(point, progress: 1)) {
@@ -767,6 +797,9 @@ final class IslandPanelController: NSObject {
             resetCrossings(); observedPlaybackRevision = model.music.playbackRevision
         }
         musicEligible = model.music.isPlayingForPresentation && model.music.lyricsModeEnabled
+        if gestureHoverGate.releaseIfLyricsUnavailable(lyricsAvailable: musicEligible) {
+            releaseMusicGestureToHover()
+        }
         let accessories = model.music.isFreshPlaying && passiveMusicAllowed && geometry.canShowMusicAccessories
         let accessoryChanged = accessoryTarget != accessories
         if accessoryChanged {
@@ -789,12 +822,13 @@ final class IslandPanelController: NSObject {
         guard !stopped, passiveMusicAllowed != allowed else { return }
         let previousOwner = expansionOwner
         passiveMusicAllowed = allowed; resetCrossings(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
         updateMusicPresentation(forceRetarget: expansionOwner != previousOwner)
     }
     @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
         guard !stopped, notice.isEligible, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
         if presentation.notice?.id == notice.id && noticeTargetActive { return true }
-        cancelNoticeTimers(); resetCrossings()
+        cancelNoticeTimers(); resetCrossings(); musicGestureNeedsCorridorExit = false
         // Every new notice, including replacement, acknowledges its own paint revision.
         noticePaintRequiredAfter = CACurrentMediaTime()
         presentation.notice = notice; presentation.showingDetails = false; noticeTargetActive = true
@@ -871,12 +905,16 @@ final class IslandPanelController: NSObject {
     func collapse() {
         guard !stopped else { return }
         cancelNoticeTimers(); noticeTargetActive = false
-        hover.reset(); resetCrossings(); gestureHoverGate.reset(); panel.ignoresMouseEvents = true; startMotion()
+        hover.reset(); resetCrossings(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
+        panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
         guard !stopped else { return }
         stopped = true; ordinaryWidthCycle = false; widthBridge = nil
         resetCrossings(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
+        smokePolledPointer = nil
         if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor); self.localPointerMonitor = nil }
         if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor); self.globalPointerMonitor = nil }
         musicSubscription?.cancel(); musicSubscription = nil
@@ -949,6 +987,13 @@ final class IslandPanelController: NSObject {
             : CGPoint(x: geometry.screen.minX - 10, y: geometry.screen.minY - 10)
         updatePointer(point, now: now, buttonDownOverride: false)
     }
+    /// Location-only fixture seam for the actual polling path. This does not
+    /// establish delivery through a system global monitor or move the cursor.
+    func smokeSetPolledPointer(_ point: CGPoint?) {
+        guard model.demo, CommandLine.arguments.contains("--music-test"), !stopped else { return }
+        if let point, !point.x.isFinite || !point.y.isFinite { return }
+        smokePolledPointer = point
+    }
     var closePresentationPending: Bool { closeDrain.isPending }
     func verifyRetiredCloseIsInert() -> Bool {
         guard (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")), closeDrain.isPending,
@@ -990,8 +1035,7 @@ final class IslandPanelController: NSObject {
     var smokeMusicTargetActive: Bool { expansionOwner == .music }
     var smokeMusicPresentationRevision: UInt64 { model.music.presentationRevision }
     var smokeMusicTargetProgress: Double {
-        geometry.musicProgress(contentHeight: MusicPreviewLayout.contentHeight(
-            line: model.music.line, nextLine: model.music.nextLine, width: geometry.compactContentWidth))
+        geometry.musicProgress(contentHeight: model.music.previewContentHeight(width: geometry.compactContentWidth))
     }
     var smokeExpansionOwner: IslandExpansionOwner { expansionOwner }
     var smokeNoticeID: UUID? { presentation.notice?.id }

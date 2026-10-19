@@ -19,7 +19,7 @@ struct CompactDetailView: View {
     let settings: () -> Void
     let quit: () -> Void
     private var musicMode: Bool { model.error == nil && music.isPlayingForPresentation && music.lyricsModeEnabled }
-    private var musicHeight: CGFloat { MusicPreviewLayout.contentHeight(line: music.line, nextLine: music.nextLine, width: width) }
+    private var musicHeight: CGFloat { music.previewContentHeight(width: width) }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if musicMode {

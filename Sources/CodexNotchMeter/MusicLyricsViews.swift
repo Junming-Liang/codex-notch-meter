@@ -9,40 +9,89 @@ import UniformTypeIdentifiers
 enum MusicPreviewLayout {
     static let currentFontSize: CGFloat = 18
     static let nextFontSize: CGFloat = 12
+    private struct MeasurementStyle: Equatable {
+        let currentFontSize: CGFloat
+        let nextFontSize: CGFloat
+        let currentFontWeight: CGFloat
+        let maximumHeight: CGFloat = 10_000
+        let wrappingTolerance: CGFloat = 1
+        let wrappedExtra: CGFloat = 22
+        let currentOnlyHeight: CGFloat = 48
+        let withNextHeight: CGFloat = 68
+    }
+    private static let measurementStyle = MeasurementStyle(currentFontSize: currentFontSize,
+        nextFontSize: nextFontSize, currentFontWeight: NSFont.Weight.semibold.rawValue)
+    private static func normalizedWidth(_ width: CGFloat) -> CGFloat {
+        width.isFinite ? max(1, width) : 1
+    }
     static func contentHeight(line: String, nextLine: String, width: CGFloat) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: currentFontSize, weight: .semibold)
-        let bounds = (line as NSString).boundingRect(with: CGSize(width: max(1, width), height: 10_000),
+        measure(line: line, hasNextLine: !nextLine.isEmpty, width: normalizedWidth(width), style: measurementStyle)
+    }
+    private static func measure(line: String, hasNextLine: Bool, width: CGFloat, style: MeasurementStyle) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: style.currentFontSize, weight: NSFont.Weight(rawValue: style.currentFontWeight))
+        let bounds = (line as NSString).boundingRect(with: CGSize(width: width, height: style.maximumHeight),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
         let oneLine = ceil(font.ascender - font.descender + font.leading)
-        let extra: CGFloat = bounds.height > oneLine + 1 ? 22 : 0
-        return (nextLine.isEmpty ? 48 : 68) + extra
+        let extra: CGFloat = bounds.height > oneLine + style.wrappingTolerance ? style.wrappedExtra : 0
+        return (hasNextLine ? style.withNextHeight : style.currentOnlyHeight) + extra
+    }
+
+    /// Two single-value slots let compact and prewarmed details share measurements
+    /// without evicting one another on every animation frame. No history is retained.
+    @MainActor
+    struct Cache {
+        private struct Key: Equatable {
+            let trackRevision: UUID
+            let line: String
+            let hasNextLine: Bool
+            let width: CGFloat
+            let style: MeasurementStyle
+        }
+        private struct Entry {
+            let key: Key
+            let height: CGFloat
+        }
+        private var recent: Entry?
+        private var previous: Entry?
+        private(set) var syntheticMeasurementCount: UInt64 = 0
+
+        mutating func clear() { recent = nil; previous = nil }
+
+        mutating func contentHeight(trackRevision: UUID, line: String, nextLine: String, width: CGFloat,
+                                    countSyntheticMeasurement: Bool = false) -> CGFloat {
+            let key = Key(trackRevision: trackRevision, line: line, hasNextLine: !nextLine.isEmpty,
+                width: normalizedWidth(width), style: measurementStyle)
+            if let recent, recent.key == key { return recent.height }
+            if let previous, previous.key == key {
+                self.previous = recent; recent = previous
+                return previous.height
+            }
+            let height = measure(line: line, hasNextLine: key.hasNextLine, width: key.width, style: key.style)
+            if countSyntheticMeasurement { syntheticMeasurementCount &+= 1 }
+            previous = recent; recent = Entry(key: key, height: height)
+            return height
+        }
     }
 }
 
 /// Only real decoded thumbnail data or a neutral placeholder is displayed.
-/// The static playing glyph is a state indicator, not a simulated audio spectrum.
+/// The gently moving playing glyph indicates playback state without audio analysis.
 @MainActor
 struct MusicClosedAccessories: View {
     @ObservedObject var music: MusicLyricsController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let left: CGRect
     let right: CGRect
-    private var image: CGImage? {
-        guard let art = music.artwork, let provider = CGDataProvider(data: art.rgbaBytes as CFData),
-              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        return CGImage(width: art.pixelWidth, height: art.pixelHeight, bitsPerComponent: 8, bitsPerPixel: 32,
-            bytesPerRow: art.bytesPerRow, space: colorSpace,
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue), provider: provider,
-            decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-    }
+    var visible = true
     var body: some View {
         ZStack(alignment: .topLeading) {
             Group {
-                if let image { Image(decorative: image, scale: 1).resizable().interpolation(.high).scaledToFill() }
+                if let image = music.artworkImage { Image(decorative: image, scale: 1).resizable().interpolation(.high).scaledToFill() }
                 else { Image(systemName: "music.note").font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white.opacity(0.12)) }
             }.frame(width: 20, height: 20).clipShape(RoundedRectangle(cornerRadius: 4))
                 .offset(x: left.minX + 7, y: max(0, (left.height - 20) / 2))
-            Image(systemName: "waveform").font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white.opacity(0.72)).frame(width: 20, height: 20)
+            MusicPlayingIndicator(active: music.isFreshPlaying && visible, reduceMotion: reduceMotion)
+                .frame(width: 20, height: 20)
                 .offset(x: right.maxX - 27, y: max(0, (right.height - 20) / 2))
         }.accessibilityElement(children: .ignore).accessibilityLabel("Apple Music 正在播放")
     }
