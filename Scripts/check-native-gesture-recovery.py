@@ -2,7 +2,8 @@
 """Independent native failed-lyric-gesture recovery gate and fixed110 red/green.
 
 No fetch, remote, CI or publication. --prepare-only works on Linux and overlays
-only the identical MusicRendering.swift fixture on fixed110. Native execution
+the identical MusicRendering.swift fixture plus one exact test-only input guard
+on fixed110. All other baseline source bytes remain unchanged. Native execution
 requires macOS. Own event identities are observed by an unchanged local monitor;
 production accepted point/time receipts separately establish real IslandPanel
 local-monitor ingress. This is not evidence of global-input delivery or scanout.
@@ -26,6 +27,19 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE_COMMIT = "d48181bd285620108b01303a7072d1b0743a3cb3"
 HARNESS_PATH = "Sources/CodexNotchMeter/MusicRendering.swift"
+PANEL_PATH = "Sources/CodexNotchMeter/IslandPanel.swift"
+INPUT_SOURCE_MODE = "appkit-local-events-only"
+ORIGINAL_POLL_BLOCK = b'''    @objc private func pollPointer(_ timer: Timer) {
+        guard !stopped, timer === pointerTimer, placementIsValid else { return }
+        observePointer()
+    }
+'''
+INPUT_ISOLATION_GUARD = b'''        // This own-event fixture isolates queued AppKit input from the unrelated
+        // physical cursor. The separate cache gate still exercises real polling.
+        guard !(model.demo && CommandLine.arguments.contains("--music-test")
+            && CommandLine.arguments.contains("--gesture-recovery-test")) else { return }
+'''
+ISOLATED_POLL_BLOCK = ORIGINAL_POLL_BLOCK.replace(b"        observePointer()\n", INPUT_ISOLATION_GUARD + b"        observePointer()\n")
 FLAGS = ("--music-test", "--gesture-recovery-test")
 RUN_TIMEOUT_SECONDS = 110
 REASON = "rejected no-match crossing recovers stationary same-region hover without a full-envelope exit"
@@ -36,7 +50,8 @@ SETUP = ("MUSIC_GESTURE_RECOVERY_SETUP_OK: kind=no-match actualLookup=true fresh
 CLEANUP = ("MUSIC_GESTURE_RECOVERY_CLEANUP_OK: controllers=9 pendingRequests=0 "
            "countsStable=true panelsStopped=true monitorsRemoved=true")
 GATE = ("MUSIC_GESTURE_RECOVERY_GATE_OK: independent=true deadline=100 oldMusicDeadline=150 "
-        "oldPointerDeadline=45 cases=9 nativeEventQueue=true controllerInjection=false scanout=false")
+        "oldPointerDeadline=45 cases=9 nativeEventQueue=true inputSourceMode=appkit-local-events-only "
+        "controllerInjection=false scanout=false")
 EVENT_PREFIX = "MUSIC_GESTURE_RECOVERY_EVENTS_JSON: "
 CASES = ("no-match", "loading", "before-first-cue", "gap", "lost-opening", "late-availability",
          "pause-opening", "successful-reverse", "quota-interruption")
@@ -77,11 +92,12 @@ def swift_rounded(value):
 
 def events_valid(data, name, stage, *, red=False):
     if type(data) is not dict or set(data) != {"kind", "stage", "events", "overflow", "crossingStart", "crossingEnd",
-                                               "corridor", "sameEnvelope", "pollAfterCrossing", "details", "selected", "owner"}:
+                                               "corridor", "sameEnvelope", "pollAfterCrossing", "details", "selected", "owner", "inputSourceMode"}:
         return False
     details = False if red else DETAILS[name]
     owner = "idle" if red or name == "successful-reverse" else ("details" if details else "music")
     if (data["kind"] != name or data["stage"] != stage or data["overflow"] is not False
+            or data["inputSourceMode"] != INPUT_SOURCE_MODE
             or data["sameEnvelope"] is not True or data["pollAfterCrossing"] is not False
             or data["details"] is not details or data["selected"] is not SELECTED[name] or data["owner"] != owner):
         return False
@@ -225,6 +241,22 @@ def red_valid(code, stdout, stderr):
     return True
 
 
+def validate_candidate_input_isolation(candidate):
+    require(candidate.count(ISOLATED_POLL_BLOCK) == 1 and candidate.count(INPUT_ISOLATION_GUARD) == 1
+            and candidate.count(b"@objc private func pollPointer(") == 1,
+            "Candidate must contain the identical uniquely scoped input-isolation guard")
+
+
+def isolate_baseline_input(original, candidate):
+    require(original.count(ORIGINAL_POLL_BLOCK) == 1 and INPUT_ISOLATION_GUARD not in original,
+            "Fixed110 must contain one exact original polling block and no input-isolation guard")
+    validate_candidate_input_isolation(candidate)
+    patched = original.replace(ORIGINAL_POLL_BLOCK, ISOLATED_POLL_BLOCK, 1)
+    require(patched.replace(INPUT_ISOLATION_GUARD, b"", 1) == original,
+            "Fixed110 input isolation changed bytes outside its exact test-only guard")
+    return patched
+
+
 def prepare(output):
     require(common.git(ROOT, "rev-parse", "--verify", BASELINE_COMMIT + "^{commit}").decode().strip() == BASELINE_COMMIT,
             "Fixed110 is unavailable; no fetch is performed")
@@ -235,13 +267,22 @@ def prepare(output):
     stage.mkdir()
     common.extract_archive(archive, stage)
     before = common.source_manifest(stage)
+    original_panel = common.bounded_read(stage / PANEL_PATH)
+    candidate_panel = common.bounded_read(ROOT / PANEL_PATH)
+    patched_panel = isolate_baseline_input(original_panel, candidate_panel)
     (stage / HARNESS_PATH).write_bytes(harness)
+    (stage / PANEL_PATH).write_bytes(patched_panel)
     after = common.source_manifest(stage)
     changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
-    require(changed == [HARNESS_PATH], "Fixed110 overlay must change only MusicRendering.swift")
-    result = {"schema": 1, "baselineCommit": BASELINE_COMMIT, "archiveSHA256": common.digest(archive),
+    require(changed == sorted([HARNESS_PATH, PANEL_PATH]), "Fixed110 overlay must change only its harness and exact test-only polling guard")
+    result = {"schema": 2, "baselineCommit": BASELINE_COMMIT, "archiveSHA256": common.digest(archive),
               "harnessSHA256": common.digest(harness), "changedFiles": changed, "before": before, "after": after,
-              "productionSourcesUnchanged": True, "flags": list(FLAGS), "expectedFailure": REASON, "nativeAppRun": False}
+              "inputSourceMode": INPUT_SOURCE_MODE, "inputIsolationGuardSHA256": common.digest(INPUT_ISOLATION_GUARD),
+              "originalPollingBlockSHA256": common.digest(ORIGINAL_POLL_BLOCK),
+              "candidatePanelSHA256": common.digest(candidate_panel),
+              "baselinePanelRestoredSHA256": common.digest(patched_panel.replace(INPUT_ISOLATION_GUARD, b"", 1)),
+              "productionSourcesUnchangedOutsideInputIsolationGuard": True,
+              "flags": list(FLAGS), "expectedFailure": REASON, "nativeAppRun": False}
     processes.write_json(output / "preparation.json", result)
     return stage, result
 
@@ -265,13 +306,17 @@ def native_red_green(output, stage, preparation):
     require(processes.candidate_binding(ROOT)[1] == binding, "Candidate source/binary changed during runs")
     require(common.digest(common.bounded_read(baseline)) == baseline_sha, "Fixed110 binary changed during runs")
     require(common.digest(common.bounded_read(ROOT / HARNESS_PATH)) == preparation["harnessSHA256"], "Harness changed during runs")
-    processes.write_json(output / "result.json", {"schema": 1, "baselineCommit": BASELINE_COMMIT,
+    require(common.digest(common.bounded_read(ROOT / PANEL_PATH)) == preparation["candidatePanelSHA256"], "Candidate input-isolation source changed during runs")
+    processes.write_json(output / "result.json", {"schema": 2, "baselineCommit": BASELINE_COMMIT,
         "candidate": binding, "harnessSHA256": preparation["harnessSHA256"], "baselineExecutableSHA256": baseline_sha,
         "expectedRed": True, "strictGreen": True, "nativeAppRun": True, "nativeIngress": True, "scanout": False,
-        "productionSourcesUnchanged": True, "flags": list(FLAGS), "expectedFailure": REASON,
+        "changedFiles": preparation["changedFiles"], "inputSourceMode": INPUT_SOURCE_MODE,
+        "inputIsolationGuardSHA256": preparation["inputIsolationGuardSHA256"],
+        "productionSourcesUnchangedOutsideInputIsolationGuard": True, "flags": list(FLAGS), "expectedFailure": REASON,
         "logs": {p.name: common.digest(common.bounded_read(p)) for p in sorted(output.glob("*.log"))}})
     print("GESTURE_RECOVERY_REDGREEN_OK: sameHarnessSHA256=" + preparation["harnessSHA256"]
-          + " expectedRed=true strictGreen=true nativeQueue=true productionSourcesUnchanged=true scanout=false")
+          + " expectedRed=true strictGreen=true nativeQueue=true inputSourceMode=" + INPUT_SOURCE_MODE
+          + " productionSourcesUnchangedOutsideInputIsolationGuard=true scanout=false")
 
 
 def sample_evidence(name, stage="complete", red=False, corridor=None):
@@ -292,6 +337,7 @@ def sample_evidence(name, stage="complete", red=False, corridor=None):
                          accepted=True, acceptedTimestamp=timestamp, acceptedScreen=position, acceptedOwner=owner,
                          acceptedTarget=1 if owner == "details" else 0.3 if owner == "music" else 0))
     return dict(kind=name, stage=stage, events=rows, overflow=False, crossingStart=2, crossingEnd=8,
+                inputSourceMode=INPUT_SOURCE_MODE,
                 corridor=corridor, sameEnvelope=True, pollAfterCrossing=False, details=details, selected=SELECTED[name],
                 owner="idle" if red or name == "successful-reverse" else "details" if details else "music")
 
@@ -391,16 +437,57 @@ class SelfTests(unittest.TestCase):
             self.assertFalse(red_valid(code, stdout, stderr))
         self.assertFalse(red_valid(0, out.replace('"details":false', '"details":true'), err))
 
-    def test_harness_only_fixed110_overlay(self):
+    def test_exact_input_mode_required_for_red_and_green(self):
+        out, err = sample_red()
+        green = sample_green()
+        for mode in (None, "", "legacy", "physical-polling", "appkit-local-events", True):
+            red_data = sample_evidence("no-match", "first-trap", red=True)
+            green_data = sample_evidence("no-match", "first-trap")
+            for data in (red_data, green_data):
+                if mode is None:
+                    del data["inputSourceMode"]
+                else:
+                    data["inputSourceMode"] = mode
+            self.assertFalse(red_valid(0, out.replace(encode(sample_evidence("no-match", "first-trap", red=True)), encode(red_data)), err))
+            self.assertFalse(receipts_valid(green.replace(encode(sample_evidence("no-match", "first-trap")), encode(green_data))))
+        self.assertFalse(receipts_valid(green.replace(" inputSourceMode=" + INPUT_SOURCE_MODE, "")))
+
+    def test_harness_and_exact_guard_fixed110_overlay(self):
         with tempfile.TemporaryDirectory() as temp:
             stage, receipt = prepare(Path(temp))
             self.assertEqual(receipt["baselineCommit"], BASELINE_COMMIT)
-            self.assertEqual(receipt["changedFiles"], [HARNESS_PATH])
+            self.assertEqual(receipt["changedFiles"], sorted([HARNESS_PATH, PANEL_PATH]))
             self.assertEqual(set(receipt["before"]), set(receipt["after"]))
             for path in receipt["before"]:
-                if path != HARNESS_PATH:
+                if path not in (HARNESS_PATH, PANEL_PATH):
                     self.assertEqual(receipt["before"][path], receipt["after"][path])
+            original = common.git(ROOT, "show", BASELINE_COMMIT + ":" + PANEL_PATH)
+            patched = common.bounded_read(stage / PANEL_PATH)
+            self.assertEqual(patched.replace(INPUT_ISOLATION_GUARD, b"", 1), original)
+            self.assertEqual(receipt["baselinePanelRestoredSHA256"], common.digest(original))
+            self.assertEqual(receipt["inputSourceMode"], INPUT_SOURCE_MODE)
+            self.assertEqual(receipt["inputIsolationGuardSHA256"], common.digest(INPUT_ISOLATION_GUARD))
+            self.assertNotIn("productionSourcesUnchanged", receipt)
             self.assertEqual(list(stage.rglob("*.pyc")), [])
+
+    def test_input_isolation_rejects_missing_changed_or_duplicate_guards(self):
+        original = common.git(ROOT, "show", BASELINE_COMMIT + ":" + PANEL_PATH)
+        candidate = common.bounded_read(ROOT / PANEL_PATH)
+        invalid = ((original.replace(ORIGINAL_POLL_BLOCK, b""), candidate),
+                   (original + ORIGINAL_POLL_BLOCK, candidate),
+                   (original, candidate.replace(INPUT_ISOLATION_GUARD, b"")),
+                   (original, candidate + INPUT_ISOLATION_GUARD),
+                   (original, candidate.replace(b"guard !(model.demo && CommandLine.arguments.contains(\"--music-test\")",
+                                                b"guard !(CommandLine.arguments.contains(\"--music-test\")")),
+                   (original, candidate.replace(b'&& CommandLine.arguments.contains("--gesture-recovery-test"))',
+                                                b'&& CommandLine.arguments.contains("--music-cache-test"))')))
+        for before, current in invalid:
+            with self.assertRaises(ValidationError):
+                isolate_baseline_input(before, current)
+        # This is a static scope check, not a claim of native polling execution.
+        self.assertNotIn(b"--music-cache-test", INPUT_ISOLATION_GUARD)
+        self.assertIn(b'guard !(model.demo && CommandLine.arguments.contains("--music-test")', INPUT_ISOLATION_GUARD)
+        self.assertIn(b'&& CommandLine.arguments.contains("--gesture-recovery-test")) else { return }', INPUT_ISOLATION_GUARD)
 
     def test_independent_old_deadlines_and_shutdown_contract(self):
         source = (ROOT / HARNESS_PATH).read_text()
@@ -436,10 +523,13 @@ def main():
         if args.prepare_only or args.red_green:
             stage, preparation = prepare(output)
             print("GESTURE_RECOVERY_PREPARED: baseline=" + BASELINE_COMMIT + " harnessSHA256=" + preparation["harnessSHA256"]
-                  + " changedFiles=MusicRendering.swift productionSourcesUnchanged=true nativeAppRun=false", flush=True)
+                  + " changedFiles=IslandPanel.swift,MusicRendering.swift inputSourceMode=" + INPUT_SOURCE_MODE
+                  + " inputIsolationGuardSHA256=" + preparation["inputIsolationGuardSHA256"]
+                  + " productionSourcesUnchangedOutsideInputIsolationGuard=true nativeAppRun=false", flush=True)
             if args.red_green:
                 native_red_green(output, stage, preparation)
         else:
+            validate_candidate_input_isolation(common.bounded_read(ROOT / PANEL_PATH))
             candidate, binding = processes.candidate_binding(ROOT)
             result = processes.run_process([candidate, *FLAGS], ROOT, output / "candidate-green", RUN_TIMEOUT_SECONDS)
             require(result[0] == 0 and receipts_valid(result[1], result[2]), "Native gesture recovery or orderly-shutdown contract failed")
