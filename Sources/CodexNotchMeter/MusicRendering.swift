@@ -400,7 +400,7 @@ final class MusicRenderHarness: NSObject {
             try require(!panel.isInteracting && panel.smokeExpansionOwner != .details && panel.smokeTargetProgress != 1,
                         "queued moving or protected sample never promotes transient details")
         }
-        func post(_ point: CGPoint, allowDetails: Bool = false) async throws {
+        func enqueue(_ point: CGPoint) throws -> GestureRecoveryEvent {
             guard constructed.count < 256 else { throw Failure(label: "gesture recovery event evidence exceeded bound") }
             if let protectedStart {
                 try require(geometry.hoverContains(point, progress: 1),
@@ -426,14 +426,27 @@ final class MusicRenderHarness: NSObject {
                 deliveredAt: 0, local: local, screen: point)
             constructed.append(evidence); lastRequested = requested; lastConstructed = timestamp
             NSApp.postEvent(event, atStart: false)
+            return evidence
+        }
+        func awaitQueued(_ evidence: GestureRecoveryEvent) async throws {
+            let number = evidence.number, requested = evidence.requested, timestamp = evidence.constructed
+            let point = evidence.screen, local = evidence.local
+            func received() -> Bool {
+                let observed = observation.events.filter { $0.number == number }
+                return observed.count == 1 && observed[0].type == evidence.type && observed[0].window == evidence.window
+                    && abs(observed[0].constructed - requested) < 0.000000001
+                    && abs(observed[0].constructed - timestamp) < 0.000000001
+                    && observed[0].deliveredAt >= requested && observed[0].deliveredAt - requested <= 0.20
+                    && observed[0].local == local && observed[0].screen == point
+                    && panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == observed[0].constructed && $0.point == point }
+            }
             do {
-                try await until("gesture recovery queued identity and point reach both installed monitors", timeout: 0.20) {
-                    let observed = observation.events.filter { $0.number == number }
-                    return observed.count == 1 && observed[0].type == evidence.type && observed[0].window == evidence.window
-                        && abs(observed[0].constructed - requested) < 0.000000001
-                        && abs(observed[0].constructed - timestamp) < 0.000000001
-                        && observed[0].local == local && observed[0].screen == point
-                        && panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == observed[0].constructed && $0.point == point }
+                // A burst never renews the first event's delivery allowance.
+                // Already-complete receipts must still prove actual delivery
+                // within 0.20 seconds of that event's real construction sample.
+                if !received() {
+                    let remaining = max(0, requested + 0.20 - ProcessInfo.processInfo.systemUptime)
+                    try await until("gesture recovery queued identity and point reach both installed monitors", timeout: remaining) { received() }
                 }
             } catch {
                 // Run60 stopped before its first setup event had a joint receipt.
@@ -468,6 +481,10 @@ final class MusicRenderHarness: NSObject {
                 }
                 throw error
             }
+        }
+        func post(_ point: CGPoint, allowDetails: Bool = false) async throws {
+            let evidence = try enqueue(point)
+            try await awaitQueued(evidence)
             if !allowDetails { try noDetails() }
         }
         func hold(_ point: CGPoint, seconds: TimeInterval, allowDetails: Bool = false) async throws {
@@ -478,15 +495,42 @@ final class MusicRenderHarness: NSObject {
             } while CACurrentMediaTime() < deadline
             try await post(point, allowDetails: allowDetails)
         }
-        func cross(open: Bool) async throws {
+        // Generate real input independently of rendering/async receipt waits.
+        // Like the existing pointer backlog fixture, this synchronous helper
+        // queues actual-time samples; only the ordinary app run loop delivers
+        // them after return. No invented/future time, direct injection or retry.
+        func enqueueCrossing(open: Bool) throws -> [GestureRecoveryEvent] {
             let fractions: [CGFloat] = open ? [-0.04, 0.02, 0.25, 0.52, 0.75, 0.98]
                 : [1.04, 0.98, 0.75, 0.48, 0.25, 0.02]
+            let began = ProcessInfo.processInfo.systemUptime
+            var queued: [GestureRecoveryEvent] = []
             for (index, fraction) in fractions.enumerated() {
-                phase = "\(open ? "open" : "reverse")-crossing-\(index)"
-                try await post(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded()))
-                if crossingStates.count < 24 { crossingStates.append(liveState(phase)) }
-                if index < fractions.count - 1 { try await dwell(0.012) }
+                if index > 0 { Thread.sleep(forTimeInterval: 0.012) }
+                phase = "\(open ? "open" : "reverse")-crossing-queued-\(index)"
+                queued.append(try enqueue(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded())))
             }
+            try require(ProcessInfo.processInfo.systemUptime - began <= 0.20
+                && zip(queued, queued.dropFirst()).allSatisfy { before, after in
+                    after.constructed > before.constructed && after.constructed - before.constructed <= 0.25
+                }, "queued crossing uses bounded real-time generation with every actual sample gap within 0.25 seconds")
+            return queued
+        }
+        func cross(open: Bool) async throws {
+            let ingressStart = panel.smokePointerIngress.count
+            let queued = try enqueueCrossing(open: open)
+            for evidence in queued { try await awaitQueued(evidence) }
+            let numbers = Set(queued.map { $0.number })
+            let observed = observation.events.filter { numbers.contains($0.number) }
+            let accepted = panel.smokePointerIngress.dropFirst(ingressStart).filter { $0.kind == "event" }
+            try require(observed.map { $0.number } == queued.map { $0.number }
+                && accepted.count == queued.count
+                && zip(accepted, observed).allSatisfy { receipt, event in
+                    receipt.timestamp == event.constructed && receipt.point == event.screen
+                        && receipt.owner != .details && receipt.target != 1
+                }, "every queued crossing event reaches production in order without transient details")
+            try noDetails()
+            phase = "\(open ? "open" : "reverse")-crossing-delivered"
+            if crossingStates.count < 24 { crossingStates.append(liveState(phase)) }
         }
         func emitEvidence(_ stage: String) throws {
             let rows: [[String: Any]] = try constructed.map { value in
