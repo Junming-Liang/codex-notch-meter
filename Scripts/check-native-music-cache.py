@@ -2,6 +2,7 @@
 """Independent 30-second, injected-source cache and own-view native gate."""
 from copy import deepcopy
 import json
+import hashlib
 import math
 from pathlib import Path
 import subprocess
@@ -35,7 +36,7 @@ INDICATOR_BOOLS = dict(synthetic=True, ownPresentationLayerPixels=True, scanout=
                        loopEndpointsMatch=True, pausedStable=True, reduceMotionStable=True,
                        hiddenAncestorStopped=True, orderedOutStopped=True, detachedStopped=True,
                        dismantledStopped=True)
-INDICATOR_INTS = dict(schema=1, changedBars=3, barCount=3, iconWidth=20, iconHeight=20,
+INDICATOR_INTS = dict(schema=2, changedBars=3, barCount=3, iconWidth=20, iconHeight=20,
                       unchangedUpdates=100, unchangedLayouts=100)
 KEYS = set(BOOLS) | set(INTS) | {
     "elapsed", "layout", "freshnessAge", "latestPosition", "clearBoundaries", "readerCalls", "eventRecovery", "indicator",
@@ -126,26 +127,22 @@ def valid_event_recovery(value):
 
 
 def valid_indicator(value):
-    if not isinstance(value, dict) or set(value) != set(INDICATOR_BOOLS) | set(INDICATOR_INTS) | {
-        "elapsed", "sampleTimes", "scalesA", "scalesB", "changedBytes", "animationKey",
-        "pixelWidth", "pixelHeight", "backingScale", "pngs",
-    }:
+    extra = {"elapsed", "sampleTimes", "scalesA", "scalesB", "changedBytes", "animationKey",
+             "pixelWidth", "pixelHeight", "backingScale", "pngs", "deadlineSeconds", "periodSeconds",
+             "observationDeadlineSeconds", "observationDuration", "observedRanges", "samples",
+             "lifecycle", "samplePairIndices"}
+    if not isinstance(value, dict) or set(value) != set(INDICATOR_BOOLS) | set(INDICATOR_INTS) | extra:
         return False
     if any(type(value[k]) is not bool or value[k] is not expected for k, expected in INDICATOR_BOOLS.items()):
         return False
     if any(type(value[k]) is not int or value[k] != expected for k, expected in INDICATOR_INTS.items()):
         return False
-    if not finite(value["elapsed"]) or not .54 <= value["elapsed"] < 1.9:
+    if not finite(value["elapsed"]) or not 1.95 <= value["elapsed"] <= 3.0:
         return False
-    times = value["sampleTimes"]
-    if not isinstance(times, list) or len(times) != 2 or not all(finite(v) for v in times):
+    if any(not finite(value[k]) or value[k] != expected for k, expected in
+           (("deadlineSeconds", 3.0), ("periodSeconds", 1.6), ("observationDeadlineSeconds", 2.1))):
         return False
-    if not .14 <= times[0] < times[1] < value["elapsed"] or times[1] - times[0] < .22:
-        return False
-    for key in ("scalesA", "scalesB"):
-        if not isinstance(value[key], list) or len(value[key]) != 3 or not all(finite(v) and 0 < v < 1 for v in value[key]):
-            return False
-    if sum(abs(a - b) > .01 for a, b in zip(value["scalesA"], value["scalesB"])) != value["changedBars"]:
+    if value["animationKey"] != "music.playing.scale" or value["pngs"] != INDICATOR_PNGS:
         return False
     scale = value["backingScale"]
     if not finite(scale) or not 1 <= scale <= 4:
@@ -154,7 +151,83 @@ def valid_indicator(value):
         return False
     if type(value["changedBytes"]) is not int or not 0 < value["changedBytes"] <= value["pixelWidth"] * value["pixelHeight"] * 4:
         return False
-    return value["animationKey"] == "music.playing.scale" and value["pngs"] == INDICATOR_PNGS
+    state_keys = {"time", "animationKeys", "animationStartCount", "windowVisible", "occlusionVisible", "attached", "hidden"}
+    def state(row):
+        return (finite(row["time"]) and 0 <= row["time"] < value["elapsed"]
+                and type(row["animationStartCount"]) is int and row["animationStartCount"] >= 1
+                and all(type(row[k]) is bool for k in ("windowVisible", "occlusionVisible", "attached", "hidden")))
+    def vector(row, upper):
+        return isinstance(row, list) and len(row) == 3 and all(finite(v) and 0 < v < upper for v in row)
+    def digest(v):
+        return isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+    running_keys = [[value["animationKey"]] for _ in range(3)]
+    samples = value["samples"]
+    # At 80 ms spacing the bounded 2.1 s observation can produce at most 28 rows.
+    if not isinstance(samples, list) or not 3 <= len(samples) <= 28:
+        return False
+    for i, row in enumerate(samples):
+        if not isinstance(row, dict) or set(row) != state_keys | {"scales", "heights", "pngSHA256"} or not state(row):
+            return False
+        if row["animationKeys"] != running_keys or not row["windowVisible"] or not row["occlusionVisible"] or not row["attached"] or row["hidden"]:
+            return False
+        if not vector(row["scales"], 1) or not vector(row["heights"], 14) or not digest(row["pngSHA256"]):
+            return False
+        if any(abs(h - 14 * scale) > 1e-5 for h, scale in zip(row["heights"], row["scales"])):
+            return False
+        if row["animationStartCount"] != samples[0]["animationStartCount"]:
+            return False
+        if i and row["time"] <= samples[i - 1]["time"]:
+            return False
+    if samples[0]["time"] < .14:
+        return False
+    duration = samples[-1]["time"] - samples[0]["time"]
+    if not finite(value["observationDuration"]) or not 1.6 <= duration <= 2.1 or abs(value["observationDuration"] - duration) > 1e-8:
+        return False
+    ranges = value["observedRanges"]
+    if not isinstance(ranges, list) or len(ranges) != 3:
+        return False
+    for i, span in enumerate(ranges):
+        actual = max(row["scales"][i] for row in samples) - min(row["scales"][i] for row in samples)
+        if not finite(span) or span <= .01 or abs(span - actual) > 1e-8:
+            return False
+    indices = value["samplePairIndices"]
+    if not isinstance(indices, list) or len(indices) != 2 or any(type(i) is not int for i in indices):
+        return False
+    if indices[0] != 0 or not 0 < indices[1] < len(samples):
+        return False
+    first, second = (samples[i] for i in indices)
+    times = value["sampleTimes"]
+    if not isinstance(times, list) or len(times) != 2 or not all(finite(t) for t in times):
+        return False
+    if times != [first["time"], second["time"]] or second["time"] - first["time"] < .22:
+        return False
+    if value["scalesA"] != first["scales"] or value["scalesB"] != second["scales"] or first["pngSHA256"] == second["pngSHA256"]:
+        return False
+    if sum(abs(a - b) > .01 for a, b in zip(first["scales"], second["scales"])) != value["changedBars"]:
+        return False
+    stages = (("started", True, 0), ("unchanged-inputs", True, 0), ("observed-cycle", True, 0),
+              ("paused", False, 0), ("resume-before-reduce-motion", True, 1), ("reduced-motion", False, 1),
+              ("resume-after-reduce-motion", True, 2), ("ancestor-hidden", False, 2),
+              ("ancestor-unhidden", True, 3), ("ordered-out", False, 3), ("ordered-front", True, 4),
+              ("detached", False, 4), ("reattached", True, 5), ("dismantled", False, 5),
+              ("dismantled-reconfigure", False, 5))
+    lifecycle = value["lifecycle"]
+    if not isinstance(lifecycle, list) or len(lifecycle) != len(stages):
+        return False
+    for i, (row, (name, running, increment)) in enumerate(zip(lifecycle, stages)):
+        if not isinstance(row, dict) or set(row) != state_keys | {"stage"} or not state(row) or row["stage"] != name:
+            return False
+        if row["animationKeys"] != (running_keys if running else [[], [], []]):
+            return False
+        if row["animationStartCount"] != samples[0]["animationStartCount"] + increment:
+            return False
+        if row["hidden"] != (name == "ancestor-hidden") or row["attached"] != (name != "detached") or row["windowVisible"] != (name != "ordered-out"):
+            return False
+        if running and not row["occlusionVisible"]:
+            return False
+        if i and row["time"] < lifecycle[i - 1]["time"]:
+            return False
+    return lifecycle[1]["time"] <= samples[0]["time"] and lifecycle[2]["time"] >= samples[-1]["time"]
 
 
 def valid_indicator_files(root, payload):
@@ -162,10 +235,12 @@ def valid_indicator_files(root, payload):
     try:
         images = [(directory / name).read_bytes() for name in INDICATOR_PNGS]
         expected = (payload["indicator"]["pixelWidth"], payload["indicator"]["pixelHeight"])
+        indicator = payload["indicator"]
+        chosen = [indicator["samples"][i]["pngSHA256"] for i in indicator["samplePairIndices"]]
         return all(len(data) > 33 and data[:8] == b"\x89PNG\r\n\x1a\n"
                    and data[12:16] == b"IHDR" and struct.unpack(">II", data[16:24]) == expected
-                   for data in images) and images[0] != images[1]
-    except (OSError, KeyError, struct.error):
+                   for data in images) and images[0] != images[1] and [hashlib.sha256(data).hexdigest() for data in images[:2]] == chosen
+    except (OSError, KeyError, IndexError, TypeError, struct.error):
         return False
 
 
@@ -247,9 +322,33 @@ def example():
                                   eventRecoverySeconds=.13, firstPollQuietSeconds=.269,
                                   constructed=events, sequence=sequence)
     value["indicator"] = dict(INDICATOR_BOOLS, **INDICATOR_INTS)
-    value["indicator"].update(elapsed=.8, sampleTimes=[.15, .38], scalesA=[.51, .79, .56],
-                              scalesB=[.75, .51, .40], changedBytes=100, animationKey="music.playing.scale",
-                              pixelWidth=80, pixelHeight=80, backingScale=2.0, pngs=INDICATOR_PNGS)
+    indicator = value["indicator"]
+    samples = []
+    for i in range(21):
+        scales = [.55 + .12 * math.sin(i * .31 + j * .4) for j in range(3)]
+        samples.append(dict(time=.15 + i * .08, scales=scales, heights=[14 * x for x in scales],
+                            pngSHA256=hashlib.sha256(str(i).encode()).hexdigest(),
+                            animationKeys=[["music.playing.scale"] for _ in range(3)],
+                            animationStartCount=1, windowVisible=True, occlusionVisible=True, attached=True, hidden=False))
+    lifecycle = []
+    for stage, running, increment, stamp in (
+        ("started", True, 0, .01), ("unchanged-inputs", True, 0, .02), ("observed-cycle", True, 0, 1.76),
+        ("paused", False, 0, 1.77), ("resume-before-reduce-motion", True, 1, 1.87), ("reduced-motion", False, 1, 1.91),
+        ("resume-after-reduce-motion", True, 2, 2.01), ("ancestor-hidden", False, 2, 2.02),
+        ("ancestor-unhidden", True, 3, 2.03), ("ordered-out", False, 3, 2.04), ("ordered-front", True, 4, 2.07),
+        ("detached", False, 4, 2.08), ("reattached", True, 5, 2.09), ("dismantled", False, 5, 2.10),
+        ("dismantled-reconfigure", False, 5, 2.11)):
+        lifecycle.append(dict(stage=stage, time=stamp,
+                              animationKeys=[["music.playing.scale"] for _ in range(3)] if running else [[], [], []],
+                              animationStartCount=1 + increment, windowVisible=stage != "ordered-out",
+                              occlusionVisible=stage != "ordered-out", attached=stage != "detached", hidden=stage == "ancestor-hidden"))
+    indicator.update(elapsed=2.2, deadlineSeconds=3.0, periodSeconds=1.6, observationDeadlineSeconds=2.1,
+                     samples=samples, lifecycle=lifecycle, samplePairIndices=[0, 3],
+                     observationDuration=samples[-1]["time"] - samples[0]["time"],
+                     observedRanges=[max(s["scales"][i] for s in samples) - min(s["scales"][i] for s in samples) for i in range(3)],
+                     sampleTimes=[samples[0]["time"], samples[3]["time"]], scalesA=samples[0]["scales"], scalesB=samples[3]["scales"],
+                     changedBytes=100, animationKey="music.playing.scale",
+                     pixelWidth=80, pixelHeight=80, backingScale=2.0, pngs=INDICATOR_PNGS)
     return value
 
 
@@ -318,7 +417,11 @@ def self_test():
         bad = deepcopy(value); bad["indicator"][key] = not val if type(val) is bool else None
         assert not valid(output_for(bad)), key; count += 1
     for key, replacements in {
-        "schema": (True, 1.0, 2), "elapsed": (.53, 1.9, float("inf")),
+        "schema": (True, 2.0, 1), "elapsed": (1.94, 3.001, float("inf")),
+        "deadlineSeconds": (2.9, 3.1, True), "periodSeconds": (1.59, 1.61, True),
+        "observationDeadlineSeconds": (2.0, 2.2, True), "observationDuration": (1.599, 2.101, True),
+        "observedRanges": ([0, .2, .2], [.2, .2, .2], [True, .2, .2]),
+        "samplePairIndices": ([0, 0], [0, 21], [True, 3], [1, 3]),
         "sampleTimes": ([.15, .36], [.15, .8], [True, .38]),
         "scalesA": ([.75, .51, .4], [0, .51, .4], [1, .51, .4]),
         "changedBars": (2, True), "changedBytes": (0, -1, True, 25601),
@@ -328,6 +431,67 @@ def self_test():
         for replacement in replacements:
             bad = deepcopy(value); bad["indicator"][key] = replacement
             assert not valid(output_for(bad)), (key, replacement); count += 1
+    for collection in ("samples", "lifecycle"):
+        for index in range(len(value["indicator"][collection])):
+            for key in value["indicator"][collection][index]:
+                bad = deepcopy(value); del bad["indicator"][collection][index][key]
+                assert not valid(output_for(bad)), (collection, index, key); count += 1
+            for key, replacement in (("animationKeys", [[], [], []]), ("animationStartCount", 999),
+                                     ("windowVisible", None), ("time", -1), ("attached", None), ("hidden", None)):
+                bad = deepcopy(value); bad["indicator"][collection][index][key] = replacement
+                # A stopped lifecycle is deliberately required to have no keys.
+                if key == "animationKeys" and value["indicator"][collection][index][key] == replacement:
+                    continue
+                assert not valid(output_for(bad)), (collection, index, key); count += 1
+    for frozen in ((0,), (1,), (2,), (0, 1, 2)):
+        bad = deepcopy(value); indicator = bad["indicator"]
+        for row in indicator["samples"]:
+            for i in frozen:
+                row["scales"][i] = indicator["samples"][0]["scales"][i]
+                row["heights"][i] = 14 * row["scales"][i]
+        indicator["observedRanges"] = [max(s["scales"][i] for s in indicator["samples"]) - min(s["scales"][i] for s in indicator["samples"]) for i in range(3)]
+        indicator["scalesA"] = indicator["samples"][0]["scales"]
+        indicator["scalesB"] = indicator["samples"][3]["scales"]
+        assert not valid(output_for(bad)), ("frozen-bars", frozen); count += 1
+    for change in ("short-cycle", "late-cycle", "reordered", "same-pixels", "wrong-height", "restart", "interruption"):
+        bad = deepcopy(value); indicator = bad["indicator"]; rows = indicator["samples"]
+        if change == "short-cycle":
+            rows.pop(); indicator["observationDuration"] = rows[-1]["time"] - rows[0]["time"]
+        elif change == "late-cycle":
+            rows[-1]["time"] = rows[0]["time"] + 2.101; indicator["observationDuration"] = 2.101
+        elif change == "reordered": rows.reverse()
+        elif change == "same-pixels": rows[3]["pngSHA256"] = rows[0]["pngSHA256"]
+        elif change == "wrong-height": rows[2]["heights"][1] += 1
+        elif change == "restart": rows[2]["animationStartCount"] += 1
+        else: rows[2]["animationKeys"][1] = []
+        assert not valid(output_for(bad)), change; count += 1
+    # Bind the exact selected native samples to their exported A/B files.
+    # These are explicit parser-only PNG fixtures, not application screenshots.
+    import tempfile
+    import zlib
+    def fixture_png(color):
+        def chunk(kind, content):
+            return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content) & 0xffffffff)
+        raw = b"".join(b"\x00" + bytes(color) * 80 for _ in range(80))
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 80, 80, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    with tempfile.TemporaryDirectory(prefix="indicator-parser-") as temporary:
+        root = Path(temporary); directory = root / "dist/contour-rendering/indicator"; directory.mkdir(parents=True)
+        files = [fixture_png((i * 40, i * 20, i * 10, 255)) for i in range(4)]
+        fixture = deepcopy(value)
+        for name, data in zip(INDICATOR_PNGS, files):
+            (directory / name).write_bytes(data)
+        for sample_index, data in zip(fixture["indicator"]["samplePairIndices"], files[:2]):
+            fixture["indicator"]["samples"][sample_index]["pngSHA256"] = hashlib.sha256(data).hexdigest()
+        assert valid(output_for(fixture)) and valid_indicator_files(root, fixture); count += 1
+        (directory / INDICATOR_PNGS[0]).write_bytes(files[0] + b"tampered")
+        assert not valid_indicator_files(root, fixture); count += 1
+        (directory / INDICATOR_PNGS[0]).write_bytes(files[1])
+        assert not valid_indicator_files(root, fixture); count += 1
+        (directory / INDICATOR_PNGS[0]).write_bytes(files[0])
+        wrong_pair = deepcopy(fixture); wrong_pair["indicator"]["samples"][0]["pngSHA256"] = "0" * 64
+        assert not valid_indicator_files(root, wrong_pair); count += 1
+        (directory / INDICATOR_PNGS[3]).unlink()
+        assert not valid_indicator_files(root, fixture); count += 1
     print(f"MUSIC_RENDER_CACHE_PARSER_SELF_TEST_OK: assertions={count} nativeAppRun=false")
     return 0
 

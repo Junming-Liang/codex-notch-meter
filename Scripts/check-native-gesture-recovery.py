@@ -146,8 +146,14 @@ def events_valid(data, name, stage, *, red=False):
         if (abs(row["screen"][0] - (corridor[0] + corridor[2] * fraction)) > 0.501
                 or abs(row["screen"][1] - (corridor[1] + corridor[3] / 2)) > 0.501):
             return False
-    if any(not 0 < b["constructed"] - a["constructed"] <= 0.25 for a, b in zip(rows[start:], rows[start + 1:])):
-        return False
+    # The recognizer's continuity limit applies to moving input, including the
+    # initial crossing, reverse crossing and every changed-point transition.
+    # In this explicitly event-only mode, a repeated stationary point cannot
+    # conceal a physical-pointer poll. Its timestamp must still strictly advance,
+    # and native dwell/recovery checks plus the whole-run deadline remain required.
+    for index, (a, b) in enumerate(zip(rows[start:], rows[start + 1:]), start):
+        if (index < end - 1 or a["screen"] != b["screen"]) and not 0 < b["constructed"] - a["constructed"] <= 0.25:
+            return False
     if rows[-1]["constructed"] - rows[end]["constructed"] < 0.65:
         return False
     if name == "no-match":
@@ -424,6 +430,40 @@ class SelfTests(unittest.TestCase):
             original = encode(sample_evidence("no-match", "first-trap", red=True))
             self.assertTrue(red_valid(0, out.replace(original, encode(data)), err))
             self.assertFalse(red_valid(0, out.replace(original, encode(wrong)), err))
+
+    def test_stationary_waits_do_not_relax_moving_continuity(self):
+        data = sample_evidence("successful-reverse")
+        corridor = data["corridor"]
+        # A real reverse-shaped segment also exercises its entry and exit.
+        for row, fraction in zip(data["events"][18:24], (1.04, 0.98, 0.75, 0.48, 0.25, 0.02)):
+            position = [swift_rounded(corridor[0] + corridor[2] * fraction),
+                        swift_rounded(corridor[1] + corridor[3] / 2)]
+            row["screen"] = row["observedScreen"] = row["acceptedScreen"] = position
+            row["local"] = row["observedLocal"] = [position[0] + 900, position[1] + 700]
+        self.assertTrue(events_valid(data, "successful-reverse", "complete"))
+
+        def with_gap(index, gap):
+            changed = copy.deepcopy(data)
+            delta = changed["events"][index - 1]["constructed"] + gap - changed["events"][index]["constructed"]
+            for row in changed["events"][index:]:
+                for key in ("requested", "constructed", "delivered", "acceptedTimestamp"):
+                    row[key] += delta
+            return changed
+
+        # Stationary holds before and after reverse may outlast a scheduler wake.
+        for index in (17, 25):
+            self.assertTrue(events_valid(with_gap(index, 0.329), "successful-reverse", "complete"))
+        # Initial motion, its stationary-target transition, reverse entry,
+        # reverse motion and its stationary-target transition remain strict.
+        for index in (3, 8, 18, 19, 23, 24):
+            self.assertTrue(events_valid(with_gap(index, 0.25), "successful-reverse", "complete"))
+            self.assertFalse(events_valid(with_gap(index, 0.251), "successful-reverse", "complete"))
+        for gap in (0, -0.001):
+            self.assertFalse(events_valid(with_gap(17, gap), "successful-reverse", "complete"))
+        for key, value in (("pollAfterCrossing", True), ("sameEnvelope", False),
+                           ("inputSourceMode", "physical-polling")):
+            changed = with_gap(17, 0.329); changed[key] = value
+            self.assertFalse(events_valid(changed, "successful-reverse", "complete"))
 
     def test_exact_red_not_crash_timeout_or_other_failure(self):
         out, err = sample_red()
