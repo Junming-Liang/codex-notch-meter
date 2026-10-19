@@ -301,6 +301,99 @@ final class IslandCrossingTests: XCTestCase {
         gate.claim()
         XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
     }
+    func testUsableOpeningRetainsGestureProtectionUntilExit() {
+        var gate = IslandGestureHoverGate()
+        gate.claim(requiresLyrics: true)
+        for _ in 0..<60 {
+            XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: true))
+            XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+        }
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: false))
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+    }
+    func testUnavailableOpeningReleasesOnlyItsInputOwnership() {
+        var gate = IslandGestureHoverGate()
+        var hover = IslandHoverState()
+        gate.claim(requiresLyrics: true)
+        XCTAssertTrue(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        XCTAssertFalse(gate.suppresses(insideStableEnvelope: true))
+        hover.update(inside: true, now: 1)
+        XCTAssertFalse(hover.isExpanded)
+        hover.update(inside: true, now: 1.13)
+        XCTAssertTrue(hover.isExpanded)
+        // Fresh content alone cannot resurrect the retired gesture claim.
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: true))
+        XCTAssertFalse(gate.isSuppressing)
+    }
+    func testExplicitCloseAndNoticeClaimsSurviveUnavailableLyrics() {
+        for _ in ["explicitClose", "quotaNotice"] {
+            var gate = IslandGestureHoverGate()
+            gate.claim()
+            for available in [true, false, false, true] {
+                XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: available))
+                XCTAssertTrue(gate.suppresses(insideStableEnvelope: true))
+            }
+            XCTAssertFalse(gate.suppresses(insideStableEnvelope: false))
+        }
+    }
+    func testLatestGestureClaimReplacesItsEligibilityRequirement() {
+        var gate = IslandGestureHoverGate()
+        gate.claim(requiresLyrics: true)
+        gate.claim() // A reverse crossing or notice supersedes the opening.
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        XCTAssertTrue(gate.isSuppressing)
+        gate.claim(requiresLyrics: true)
+        XCTAssertTrue(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        gate.claim()
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        gate.reset()
+        XCTAssertFalse(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+    }
+    func testRecoveryBarrierCompositionSurvivesEventAndPollHistoryResets() {
+        // Core composition of the controller's shared recovery barrier. Native
+        // fixtures separately exercise its production AppKit action handler.
+        var event = IslandCrossing(), poll = IslandCrossing()
+        var gate = IslandGestureHoverGate(), hover = IslandHoverState()
+        var needsCorridorExit = true
+        gate.claim(requiresLyrics: true)
+        XCTAssertTrue(gate.releaseIfLyricsUnavailable(lyricsAvailable: false))
+        for index in 0..<24 {
+            let sample = point(0.98), now = Double(index) / 30
+            let inside = sample.x >= corridor.minX && sample.x <= corridor.maxX
+                && sample.y >= corridor.minY && sample.y <= corridor.maxY
+            if needsCorridorExit && !inside {
+                needsCorridorExit = false; event.reset(); poll.reset()
+            }
+            // Production deliberately resets the opposite source's history.
+            if index.isMultiple(of: 2) {
+                poll.reset()
+                XCTAssertNil(event.update(point: sample, now: now, corridor: corridor,
+                    enabled: !needsCorridorExit))
+                XCTAssertFalse(event.reservesPointer)
+            } else {
+                event.reset()
+                XCTAssertNil(poll.update(point: sample, now: now, corridor: corridor,
+                    enabled: !needsCorridorExit))
+                XCTAssertFalse(poll.reservesPointer)
+            }
+            XCTAssertFalse(gate.suppresses(insideStableEnvelope: true))
+            hover.update(inside: true, now: now)
+        }
+        XCTAssertTrue(hover.isExpanded)
+        XCTAssertTrue(needsCorridorExit)
+        // Corridor endpoints are still inside; only an observed real exit
+        // permits recognition to restart, with both histories freshly empty.
+        for sample in [point(0), point(1), point(0.5, y: corridor.minY), point(0.5, y: corridor.maxY)] {
+            XCTAssertTrue(sample.x >= corridor.minX && sample.x <= corridor.maxX
+                && sample.y >= corridor.minY && sample.y <= corridor.maxY)
+        }
+        let outside = point(1.1)
+        XCTAssertTrue(outside.x > corridor.maxX)
+        needsCorridorExit = false; event.reset(); poll.reset()
+        XCTAssertEqual(traverse(&event, right: false, start: 1), [.left])
+        XCTAssertEqual(traverse(&poll, right: true, start: 1), [.right])
+    }
     func testCameraGeometryAndRailStaySeparateFromMusicEnvelope() {
         for scale in [CGFloat(1), 2] {
             let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
