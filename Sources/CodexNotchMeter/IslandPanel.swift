@@ -24,6 +24,24 @@ struct IslandPointerIngressReceipt {
     let target: Double
 }
 
+/// Bounded, synthetic-gate-only evidence from before any input rejection.
+struct IslandPointerEntryReceipt {
+    let monitor: String
+    let eventNumber: Int
+    let eventType: UInt
+    let windowNumber: Int
+    let localPoint: CGPoint
+    let screenPoint: CGPoint
+    let timestamp: TimeInterval
+    let delivered: TimeInterval
+    let lastEventTime: TimeInterval
+    let lastAppliedGestureTime: TimeInterval
+    let buttonStateTime: TimeInterval
+    let buttons: [Int]
+    let stopped: Bool
+    let placementValid: Bool
+}
+
 private struct IslandRenderState {
     let geometry: IslandGeometry
     let progress: Double
@@ -221,6 +239,8 @@ final class IslandPanelController: NSObject {
     private(set) var smokeHistoryOverflow = false
     var smokePaintHistoryOverflow: Bool { paintStore.historyOverflow }
     private(set) var smokePointerIngress: [IslandPointerIngressReceipt] = []
+    private(set) var smokePointerEntries: [IslandPointerEntryReceipt] = []
+    private(set) var smokePointerEntriesOverflow = false
     private(set) var smokeRenderCommits: [IslandRenderCommit] = []
     var smokePaintHistory: [IslandPaintReceipt] { paintStore.history() }
     private enum PointerSource { case event, poll, synthetic }
@@ -321,10 +341,10 @@ final class IslandPanelController: NSObject {
                 .leftMouseUp, .rightMouseUp, .otherMouseUp,
                 .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
             globalPointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: pointerEvents) { [weak self] event in
-                MainActor.assumeIsolated { self?.observePointer(event: event) }
+                MainActor.assumeIsolated { self?.observePointer(event: event, monitor: "global") }
             }
             localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: pointerEvents) { [weak self] event in
-                MainActor.assumeIsolated { self?.observePointer(event: event) }
+                MainActor.assumeIsolated { self?.observePointer(event: event, monitor: "local") }
                 return event
             }
         }
@@ -402,7 +422,20 @@ final class IslandPanelController: NSObject {
         smokePointerIngress.append(IslandPointerIngressReceipt(point: point, timestamp: timestamp,
             kind: kind, owner: expansionOwner, target: motionTargetValue))
     }
-    private func observePointer(event: NSEvent? = nil) {
+    private func observePointer(event: NSEvent? = nil, monitor: String = "poll") {
+        if let event, model.demo, CommandLine.arguments.contains("--music-test"),
+           CommandLine.arguments.contains("--pointer-ingress-test") {
+            if smokePointerEntries.count < 256 {
+                smokePointerEntries.append(IslandPointerEntryReceipt(monitor: monitor,
+                    eventNumber: event.eventNumber, eventType: event.type.rawValue, windowNumber: event.windowNumber,
+                    localPoint: event.locationInWindow,
+                    screenPoint: event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow,
+                    timestamp: event.timestamp, delivered: ProcessInfo.processInfo.systemUptime,
+                    lastEventTime: lastEventTime, lastAppliedGestureTime: lastAppliedGestureTime,
+                    buttonStateTime: buttonStateTime, buttons: eventButtons.sorted(), stopped: stopped,
+                    placementValid: placementIsValid))
+            } else { smokePointerEntriesOverflow = true }
+        }
         guard !stopped, placementIsValid else { return }
         let delivered = ProcessInfo.processInfo.systemUptime
         if let event {

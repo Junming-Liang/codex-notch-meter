@@ -1464,10 +1464,50 @@ final class MusicRenderHarness: NSObject {
         var postedEvents = 0
         var lastRequestedTime: TimeInterval = -.infinity
         var lastPostedTime: TimeInterval = -.infinity
+        var postedEvidence: [[String: Any]] = []
         var representativeTimes: Set<TimeInterval> = []
         var gestureSegments: [(name: String, start: TimeInterval, end: TimeInterval, opening: Bool)] = []
 
+        func evidencePoint(_ value: CGPoint) -> [Double] { [Double(value.x), Double(value.y)] }
+        func evidenceNumber(_ value: Double) -> Any { value.isFinite ? value as Any : NSNull() }
+        func hasLocalEntry(_ posted: [String: Any]) -> Bool {
+            guard let number = posted["eventNumber"] as? Int, let type = posted["eventType"] as? UInt else { return false }
+            return panel.smokePointerEntries.contains {
+                $0.monitor == "local" && $0.eventNumber == number && $0.eventType == type
+            }
+        }
+        func dumpIngressEvidence(_ point: CGPoint, timestamp: TimeInterval) {
+            let entries: [[String: Any]] = panel.smokePointerEntries.map { entry in
+                ["monitor": entry.monitor, "eventNumber": entry.eventNumber, "eventType": entry.eventType,
+                 "windowNumber": entry.windowNumber, "localPoint": evidencePoint(entry.localPoint),
+                 "screenPoint": evidencePoint(entry.screenPoint), "timestamp": evidenceNumber(entry.timestamp),
+                 "delivered": evidenceNumber(entry.delivered), "deltaNs": evidenceNumber((entry.timestamp - timestamp) * 1_000_000_000),
+                 "lastEventTime": evidenceNumber(entry.lastEventTime),
+                 "lastAppliedGestureTime": evidenceNumber(entry.lastAppliedGestureTime),
+                 "buttonStateTime": evidenceNumber(entry.buttonStateTime), "buttons": entry.buttons,
+                 "stopped": entry.stopped, "placementValid": entry.placementValid]
+            }
+            let nonPoll = panel.smokePointerIngress.filter { $0.kind != "poll" }
+            func accepted(_ receipt: IslandPointerIngressReceipt) -> [String: Any] {
+                ["point": evidencePoint(receipt.point), "timestamp": evidenceNumber(receipt.timestamp),
+                 "deltaNs": evidenceNumber((receipt.timestamp - timestamp) * 1_000_000_000),
+                 "kind": receipt.kind, "owner": String(describing: receipt.owner), "target": receipt.target]
+            }
+            let expectedIDs = postedEvidence.filter { ($0["constructedTimestamp"] as? Double) == timestamp }
+                .compactMap { $0["eventNumber"] as? Int }
+            let diagnostic: [String: Any] = ["expectedPoint": evidencePoint(point), "expectedTimestamp": timestamp,
+                "expectedEventNumbers": expectedIDs, "constructed": postedEvidence, "monitorEntries": entries,
+                "monitorOverflow": panel.smokePointerEntriesOverflow, "acceptedHistoryOverflow": panel.smokeHistoryOverflow,
+                "nonPollCount": nonPoll.count, "nonPollReceipts": nonPoll.prefix(256).map(accepted),
+                "nearestReceipts": nonPoll.sorted { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }.prefix(8).map(accepted),
+                "latestReceipts": panel.smokePointerIngress.suffix(4).map(accepted)]
+            if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
+               data.count < 1_000_000, let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_POINTER_INGRESS_EVIDENCE_JSON: \(json)")
+            } else { print("MUSIC_POINTER_EVIDENCE_FAILED: bounded synthetic ingress evidence could not be encoded") }
+        }
         func enqueue(_ point: CGPoint, timestamp: TimeInterval, window: NSWindow?, type: NSEvent.EventType = .mouseMoved) throws -> TimeInterval {
+            guard postedEvidence.count < 256 else { throw Failure(label: "synthetic pointer construction evidence exceeded 256 events") }
             let location = window.map { $0.convertPoint(fromScreen: point) } ?? point
             guard timestamp > lastRequestedTime || (type != .mouseMoved && timestamp == lastRequestedTime),
                   let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
@@ -1486,6 +1526,16 @@ final class MusicRenderHarness: NSObject {
                 print("MUSIC_POINTER_TIMESTAMP_DIAGNOSTIC: type=\(type.rawValue) requested=\(timestamp) constructed=\(nativeTime) deltaNs=\((nativeTime - timestamp) * 1_000_000_000) previousConstructed=\(lastPostedTime) valid=\(timestampValid)")
             }
             try require(timestampValid, "native event construction preserves the original timestamp within one nanosecond and keeps its order")
+            let row: [String: Any] = ["eventNumber": event.eventNumber, "eventType": event.type.rawValue,
+                "windowNumber": event.windowNumber, "requestedTimestamp": timestamp, "constructedTimestamp": nativeTime,
+                "requestedLocalPoint": evidencePoint(location), "constructedLocalPoint": evidencePoint(event.locationInWindow),
+                "requestedScreenPoint": evidencePoint(point),
+                "constructedScreenPoint": evidencePoint(event.window.map { $0.convertPoint(toScreen: event.locationInWindow) } ?? event.locationInWindow),
+                "willPostAt": ProcessInfo.processInfo.systemUptime]
+            postedEvidence.append(row)
+            let rowData = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+            guard let rowJSON = String(data: rowData, encoding: .utf8) else { throw Failure(label: "cannot encode synthetic pointer construction evidence") }
+            print("MUSIC_POINTER_ENQUEUE_JSON: \(rowJSON)")
             postedEvents += 1; lastRequestedTime = timestamp; lastPostedTime = nativeTime
             NSApp.postEvent(event, atStart: false)
             return nativeTime
@@ -1503,6 +1553,7 @@ final class MusicRenderHarness: NSObject {
                     hasReceipt(point, timestamp)
                 }
             } catch {
+                dumpIngressEvidence(point, timestamp: timestamp)
                 print("MUSIC_INGRESS_DIAGNOSTIC: expectedPoint=\(point) expectedTimestamp=\(timestamp) currentPointer=\(NSEvent.mouseLocation) receipts=\(String(reflecting: panel.smokePointerIngress.suffix(12)))")
                 throw error
             }
@@ -1530,6 +1581,7 @@ final class MusicRenderHarness: NSObject {
                     }
                 }
             } catch {
+                dumpIngressEvidence(point, timestamp: timestamp)
                 let deliveredEvents = panel.smokePointerIngress.dropFirst(before).filter { $0.kind != "poll" }.prefix(16)
                 print("MUSIC_BUTTON_INGRESS_DIAGNOSTIC: type=\(type.rawValue) point=\(point) requestedTimestamp=\(requested) constructedTimestamp=\(timestamp) windowNumber=\(sourceWindow.windowNumber) windowVisible=\(sourceWindow.isVisible) ignoresMouseEvents=\(sourceWindow.ignoresMouseEvents) receiptsAfterPost=\(panel.smokePointerIngress.count - before) deliveredEvents=\(String(reflecting: deliveredEvents)) latestReceipts=\(String(reflecting: panel.smokePointerIngress.suffix(4)))")
                 throw error
@@ -1552,8 +1604,14 @@ final class MusicRenderHarness: NSObject {
         func burst(open: Bool, y: CGFloat, window: NSWindow?) async throws {
             let xs = open ? [corridor.minX - 12, center, corridor.maxX + 12]
                 : [corridor.maxX + 12, center, corridor.minX - 12]
+            let evidenceStart = postedEvidence.count
             let expected = try enqueueBackloggedBurst(xs.map { CGPoint(x: $0, y: y) }, window: window)
             for sample in expected { try await awaitReceipt(sample.0, sample.1) }
+            let burstEvidence = Array(postedEvidence.dropFirst(evidenceStart))
+            let identitiesMatch = burstEvidence.count == 3 && burstEvidence.allSatisfy(hasLocalEntry)
+            if !identitiesMatch { dumpIngressEvidence(expected[0].0, timestamp: expected[0].1) }
+            try require(identitiesMatch,
+                        "all three constructed burst event identities and types reach the production local monitor")
             try require(expected.allSatisfy { hasReceipt($0.0, $0.1) }
                 && ProcessInfo.processInfo.systemUptime - expected[2].1 >= 0.08
                 && panel.smokeLyricsSelected == open,
@@ -1669,6 +1727,7 @@ final class MusicRenderHarness: NSObject {
                 }.count == 2
             }
         } catch {
+            dumpIngressEvidence(boundaryPoint, timestamp: boundaryTime)
             let deliveredEvents = panel.smokePointerIngress.dropFirst(boundaryCount).filter { $0.kind != "poll" }.prefix(16)
             print("MUSIC_BUTTON_BOUNDARY_DIAGNOSTIC: requestedTimestamp=\(boundaryRequestedTime) moveTimestamp=\(boundaryTime) downTimestamp=\(downTime) upTimestamp=\(upTime) deliveredEvents=\(String(reflecting: deliveredEvents)) latestReceipts=\(String(reflecting: panel.smokePointerIngress.suffix(4)))")
             throw error
@@ -1694,6 +1753,15 @@ final class MusicRenderHarness: NSObject {
         try await waitIdle(panel, after: recoveredCloseAt)
         try require(!panel.smokeLyricsSelected, "native button-up permits fresh independent crossings in both directions")
 
+        let identitiesComplete = !panel.smokePointerEntriesOverflow && postedEvidence.count == postedEvents
+            && postedEvidence.allSatisfy(hasLocalEntry)
+        if !identitiesComplete, let missing = postedEvidence.first(where: { !hasLocalEntry($0) }) ?? postedEvidence.last,
+           let point = missing["requestedScreenPoint"] as? [Double], point.count == 2,
+           let timestamp = missing["constructedTimestamp"] as? Double {
+            dumpIngressEvidence(CGPoint(x: point[0], y: point[1]), timestamp: timestamp)
+        }
+        try require(identitiesComplete,
+                    "every posted synthetic event identity and type reaches the local monitor without evidence overflow")
         try writePointerIngressTrace(panel, representativeTimes: representativeTimes)
         try verifyRenderCommitHistory(panel, label: "native-input")
         let commits = panel.smokeRenderCommits
