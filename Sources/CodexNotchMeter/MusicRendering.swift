@@ -988,21 +988,39 @@ final class MusicRenderHarness: NSObject {
         print("MUSIC_AUTO_PRIORITY_OK: hold=\(decimal(held)) expected=6 paintBeforeArm=true playingUpdates=\(playingUpdates) lyricUpdates=\(lyricUpdates) dwellUnchanged=true motionUnchanged=true samePanel=true")
         print("MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=true lyricAfter=true appearances=aqua,darkAqua width=\(Int(compactFrame.width * screen.backingScaleFactor)) height=\(Int(compactFrame.height * screen.backingScaleFactor)) scale=\(decimal(screen.backingScaleFactor)) localViewPixels=true scanout=false")
 
+        // The preceding six-second dwell and native OCR exceed a playback sample's
+        // five-second lifetime. Continue real injected reader completions just as
+        // the production poll does; do not let a freshness timeout impersonate a swipe.
+        let reverseRead = try await read(fixture)
+        try await release(fixture, reverseRead, position: 1)
+        let reverseLine = fixture.controller.line
+        try require(fixture.controller.isPlayingForPresentation && !reverseLine.isEmpty,
+            "reverse crossing begins with fresh playback and the retained lyric document")
         let reverseAt = CACurrentMediaTime()
         try require(panel.smokeMusicGesture(openLyrics: false) && !panel.smokeLyricsSelected,
                     "complete right-to-left crossing closes the selected lyric mode")
         try await waitIdle(panel, after: reverseAt)
+        // Keep the independent OCR budget from consuming the same sample used
+        // by the close-animation budget, and prove polling cannot reopen lyrics.
+        let closedRead = try await read(fixture)
+        try await release(fixture, closedRead, position: 1)
+        try require(!panel.smokeLyricsSelected && panel.smokeExpansionOwner == .idle,
+            "fresh playback polling retains the user's closed lyric selection")
         let reversePixels = try await compactOCR(panel, progress: 0)
-        try require(!contains(reversePixels, fixture.controller.line) && !contains(reversePixels, "HARBOR A")
-            && fixture.controller.isPlayingForPresentation && !fixture.controller.line.isEmpty,
+        print("MUSIC_REVERSE_DIAGNOSTIC: lyricAbsent=\(!contains(reversePixels, reverseLine)) titleAbsent=\(!contains(reversePixels, "HARBOR A")) playing=\(fixture.controller.isPlayingForPresentation) sameLine=\(fixture.controller.line == reverseLine) selected=\(panel.smokeLyricsSelected)")
+        try require(!contains(reversePixels, reverseLine) && !contains(reversePixels, "HARBOR A")
+            && fixture.controller.isPlayingForPresentation && fixture.controller.line == reverseLine
+            && !panel.smokeLyricsSelected,
             "reverse-crossing own-view pixels remove lyrics while playback and the document remain valid")
         try await verifyClosedGestureNotice(fixture, panel: panel)
+        let reopenRead = try await read(fixture); try await release(fixture, reopenRead, position: 1)
         try openLyrics(panel)
         try await waitMusic(panel, after: reverseAt)
         print("MUSIC_GESTURE_REVERSE_OK: fullCrossing=true selected=false ownViewLyricAbsent=true playbackPreserved=true reopened=true")
 
         // A pause must hide the lyric immediately, while quota priority completes
         // its already-armed normal dwell before the same panel goes idle.
+        let beforePauseRead = try await read(fixture); try await release(fixture, beforePauseRead, position: 1)
         let pausedNotice = try makeNotice(duration: .standard)
         try require(panel.showRefreshNotice(pausedNotice), "second normal notice begins from playing Music")
         try await waitNotice(panel, notice: pausedNotice)
@@ -1029,8 +1047,11 @@ final class MusicRenderHarness: NSObject {
         try require(panel.smokeLyricsSelected, "pause retains the explicit runtime lyric mode for fresh resume")
         try await waitMusic(panel, after: resumedAt)
         try await importDocument(fixture, text: "[00:00]\(Self.firstLine)")
+        let beforeHoverPause = try await read(fixture); try await release(fixture, beforeHoverPause, position: 1)
         try await enterDetails(panel)
         let hoverPause = try await read(fixture)
+        try require(fixture.controller.isPlayingForPresentation && !fixture.controller.line.isEmpty,
+            "explicit hover pause starts from fresh playing lyrics, not a stale source")
         try await release(fixture, hoverPause, position: 1, state: .paused)
         try await until("paused hover keeps details ownership but removes Music") {
             !fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty && fixture.controller.nextLine.isEmpty
@@ -1053,7 +1074,9 @@ final class MusicRenderHarness: NSObject {
         let nextResume = try await read(fixture); try await release(fixture, nextResume, position: 1)
         try require(panel.smokeLyricsSelected, "hover pause retains selection without retaining stale content")
         try await waitMusic(panel, after: nextResumeAt)
+        let hoverRead = try await read(fixture); try await release(fixture, hoverRead, position: 1)
         try await enterDetails(panel)
+        let hoverExitRead = try await read(fixture); try await release(fixture, hoverExitRead, position: 1)
         try await exitDetails(panel)
         try await waitMusic(panel, after: nextResumeAt)
         print("MUSIC_AUTO_HOVER_OK: playingExit=music pausedExit=idle pausedDetailsRetained=true pausedLyricAbsentOCR=true realPointerDwell=true")
@@ -1072,6 +1095,7 @@ final class MusicRenderHarness: NSObject {
             try await waitIdle(panel, after: suppressedAt)
             try require(fixture.controller.isPlayingForPresentation && !panel.smokeMusicTargetActive,
                         "\(reason) suppression prevents passive reopening without changing playback")
+            let enabledRead = try await read(fixture); try await release(fixture, enabledRead, position: 1)
             let enabledAt = CACurrentMediaTime()
             panel.setMusicPresentationAllowed(true)
             try await waitMusic(panel, after: enabledAt)
@@ -1082,6 +1106,7 @@ final class MusicRenderHarness: NSObject {
 
         // A pending ordinary read lets a true paused sample arrive during a real
         // close/open reversal. Poll cadence is never shortened to manufacture it.
+        let beforeReversal = try await read(fixture); try await release(fixture, beforeReversal, position: 1)
         let reversingRead = try await read(fixture)
         panel.setMusicPresentationAllowed(false)
         try await until("real compact closing motion begins") {
@@ -1103,6 +1128,7 @@ final class MusicRenderHarness: NSObject {
 
         let recreateRead = try await read(fixture); try await release(fixture, recreateRead, position: 1)
         try await waitMusic(panel, after: reversingAt)
+        let beforeRecreate = try await read(fixture); try await release(fixture, beforeRecreate, position: 1)
         panel.stop()
         let recreatedAt = CACurrentMediaTime()
         let recreated = try makePassivePanel(model)
@@ -1548,6 +1574,7 @@ final class MusicRenderHarness: NSObject {
                     "quota notice returns to the still-selected closed mode despite usable playing lyrics")
         print("MUSIC_GESTURE_CLOSED_NOTICE_OK: hold=\(decimal(hold)) expected=2 owner=idle selected=false fixedCorridor=true stationaryPointer=true noResizeGesture=true")
 
+        let rapidRead = try await read(fixture); try await release(fixture, rapidRead, position: 1)
         let changedAt = CACurrentMediaTime()
         try openLyrics(panel)
         try await until("rapid crossing fixture enters genuine native opening motion") {

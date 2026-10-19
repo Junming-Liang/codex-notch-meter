@@ -147,7 +147,11 @@ final class UpdateRenderHarness: NSObject {
         guard let notch = NotchGeometry.calculate(screen: frame, topInset: Double(inset),
             auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - inset, width: left - frame.minX, height: inset),
             auxiliaryRight: CGRect(x: right, y: frame.maxY - inset, width: frame.maxX - right, height: inset)) else { return nil }
-        return IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor, contentHeight: contentHeight)
+        var geometry = IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor, contentHeight: contentHeight)
+        // These fixtures have no music accessories. Match the controller's idle
+        // accessory spring so full-geometry equality tests only endpoint changes.
+        geometry.musicAccessoryProgress = 0
+        return geometry
     }
 
     private func makeFixtures() throws -> [Fixture] {
