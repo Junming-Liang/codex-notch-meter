@@ -67,6 +67,14 @@ def point(value):
     return type(value) is list and len(value) == 2 and all(finite(v) for v in value)
 
 
+def swift_rounded(value):
+    """Match CGFloat.rounded(): nearest, with exact half ties away from zero."""
+    fraction, integral = math.modf(value)
+    if abs(fraction) >= 0.5:
+        integral += math.copysign(1, fraction)
+    return int(integral)
+
+
 def events_valid(data, name, stage, *, red=False):
     if type(data) is not dict or set(data) != {"kind", "stage", "events", "overflow", "crossingStart", "crossingEnd",
                                                "corridor", "sameEnvelope", "pollAfterCrossing", "details", "selected", "owner"}:
@@ -127,7 +135,9 @@ def events_valid(data, name, stage, *, red=False):
     if rows[-1]["constructed"] - rows[end]["constructed"] < 0.65:
         return False
     if name == "no-match":
-        center = [round(corridor[0] + corridor[2] / 2), round(corridor[1] + corridor[3] / 2)]
+        # Run62 used a 35-point corridor: Swift rounds y=750.5 to 751.
+        # Python round() would silently substitute its ties-to-even rule (750).
+        center = [swift_rounded(corridor[0] + corridor[2] / 2), swift_rounded(corridor[1] + corridor[3] / 2)]
         if any(row["screen"] != center for row in rows[end:]):
             return False
     if details and rows[-1]["acceptedOwner"] != "details":
@@ -264,10 +274,14 @@ def native_red_green(output, stage, preparation):
           + " expectedRed=true strictGreen=true nativeQueue=true productionSourcesUnchanged=true scanout=false")
 
 
-def sample_evidence(name, stage="complete", red=False):
+def sample_evidence(name, stage="complete", red=False, corridor=None):
     details = False if red else DETAILS[name]
-    corridor = [100, 400, 288, 32]
-    points = [[504, 416]] * 2 + [[round(100 + 288 * f), 416] for f in (-0.04, 0.02, 0.25, 0.52, 0.75, 0.98)] + [[244, 416]] * 26
+    corridor = [100, 400, 288, 32] if corridor is None else corridor
+    center = [swift_rounded(corridor[0] + corridor[2] / 2), swift_rounded(corridor[1] + corridor[3] / 2)]
+    points = [[center[0] + 260, center[1]]] * 2 + [
+        [swift_rounded(corridor[0] + corridor[2] * f), center[1]]
+        for f in (-0.04, 0.02, 0.25, 0.52, 0.75, 0.98)
+    ] + [center] * 26
     rows = []
     for index, position in enumerate(points):
         timestamp = 1000 + index * 0.03
@@ -342,6 +356,28 @@ class SelfTests(unittest.TestCase):
         self.assertIsNone(parse_evidence(encode(original).replace('"overflow":false', '"overflow":false,"overflow":false'), "no-match", "complete"))
         self.assertIsNone(parse_evidence(EVENT_PREFIX + "NaN", "no-match", "complete"))
         self.assertFalse(events_valid({**original, "extra": True}, "no-match", "complete"))
+
+    def test_swift_half_ties_preserve_exact_native_stationary_coordinates(self):
+        for value, expected in ((750.5, 751), (-750.5, -751), (512.5, 513), (-512.5, -513),
+                                (750.49, 750), (-750.49, -750), (0.0, 0), (-0.0, 0),
+                                (math.nextafter(0.5, 0), 0), (math.nextafter(-0.5, 0), 0)):
+            self.assertEqual(swift_rounded(value), expected)
+        # Include Run62's actual screen corridor and a negative-origin mirror.
+        for corridor in ([368, 733, 288, 35], [-656, -768, 288, 35],
+                         [368.5, 733, 288, 35], [-656.5, -768, 288, 35]):
+            data = sample_evidence("no-match", "first-trap", red=True, corridor=corridor)
+            self.assertTrue(events_valid(data, "no-match", "first-trap", red=True))
+            midpoint = [corridor[0] + corridor[2] / 2, corridor[1] + corridor[3] / 2]
+            wrong = copy.deepcopy(data)
+            even_center = [round(value) for value in midpoint]
+            for row in wrong["events"][wrong["crossingEnd"]:]:
+                row["screen"] = row["observedScreen"] = row["acceptedScreen"] = even_center
+                row["local"] = row["observedLocal"] = [even_center[0] + 900, even_center[1] + 700]
+            self.assertFalse(events_valid(wrong, "no-match", "first-trap", red=True))
+            out, err = sample_red()
+            original = encode(sample_evidence("no-match", "first-trap", red=True))
+            self.assertTrue(red_valid(0, out.replace(original, encode(data)), err))
+            self.assertFalse(red_valid(0, out.replace(original, encode(wrong)), err))
 
     def test_exact_red_not_crash_timeout_or_other_failure(self):
         out, err = sample_red()
