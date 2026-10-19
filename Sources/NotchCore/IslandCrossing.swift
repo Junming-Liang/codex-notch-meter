@@ -92,13 +92,25 @@ public struct IslandCrossing: Equatable, Sendable {
 
 /// A gesture owns the resulting presentation until the pointer leaves a stable
 /// envelope. An appearing or shrinking shell cannot turn the same motion into hover.
+/// A lyric-opening claim is also released if its usable content disappears.
 public struct IslandGestureHoverGate: Equatable, Sendable {
     public private(set) var isSuppressing = false
+    private var requiresLyrics = false
     public init() {}
-    public mutating func claim() { isSuppressing = true }
-    public mutating func reset() { isSuppressing = false }
+    /// Opening lyrics owns input only while it has usable content. Explicit
+    /// closing and quota notices remain protected independently of Music.
+    public mutating func claim(requiresLyrics: Bool = false) {
+        isSuppressing = true; self.requiresLyrics = requiresLyrics
+    }
+    public mutating func reset() { isSuppressing = false; requiresLyrics = false }
+    @discardableResult
+    public mutating func releaseIfLyricsUnavailable(lyricsAvailable: Bool) -> Bool {
+        guard isSuppressing, requiresLyrics, !lyricsAvailable else { return false }
+        reset()
+        return true
+    }
     public mutating func suppresses(insideStableEnvelope: Bool) -> Bool {
-        if !insideStableEnvelope { isSuppressing = false }
+        if !insideStableEnvelope { reset() }
         return isSuppressing
     }
 }

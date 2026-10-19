@@ -12,7 +12,7 @@ public enum ReadOnlyRequest: String, CaseIterable, Sendable {
         var object: [String: Any] = ["id": id, "method": rawValue]
         switch self {
         case .initialize:
-            object["params"] = ["clientInfo": ["name": "codex_notch_meter", "title": "Codex Notch Meter", "version": "1.1.0"]]
+            object["params"] = ["clientInfo": ["name": "codex_notch_meter", "title": "Codex Notch Meter", "version": "1.1.1"]]
         case .account: object["params"] = ["refreshToken": false]
         case .rateLimits:
             if backgroundPoll { object["params"] = ["excludeResetCreditDetails": true] }
