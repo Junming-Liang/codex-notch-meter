@@ -1874,18 +1874,63 @@ final class MusicRenderHarness: NSObject {
         // Hold the ordinary read and observe the real five-second source expiry.
         // No lyric-less sample may create even a transient automatic expansion.
         let expiredRead = try await read(fixture)
-        try await until("idle no-document playing source expires", timeout: 5.5) {
-            !fixture.controller.isPlayingForPresentation && fixture.controller.trackTitle.isEmpty
-                && fixture.controller.statusText == "Music 播放信息已过期"
+        // Fixture source timestamps and native paint receipts share the monotonic
+        // uptime domain. Anchor to the actual five-second expiry, not a later task
+        // wake that could occur after the correct natural close has already painted.
+        let stalePaintAfter = observedAt + 5
+        do {
+            try await until("idle no-document playing source expires", timeout: 5.5) {
+                !fixture.controller.isPlayingForPresentation && fixture.controller.trackTitle.isEmpty
+                    && fixture.controller.statusText == "Music 播放信息已过期"
+            }
+            // Source publication precedes the panel's queued presentation update.
+            // Generic idle readiness can still accept its accessory-on shell;
+            // combine its existing predicates with the real zero-accessory endpoint
+            // in one unchanged 3.6-second native wait, without a second deadline.
+            try await until("expired no-document source naturally clears the closed accessory endpoint") {
+                !fixture.controller.isFreshPlaying && fixture.controller.artwork == nil
+                    && !panel.smokeMusicAccessoriesVisible && panel.geometry.musicAccessoryProgress == 0
+                    && panel.paintReceipt?.frame.accessoryProgress == 0
+                    && self.nativeSettled(panel, progress: 0, after: stalePaintAfter)
+                    && panel.smokeExpansionOwner == .idle && !panel.smokeMusicTargetActive
+                    && !panel.smokeMusicVisible && !panel.smokeNoticeVisible && panel.panel.ignoresMouseEvents
+                    && self.naturalPaintMatches(panel, progress: 0, after: stalePaintAfter)
+            }
+            let sourceAge = ProcessInfo.processInfo.systemUptime - observedAt
+            try require(panel.paintReceipt?.frame.surfaceOpacity == (panel.smokeMusicAccessoriesVisible ? 1 : 0),
+                        "idle paints exactly the closed music shell when accessories are visible, otherwise no expanded body")
+            try require(sourceAge >= 5 && fixture.controller.line.isEmpty && fixture.controller.nextLine.isEmpty
+                && !fixture.controller.canImport && panel.panel.frame.height == idleFrame.height
+                && panel.geometry.contourFrame.height == idleContour.height && passiveFrameSamples > idleFrames
+                && !panel.smokeMusicAccessoriesVisible && fixture.controller.artwork == nil,
+                        "natural no-document expiry clears accessories without expanding the raw contour or painting a lyric body")
+            print("MUSIC_CLOSED_STALE_OK: age=\(decimal(sourceAge)) document=unavailable lyricBodyPainted=false accessoryCleared=true owner=idle")
+        } catch {
+            // Capture every final assertion operand before the outer failure path
+            // stops the panel/controller. This read-only diagnostic cannot paint.
+            let sourceAge = ProcessInfo.processInfo.systemUptime - observedAt
+            let diagnostic: [String: Any] = ["beforeCleanup": true, "sourceAge": sourceAge,
+                "paintRequiredAfter": stalePaintAfter, "sourceAgeAtLeastFive": sourceAge >= 5,
+                "lineEmpty": fixture.controller.line.isEmpty, "nextLineEmpty": fixture.controller.nextLine.isEmpty,
+                "cannotImport": !fixture.controller.canImport,
+                "panelHeightUnchanged": panel.panel.frame.height == idleFrame.height,
+                "contourHeightUnchanged": panel.geometry.contourFrame.height == idleContour.height,
+                "nativeFramesAdvanced": passiveFrameSamples > idleFrames,
+                "nativeFrames": passiveFrameSamples, "nativeFramesBeforeExpiry": idleFrames,
+                "accessoriesHidden": !panel.smokeMusicAccessoriesVisible,
+                "artworkCleared": fixture.controller.artwork == nil,
+                "sourceNotFresh": !fixture.controller.isFreshPlaying,
+                "sourceStatusExpired": fixture.controller.statusText == "Music 播放信息已过期",
+                "geometryAccessoryProgress": panel.geometry.musicAccessoryProgress,
+                "paintAccessoryProgress": panel.paintReceipt?.frame.accessoryProgress as Any? ?? NSNull(),
+                "nativeIdleSettled": nativeSettled(panel, progress: 0, after: stalePaintAfter),
+                "naturalIdlePaint": naturalPaintMatches(panel, progress: 0, after: stalePaintAfter)]
+            if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
+               data.count <= 16_000, let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_CLOSED_STALE_DIAGNOSTIC: \(json)")
+            }
+            throw error
         }
-        let sourceAge = ProcessInfo.processInfo.systemUptime - observedAt
-        try await waitIdle(panel, after: 0)
-        try require(sourceAge >= 5 && fixture.controller.line.isEmpty && fixture.controller.nextLine.isEmpty
-            && !fixture.controller.canImport && panel.panel.frame.height == idleFrame.height
-            && panel.geometry.contourFrame.height == idleContour.height && passiveFrameSamples > idleFrames
-            && !panel.smokeMusicAccessoriesVisible && fixture.controller.artwork == nil,
-                    "natural no-document expiry clears accessories without expanding the raw contour or painting a lyric body")
-        print("MUSIC_CLOSED_STALE_OK: age=\(decimal(sourceAge)) document=unavailable lyricBodyPainted=false accessoryCleared=true owner=idle")
         let recoveredAt = CACurrentMediaTime()
         try await release(fixture, expiredRead, position: 1, artwork: artwork)
         fixture.controller.setOnlineLookupEnabled(true)

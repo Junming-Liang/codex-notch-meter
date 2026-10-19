@@ -398,6 +398,18 @@ final class NativeMotionHarness: NSObject {
         passed = valid && passed
         summaries.append((profile.rawValue, p95Apply, p95Gap))
         SmokeDiagnostics.mark("motion summary profile=\(profile) source=\(source) callbacks=\(samples.count) normalRunLoopProbes=\(probes.count) loadUpdates=\(loadCount) callbackMaxSeconds=\(maxGap) callbackP95Seconds=\(p95Gap) applyP95Seconds=\(p95Apply) maxViewUpdateLagSeconds=\(maxRenderLag) maxRawViewAgeSeconds=\(maxRawAge) viewHistoryValid=\(historyValid) presentationSamples=\(presentationProbes.count) activePresentationSamples=\(activePresentationCount) presentationBoundsValid=\(presentationsValid) native=\(native) cadence=\(cadence) valid=\(valid)")
+        // Emit only the actual adjacent pair behind the existing maximum, after
+        // measurement. Cross-generation idle gaps remain excluded, as above.
+        if let index = samples.indices.dropFirst().first(where: { index in
+            samples[index - 1].generation == samples[index].generation
+                && samples[index].observed - samples[index - 1].observed == maxGap
+        }) {
+            SmokeDiagnostics.mark("motion max-gap profile=\(profile) previousIndex=\(index - 1) nextIndex=\(index) seconds=\(maxGap) precedingApplySeconds=\(samples[index - 1].applyDuration)")
+            for endpoint in [index - 1, index] {
+                let sample = samples[endpoint]
+                SmokeDiagnostics.mark("motion max-gap endpoint profile=\(profile) index=\(endpoint) observed=\(sample.observed) scheduled=\(sample.scheduled) generation=\(sample.generation) source=\(sample.source) progress=\(sample.progress) velocity=\(sample.velocity) targetExpanded=\(sample.expanded) applySeconds=\(sample.applyDuration) frame=\(sample.frame) content=\(sample.contentBounds) previousViewUpdatedViewport=\(sample.viewport) visible=\(sample.visible) nonKey=\(sample.nonKey)")
+            }
+        }
         for (index, sample) in samples.enumerated() where index % 12 == 0 || index == samples.count - 1 {
             SmokeDiagnostics.mark("motion sample profile=\(profile) index=\(index) observed=\(sample.observed) scheduled=\(sample.scheduled) generation=\(sample.generation) progress=\(sample.progress) velocity=\(sample.velocity) applySeconds=\(sample.applyDuration) frame=\(sample.frame) content=\(sample.contentBounds) previousViewUpdatedViewport=\(sample.viewport)")
         }
