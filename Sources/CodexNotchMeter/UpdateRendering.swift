@@ -754,7 +754,11 @@ final class UpdateRenderHarness: NSObject {
             next(.refitSettled, at: now)
         case .refitSettled where elapsed >= 0.14:
             verifyExpanded(island, after: shownAt)
-            check(island.geometry == refittedGeometry, "next expansion uses new content-fit height")
+            guard var expected = refittedGeometry else { finish(false); return }
+            // This fresh idle-to-hover cycle uses the ordinary width profile.
+            // Preserve exact equality for every other field, including no handoff override.
+            expected.ordinaryHoverWidth = true
+            check(island.geometry == expected, "next expansion uses new content-fit height")
             island.collapse(); closingAt = now; next(.closing, at: now)
         case .replacementHold:
             verifyReplacement(island, at: now)
