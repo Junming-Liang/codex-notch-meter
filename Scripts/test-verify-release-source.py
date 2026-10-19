@@ -39,20 +39,20 @@ class ReleaseSourceTests(unittest.TestCase):
         self.checkout.mkdir()
         self.commit, self.tree = "a" * 40, "b" * 40
         self.arguments = dict(commit=self.commit, run_id="12345", repository="example/notch",
-                              version="1.1.0", bundle_build="17")
+                              version="1.1.1", bundle_build="18")
         self.manifest = {"commit": self.commit, "tree": self.tree, "run_id": "12345",
-                         "repository": "example/notch", "version": "1.1.0"}
+                         "repository": "example/notch", "version": "1.1.1"}
         self.manifest_bytes = json.dumps(self.manifest, sort_keys=True).encode() + b"\n"
         self.manifest_path = self.dist / "release-source.json"
         self.manifest_path.write_bytes(self.manifest_bytes)
         self.info = {
             "CFBundleIdentifier": "org.codexnotchmeter.app",
             "CFBundleExecutable": "CodexNotchMeter", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.1.0", "CFBundleVersion": "17",
-            "CodexNotchMeterReleaseVersion": "1.1.0",
+            "CFBundleShortVersionString": "1.1.1", "CFBundleVersion": "18",
+            "CodexNotchMeterReleaseVersion": "1.1.1",
         }
-        self.zip_path = self.dist / "CodexNotchMeter-1.1.0-universal.zip"
-        self.dmg_path = self.dist / "CodexNotchMeter-1.1.0-universal.dmg"
+        self.zip_path = self.dist / "CodexNotchMeter-1.1.1-universal.zip"
+        self.dmg_path = self.dist / "CodexNotchMeter-1.1.1-universal.dmg"
         self.dmg_path.write_bytes(b"Synthetic DMG fixture; not a mountable image.")
         self.write_checksum(self.dmg_path)
         self.write_zip()
@@ -228,7 +228,7 @@ class ReleaseSourceTests(unittest.TestCase):
         # Exercise the central-directory accounting without allocating a bomb.
         with mock.patch.object(verify, "MAX_ARCHIVE_BYTES", 2):
             with self.assertRaisesRegex(verify.VerificationError, "expanded size"):
-                verify.verify_zip(self.zip_path, self.manifest_bytes, "1.1.0", "17")
+                verify.verify_zip(self.zip_path, self.manifest_bytes, "1.1.1", "18")
 
     def test_unsupported_zip_compression_rejected(self):
         with zipfile.ZipFile(self.zip_path, "a") as archive:
@@ -250,8 +250,8 @@ class ReleaseSourceTests(unittest.TestCase):
         for key, values in {"commit": ["main", "a" * 39, "A" * 40, "-" * 40],
                             "run_id": ["0", "12/3", "123;false"],
                             "repository": ["owner", "owner/repo/extra", "owner/repo\n"],
-                            "version": ["1.1.0-beta.1", "../1.1.0"],
-                            "bundle_build": ["0", "17\n"]}.items():
+                            "version": ["1.1.1-beta.1", "../1.1.1"],
+                            "bundle_build": ["0", "18\n"]}.items():
             for value in values:
                 with self.subTest(key=key, value=value):
                     with self.assertRaises(verify.VerificationError):
