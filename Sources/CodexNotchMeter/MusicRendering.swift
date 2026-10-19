@@ -1409,8 +1409,9 @@ final class MusicRenderHarness: NSObject {
                 try await exitDetails(panel)
                 try await waitMusic(panel, after: started)
                 let g = panel.geometry
-                let clipped = IslandGeometry(notch: .init(notch: g.notch, leftPanel: .zero, rightPanel: .zero),
-                    screen: g.screen, backingScale: g.backingScale, shapeCalibration: .init(depth: -6), contentHeight: g.contentHeight)
+                guard let clipped = makeGeometry(contentHeight: g.contentHeight, shapeCalibration: .init(depth: -6)) else {
+                    throw Failure(label: "negative-depth native fixture geometry is valid")
+                }
                 try require(!clipped.canShowMusicAccessories, "negative-depth native fixture has no safe accessory wings")
                 let noWings = IslandPanelController(model: model, geometry: clipped, startPolling: false,
                     reducedMotionOverride: true, hovered: {}, refresh: {}, settings: {}, quit: {})
@@ -1964,13 +1965,14 @@ final class MusicRenderHarness: NSObject {
         let bounds = CGRect(origin: .zero, size: frame.size)
         print("MUSIC_FAILURE_VIEWPORT: panel=\(label) expectedProgress=\(wanted.progress) requiredAfter=\(wanted.after) renderedAt=\(probe.renderedAt) expectedFrame=\(frame) visible=\(probe.visible) nonKey=\(probe.nonKey) keyUnchanged=\(NSApp.keyWindow === initialKey) placementValid=\(panel.placementIsValid) stopped=\(!probe.running) requestedMatches=\(probe.requestedProgress == wanted.progress) renderedMatches=\(probe.renderedProgress == wanted.progress) fresh=\(probe.renderedAt >= wanted.after) frameMatches=\(probe.frame == frame) viewportMatches=\(probe.viewport == frame.size) contentBoundsMatch=\(probe.contentBounds == bounds) presentationBoundsMatch=\(probe.layerPresentation == bounds) topAttached=\(abs(probe.frame.maxY - screen.frame.maxY) < 0.001) paint=\(String(reflecting: panel.paintReceipt))")
     }
-    private func makeGeometry(contentHeight: CGFloat = 260) -> IslandGeometry? {
+    private func makeGeometry(contentHeight: CGFloat = 260, shapeCalibration: ContourCalibration = .init()) -> IslandGeometry? {
         let frame = screen.frame, width: CGFloat = 220, inset: CGFloat = 32
         let left = frame.midX - width / 2, right = frame.midX + width / 2
         guard let notch = NotchGeometry.calculate(screen: frame, topInset: Double(inset),
             auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - inset, width: left - frame.minX, height: inset),
             auxiliaryRight: CGRect(x: right, y: frame.maxY - inset, width: frame.maxX - right, height: inset)) else { return nil }
-        return IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor, contentHeight: contentHeight)
+        return IslandGeometry(notch: notch, screen: frame, backingScale: screen.backingScaleFactor,
+            shapeCalibration: shapeCalibration, contentHeight: contentHeight)
     }
     private func nativeSettled(_ island: IslandPanelController, progress: Double, after: TimeInterval) -> Bool {
         nativeExpectations[ObjectIdentifier(island)] = (progress, after)
