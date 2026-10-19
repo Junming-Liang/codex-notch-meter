@@ -12,8 +12,10 @@ path_args=(-c release --show-bin-path)
 if [[ "${1:-}" == "--universal" ]]; then
   args+=(--arch arm64 --arch x86_64)
   path_args+=(--arch arm64 --arch x86_64)
+elif [[ "${1:-}" == "--app-only" && $# -eq 1 ]]; then
+  : # Focused native diagnostic: sign and bind the app, but create no release archive.
 elif [[ $# -gt 0 ]]; then
-  echo "Usage: $0 [--universal]" >&2; exit 2
+  echo "Usage: $0 [--universal|--app-only]" >&2; exit 2
 fi
 # A source-bound package must not attribute dirty tracked code to an older commit.
 if [[ -n "$(git status --porcelain --untracked-files=no)" || -n "$(git ls-files --others --exclude-standard Sources Scripts Package.swift)" ]]; then
@@ -77,6 +79,10 @@ archs="$(lipo -archs "$app/Contents/MacOS/CodexNotchMeter" | tr ' ' '-')"
 if [[ "${1:-}" == "--universal" ]]; then
   lipo "$app/Contents/MacOS/CodexNotchMeter" -verify_arch arm64 x86_64
   archs="universal"
+fi
+if [[ "${1:-}" == "--app-only" ]]; then
+  echo "Built source-bound diagnostic app only; releaseEligible=false."
+  exit 0
 fi
 archive="dist/CodexNotchMeter-${release_version}-${archs}.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
