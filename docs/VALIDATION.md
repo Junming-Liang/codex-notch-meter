@@ -2,11 +2,35 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
-## v1.0.2 candidate (not yet a verified release)
+## v1.0.3 candidate: event-entry and closed-height correction
 
-Based on main `24126f586e3e098a17cb318fc240704f469f9de5`. The repair adds shared music-shell/perimeter geometry, fast sampled-crossing support, gesture/hover ownership, coupled playback-width motion, and complete painted notification dwell despite pointer movement or delayed readiness. See [changes](RELEASE-1.0.2.md) and [reproduction/verification plan](MUSIC-INTERACTION-FIX.md).
+Based on main `001a0c8018c681e1e27db6d846279c3ea3022fa3`; package identity is v1.0.3/build 16. The user reports that installed v1.0.2 still jitters and does not trigger the no-button gesture, and requires closed music to retain ordinary closed height with width added only. Those reports supersede any implication that earlier hosted synthetic checks proved the reported device behavior fixed. See [bilingual candidate changes](RELEASE-1.0.3.md).
 
-Local cloud source/privacy preflight, 24 dictionary safety tests, 22 installer mock tests, 38 release-source/asset safety tests and 261 Music and 15 update native-receipt parser controls passed. Swift compilation, XCTest, universal packaging, native interaction/pixel gates and manual native PNG review are pending. No physical-device fix claim is made. Packaged build-source metadata will identify the exact commit/tree/run rather than the earlier base commit above.
+The candidate preserves `NSEvent` coordinates/timestamps, separates polling fallback, changes hover dwell to a cumulative stationary anchor, covers the full closed-shell crossing height, and shares music-shell geometry/progress in one snapshot. It retains v1.0.0's display-link `targetTimestamp`, unchanged spring parameters and publish-then-resize ordering. The proposed present-time clock replacement has been withdrawn; no clock-change improvement is claimed. These are changes under validation, not an observed fix receipt.
+
+Planned acceptance adds an independent own-app `NSApp.postEvent` path through the real local event monitor, frame-history checks for motion/progress, and ordinary-versus-music closed-height own-view captures at the active native backing scale with simulated camera masks; separate Core geometry fixtures cover 1x/2x. It also retains the existing Swift, native interaction, contour, notification-dwell, architecture/signature, official-artifact, source-binding and installer gates. Publish only the exact checked source and reviewed, hash-verified archive bytes.
+
+At preparation time, macOS compilation/XCTest, the new and retained native gates, universal packaging, human image review and publication for v1.0.3 are pending. Local Python/static checks, when reported separately, do not satisfy those gates. Own-app events/captures and simulated masks do not establish physical input, actual notch fit, GPU scanout, every Music/TCC/streaming combination, macOS 13 runtime, or login/reboot behavior. No user's Mac is used for this validation.
+
+v1.0.3 为待验证候选版本。用户反馈说明 v1.0.2 的历史合成验证未能证明其实际抖动和手势问题已解决。本次要求闭合音乐与普通闭合状态同高，仅增加宽度；新增真实本地事件入口、运动帧历史与模拟遮挡像素验证仍须在 macOS 上执行并审核。此处没有声称已通过或已修复实机问题。
+
+### Fixed v1.0.0 same-input animation comparison (pending native execution)
+
+`Scripts/check-native-baseline.py` independently archives v1.0.0 commit `473c27fc2240b011134d45b889bb313d812b689c` into `dist/baseline-source`. Only the identical new `BaselineMotionComparison.swift` harness and its test-entry/lifetime hooks in `AppController.swift` may differ from that archive. Before/after file hashes and the full allowed controller patch are retained in `dist/baseline-prepare.json`; the historical production animation, geometry and event handling are not copied from the candidate or patched. The baseline builds as a separate Swift executable in its own `.build`, leaving current app/ZIP/DMG artifacts untouched.
+
+Both executables receive the same controller-level global pointer points and playback timeline for three groups: `ordinary`, `steady-music`, and `playback-edge`. The raw-notch center entry and shared full-height exit point (12pt below the body, still on screen), scheduled input plan and delivered input content must match across roles; each run emits the plan hash, frame history, observed paint receipts, mode samples and convergence checkpoints. The comparison reports measured timing, geometry and mode differences with `metricsReported=true` and `perceptualAcceptance=false`. Passing the common-input/convergence gate does not establish that the candidate feels better or is jitter-free; the actual differences still require review. v1.0.0 has automatic compact music but no closed artwork wings or button-free gesture mode, so this is not a claim that the two releases have identical music designs or endpoints.
+
+This A/B harness is explicitly `controllerLevelInput=true`, `nativeIngress=false`, `scanout=false`. Its shared controller helper bypasses actual AppKit event delivery; the separate `NSApp.postEvent` local-monitor gate is responsible for native event-entry coverage. Paint capture uses a latest-receipt observer and reports sequence gaps; it does not claim to have observed every historical paint. Physical feel, the user's original jitter and real screen scanout remain unverified.
+
+The six raw JSON receipts and aggregate comparison are retained in `dist/baseline-comparison` and printed to bounded CI logs; failed runs print diagnostic stdout/stderr tails. Actual delivery and pointer timestamp differences are recorded separately from the common planned timeline. Offline `--self-test` checks parser/preparation safety without running macOS code. `--prepare-only` verifies the fixed source and the two-file test-hook boundary without compiling. Neither mode is native A/B acceptance. Native execution, comparison receipts and review are still pending at preparation time.
+
+固定 v1.0.0 对照只增加相同测试工具与启动/退出钩子，不改变旧版生产动效、几何或事件代码。两版分别接受相同全局坐标与播放时间线，比较普通、持续播放和播放切换三组动画过程及收敛时间。旧版没有封面侧翼和划过手势，不能把这种设计差异当作同一外观的验证。此处是控制器层输入，不经过真实鼠标事件入口；原生入口由另一独立门验证，实机手感仍未证实。
+
+## v1.0.2 historical release; reported interaction issues remain
+
+The published [v1.0.2](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.2) record identifies source `2b890728` and [macOS Run 49](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/39196309482): 395 Swift tests across the normal and separate official-artifact jobs, all required native gates, review of 22 synthetic native images, and publication of the same hash-verified artifacts. Those are historical hosted results for that source, not a fresh result for the current candidate.
+
+The user subsequently reported continuing jitter and non-triggering button-free gestures. The release's sampled/injected pointer and own-view checks did not establish real-input behavior on the user's Mac. The new candidate therefore adds coverage at the actual local event-monitor entry and corrects the closed-height contract rather than treating that earlier green run as conclusive. v1.0.2 downloads remain available while v1.0.3 is under validation; the [old release notes](RELEASE-1.0.2.md) are retained as historical documentation.
 
 ## v1.0.1 observed formal release
 
