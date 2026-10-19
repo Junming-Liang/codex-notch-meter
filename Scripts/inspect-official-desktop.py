@@ -13,8 +13,10 @@ import time
 
 URL = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
 MAXIMUM = 1_073_741_824
+BUILD_COMMAND = ["swift", "build", "--configuration", "debug", "--build-tests"]
+BUILD_TIMEOUT = 300
 TEST_COMMAND = [
-    "swift", "test", "--filter",
+    "swift", "test", "--configuration", "debug", "--skip-build", "--filter",
     "OfficialDesktopArtifactTests.testOfficialMountedDesktopResolvesWithinProductionDeadline",
 ]
 TEST_TIMEOUT = 150
@@ -22,17 +24,17 @@ TAIL_BYTES = 100_000
 RETIRE_TIMEOUT = 3
 
 
-def print_test_tails(stdout, stderr):
+def print_test_tails(stdout, stderr, stage="TEST"):
     """TimeoutExpired may contain bytes even when Popen uses text mode."""
     for name, value in (("stdout", stdout), ("stderr", stderr)):
         data = value if isinstance(value, bytes) else (value or "").encode("utf-8", errors="replace")
         tail = data[-TAIL_BYTES:]
-        print(f"OFFICIAL_TEST_LOG_BEGIN: stream={name} observedBytes={len(data)} tailBytes={len(tail)}", flush=True)
+        print(f"OFFICIAL_{stage}_LOG_BEGIN: stream={name} observedBytes={len(data)} tailBytes={len(tail)}", flush=True)
         print(tail.decode("utf-8", errors="replace"), flush=True)
-        print(f"OFFICIAL_TEST_LOG_END: stream={name}", flush=True)
+        print(f"OFFICIAL_{stage}_LOG_END: stream={name}", flush=True)
 
 
-def retire_test_group(process, stdout, stderr):
+def retire_test_group(process, stdout, stderr, stage="TEST"):
     """Only this Popen's new session/group is signalled; never search by name."""
     def signal_group(sig):
         try:
@@ -40,7 +42,7 @@ def retire_test_group(process, stdout, stderr):
         except ProcessLookupError:
             pass  # The entire owned group has already exited.
         except OSError as error:
-            print(f"OFFICIAL_TEST_RETIRE_FAILED: signal={sig} {error}", file=sys.stderr, flush=True)
+            print(f"OFFICIAL_{stage}_RETIRE_FAILED: signal={sig} {error}", file=sys.stderr, flush=True)
 
     if process.returncode is None:
         # Do not poll, wait, or communicate between these signals: retaining the
@@ -53,7 +55,7 @@ def retire_test_group(process, stdout, stderr):
     else:
         # An already-reaped leader no longer proves ownership of that numeric
         # group ID. Never risk signalling a different process group.
-        print("OFFICIAL_TEST_RETIRE_FAILED: leader-already-reaped; group-signals-skipped",
+        print(f"OFFICIAL_{stage}_RETIRE_FAILED: leader-already-reaped; group-signals-skipped",
               file=sys.stderr, flush=True)
     try:
         stdout, stderr = process.communicate(timeout=RETIRE_TIMEOUT)
@@ -65,36 +67,57 @@ def retire_test_group(process, stdout, stderr):
                 try:
                     stream.close()
                 except OSError as close_error:
-                    print(f"OFFICIAL_TEST_RETIRE_FAILED: close-pipe {close_error}", file=sys.stderr, flush=True)
+                    print(f"OFFICIAL_{stage}_RETIRE_FAILED: close-pipe {close_error}", file=sys.stderr, flush=True)
         try:
             process.wait(timeout=RETIRE_TIMEOUT)
         except Exception as reap_error:
-            print(f"OFFICIAL_TEST_RETIRE_FAILED: reap {reap_error}", file=sys.stderr, flush=True)
+            print(f"OFFICIAL_{stage}_RETIRE_FAILED: reap {reap_error}", file=sys.stderr, flush=True)
     except Exception as error:
-        print(f"OFFICIAL_TEST_RETIRE_FAILED: kill-wait {error}", file=sys.stderr, flush=True)
+        print(f"OFFICIAL_{stage}_RETIRE_FAILED: kill-wait {error}", file=sys.stderr, flush=True)
         try:
             process.wait(timeout=RETIRE_TIMEOUT)
         except Exception as reap_error:
-            print(f"OFFICIAL_TEST_RETIRE_FAILED: reap {reap_error}", file=sys.stderr, flush=True)
+            print(f"OFFICIAL_{stage}_RETIRE_FAILED: reap {reap_error}", file=sys.stderr, flush=True)
     return stdout, stderr
 
 
-def run_official_test(environment):
-    process = subprocess.Popen(TEST_COMMAND, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+def run_official_stage(command, timeout, environment, stage):
+    started = time.monotonic()
+    print(f"OFFICIAL_{stage}_START: utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+          f"deadline={timeout} command={command}", flush=True)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, env=environment, start_new_session=True)
     try:
-        stdout, stderr = process.communicate(timeout=TEST_TIMEOUT)
+        stdout, stderr = process.communicate(timeout=timeout)
     except BaseException as error:
         if isinstance(error, subprocess.TimeoutExpired):
-            print(f"OFFICIAL_TEST_TIMEOUT: deadline={TEST_TIMEOUT} ownedProcessGroup={process.pid}", flush=True)
+            print(f"OFFICIAL_{stage}_TIMEOUT: deadline={timeout} elapsed={time.monotonic() - started:.6f} "
+                  f"ownedProcessGroup={process.pid}", flush=True)
         else:
-            print(f"OFFICIAL_TEST_ABORT: {type(error).__name__} ownedProcessGroup={process.pid}", flush=True)
-        stdout, stderr = retire_test_group(process, getattr(error, "output", None), getattr(error, "stderr", None))
-        print_test_tails(stdout, stderr)
+            print(f"OFFICIAL_{stage}_ABORT: {type(error).__name__} ownedProcessGroup={process.pid}", flush=True)
+        stdout, stderr = retire_test_group(process, getattr(error, "output", None), getattr(error, "stderr", None), stage)
+        print_test_tails(stdout, stderr, stage)
         raise  # Preserve the timeout or other original test failure unchanged.
-    print_test_tails(stdout, stderr)
-    if process.returncode != 0 or "OFFICIAL_DISCOVERY_OK:" not in stdout:
+    print(f"OFFICIAL_{stage}_END: utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+          f"elapsed={time.monotonic() - started:.6f} returncode={process.returncode}", flush=True)
+    print_test_tails(stdout, stderr, stage)
+    return process.returncode, stdout
+
+
+def run_official_test(environment):
+    returncode, stdout = run_official_stage(TEST_COMMAND, TEST_TIMEOUT, environment, "TEST")
+    if returncode != 0 or "OFFICIAL_DISCOVERY_OK:" not in stdout:
         raise RuntimeError("Official helper discovery test failed or did not execute")
+
+
+def prepare_and_run_official_test(environment):
+    # SwiftPM builds all test products without executing them, then runs only
+    # the original filter from the same debug configuration and build directory.
+    # Compilation does not consume the resolver test's separate process budget.
+    returncode, _ = run_official_stage(BUILD_COMMAND, BUILD_TIMEOUT, environment, "BUILD")
+    if returncode != 0:
+        raise RuntimeError("Official helper discovery test build failed")
+    run_official_test(environment)
 
 
 def cleanup(work, mount, mounted, primary_error):
@@ -161,7 +184,7 @@ def inspect():
         environment["CODEX_TEST_OFFICIAL_APP"] = str(app)
         environment["CODEX_PUBLIC_ARTIFACT_TRACE"] = "1"
         # The test calls the production bounded signature/helper resolver, not app-server.
-        run_official_test(environment)
+        prepare_and_run_official_test(environment)
     except BaseException as error:
         primary_error = error
         raise
@@ -181,6 +204,93 @@ def self_test():
             process = Mock(pid=7319, returncode=returncode)
             process.communicate.side_effect = effects
             return process
+
+        def test_separate_build_and_run_share_configuration_and_environment(self):
+            build = self.process([("compiled", "build diagnostic")])
+            test = self.process([("OFFICIAL_DISCOVERY_OK: fixture", "test diagnostic")])
+            environment = {"CODEX_TEST_OFFICIAL_APP": "/owned-work/mount/Codex.app"}
+            with patch.object(subprocess, "Popen", side_effect=[build, test]) as popen, \
+                 patch.object(os, "killpg") as killpg, contextlib.redirect_stdout(io.StringIO()) as output:
+                prepare_and_run_official_test(environment)
+            self.assertEqual(BUILD_COMMAND, ["swift", "build", "--configuration", "debug", "--build-tests"])
+            self.assertEqual(TEST_COMMAND, ["swift", "test", "--configuration", "debug", "--skip-build", "--filter",
+                "OfficialDesktopArtifactTests.testOfficialMountedDesktopResolvesWithinProductionDeadline"])
+            self.assertEqual(popen.call_args_list, [call(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=environment, start_new_session=True) for command in (BUILD_COMMAND, TEST_COMMAND)])
+            build.communicate.assert_called_once_with(timeout=300)
+            test.communicate.assert_called_once_with(timeout=150)
+            killpg.assert_not_called()
+            text = output.getvalue()
+            self.assertLess(text.index("OFFICIAL_BUILD_START:"), text.index("OFFICIAL_BUILD_END:"))
+            self.assertLess(text.index("OFFICIAL_BUILD_END:"), text.index("OFFICIAL_TEST_START:"))
+            self.assertLess(text.index("OFFICIAL_TEST_START:"), text.index("OFFICIAL_TEST_END:"))
+            self.assertIn("OFFICIAL_BUILD_LOG_BEGIN:", text)
+            self.assertIn("build diagnostic", text); self.assertIn("test diagnostic", text)
+
+        def test_failed_build_never_runs_test_even_with_receipt_text(self):
+            build = self.process([("OFFICIAL_DISCOVERY_OK: not a runtime receipt", "compiler failed")], returncode=1)
+            with patch.object(subprocess, "Popen", return_value=build) as popen, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(RuntimeError, "test build failed"):
+                    prepare_and_run_official_test({})
+            popen.assert_called_once()
+            build.communicate.assert_called_once_with(timeout=300)
+            self.assertNotIn("OFFICIAL_TEST_START:", output.getvalue())
+
+        def test_build_receipt_cannot_substitute_for_runtime_receipt(self):
+            build = self.process([("OFFICIAL_DISCOVERY_OK: build text only", "")])
+            test = self.process([("no runtime receipt", "")])
+            with patch.object(subprocess, "Popen", side_effect=[build, test]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "failed or did not execute"):
+                    prepare_and_run_official_test({})
+
+        def test_build_timeout_retires_own_group_before_reaping_and_never_runs_test(self):
+            primary = subprocess.TimeoutExpired(BUILD_COMMAND, 300, output=b"compiler started")
+            build = self.process([primary, ("compiler stopped", "compiler diagnostic")], returncode=None)
+            history = Mock(); history.attach_mock(build.communicate, "communicate")
+            with patch.object(subprocess, "Popen", return_value=build) as popen, \
+                 patch.object(os, "killpg") as killpg, patch.object(time, "sleep") as sleep, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                history.attach_mock(killpg, "killpg"); history.attach_mock(sleep, "sleep")
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    prepare_and_run_official_test({})
+            self.assertIs(raised.exception, primary)
+            popen.assert_called_once()
+            self.assertEqual(history.mock_calls, [call.communicate(timeout=300),
+                call.killpg(7319, signal.SIGTERM), call.sleep(3), call.killpg(7319, signal.SIGKILL),
+                call.communicate(timeout=3)])
+            self.assertIn("OFFICIAL_BUILD_TIMEOUT: deadline=300", output.getvalue())
+            self.assertIn("compiler diagnostic", output.getvalue())
+            self.assertNotIn("OFFICIAL_TEST_START:", output.getvalue())
+
+        def test_runtime_timeout_after_build_keeps_original_runtime_budget(self):
+            build = self.process([("compiled", "")]); build.pid = 7318
+            primary = subprocess.TimeoutExpired(TEST_COMMAND, 150, output=b"runtime started")
+            test = self.process([primary, ("runtime stopped", "")], returncode=None)
+            with patch.object(subprocess, "Popen", side_effect=[build, test]), \
+                 patch.object(os, "killpg") as killpg, patch.object(time, "sleep"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    prepare_and_run_official_test({})
+            self.assertIs(raised.exception, primary)
+            build.communicate.assert_called_once_with(timeout=300)
+            self.assertEqual(test.communicate.call_args_list, [call(timeout=150), call(timeout=3)])
+            self.assertEqual(killpg.call_args_list, [call(7319, signal.SIGTERM), call(7319, signal.SIGKILL)])
+
+        def test_build_cleanup_errors_cannot_replace_primary(self):
+            primary = subprocess.TimeoutExpired(BUILD_COMMAND, 300, output=b"original-build-tail")
+            build = self.process([primary, subprocess.TimeoutExpired(BUILD_COMMAND, 3)], returncode=None)
+            build.stdout.close.side_effect = OSError("close-failed")
+            build.wait.side_effect = OSError("reap-failed")
+            with patch.object(subprocess, "Popen", return_value=build), \
+                 patch.object(os, "killpg", side_effect=OSError("signal-failed")), patch.object(time, "sleep"), \
+                 contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    prepare_and_run_official_test({})
+            self.assertIs(raised.exception, primary)
+            self.assertIn("original-build-tail", output.getvalue())
+            self.assertIn("OFFICIAL_BUILD_RETIRE_FAILED:", errors.getvalue())
 
         def test_success_owns_session_and_keeps_deadline(self):
             process = self.process([("OFFICIAL_DISCOVERY_OK: fixture", "diagnostic")])

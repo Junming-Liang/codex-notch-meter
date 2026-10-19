@@ -56,15 +56,25 @@ def strict_object(pairs):
     return result
 
 
+def valid_hover_decision(value):
+    return (isinstance(value, dict)
+            and set(value) == {"timestamp", "inside", "expandedBefore", "expandedAfter"}
+            and finite(value["timestamp"])
+            and all(type(value[k]) is bool for k in ("inside", "expandedBefore", "expandedAfter"))
+            and value["inside"] is True)
+
+
 def valid_event_recovery(value):
     expected_bools = dict(syntheticPollLocation=True, nativeLocalEvents=True,
                           globalSystemDelivery=False, actualTimerPolling=True,
                           naturalPaint=True, noEnvelopeExit=True, unavailableLyrics=True)
     if not isinstance(value, dict) or set(value) != set(expected_bools) | {
-        "eventRecoverySeconds", "firstPollQuietSeconds", "constructed", "sequence",
+        "eventRecoverySeconds", "firstPollQuietSeconds", "constructed", "sequence", "recoveryClock",
     }:
         return False
     if any(type(value[k]) is not bool or value[k] is not expected for k, expected in expected_bools.items()):
+        return False
+    if value["recoveryClock"] != "hover-decision-uptime":
         return False
     if not finite(value["eventRecoverySeconds"]) or not .12 <= value["eventRecoverySeconds"] < .8:
         return False
@@ -78,7 +88,7 @@ def valid_event_recovery(value):
     for i, event in enumerate(events):
         if not isinstance(event, dict) or set(event) != {
             "eventNumber", "eventType", "windowNumber", "requestedTimestamp", "constructedTimestamp",
-            "deliveredTimestamp", "deliveredAt", "screenPoint", "localPoint", "owner", "target",
+            "deliveredTimestamp", "deliveredAt", "screenPoint", "localPoint", "owner", "target", "hoverDecision",
         }:
             return False
         if type(event["eventNumber"]) is not int or event["eventNumber"] != 28000 + i:
@@ -101,25 +111,57 @@ def valid_event_recovery(value):
             return False
         if event["owner"] not in ("idle", "details") or event["target"] != (1 if event["owner"] == "details" else 0):
             return False
+        decision = event["hoverDecision"]
+        if i < 3:
+            if decision is not None or event["owner"] != "idle":
+                return False
+        else:
+            if (not valid_hover_decision(decision) or decision["timestamp"] < event["deliveredAt"]
+                    or decision["expandedAfter"] != (event["owner"] == "details")):
+                return False
+            if i == 3:
+                if decision["expandedBefore"] or decision["expandedAfter"]:
+                    return False
+            elif (decision["timestamp"] <= events[i - 1]["hoverDecision"]["timestamp"]
+                  or events[i - 1]["hoverDecision"]["timestamp"] > event["deliveredAt"]
+                  or decision["expandedBefore"] != events[i - 1]["hoverDecision"]["expandedAfter"]):
+                return False
     endpoint = events[2]["screenPoint"]
     if any(event["screenPoint"] != endpoint for event in events[3:]):
         return False
-    for row, (kind, owner) in zip(sequence, (("event", "idle"), ("poll", "idle"), ("event", "idle"), ("event", "details"), ("poll", "details"))):
-        if not isinstance(row, dict) or set(row) != {"kind", "owner", "target", "point", "timestamp"}:
+    for i, (row, (kind, owner)) in enumerate(zip(sequence, (("event", "idle"), ("poll", "idle"), ("event", "idle"), ("event", "details"), ("poll", "details")))):
+        if not isinstance(row, dict) or set(row) != {"kind", "owner", "target", "point", "timestamp", "hoverDecision"}:
             return False
         if row["kind"] != kind or row["owner"] != owner or row["point"] != endpoint:
             return False
         if not finite(row["target"]) or row["target"] != (1 if owner == "details" else 0) or not finite(row["timestamp"]):
             return False
+        decision = row["hoverDecision"]
+        if i == 0:
+            if decision is not None:
+                return False
+        elif (not valid_hover_decision(decision) or decision["timestamp"] < row["timestamp"]
+              or decision["expandedBefore"] != (i == 4) or decision["expandedAfter"] != (i >= 3)):
+            return False
     if any(a["timestamp"] >= b["timestamp"] for a, b in zip(sequence, sequence[1:])):
         return False
     if sequence[0]["timestamp"] != events[2]["deliveredTimestamp"] or sequence[2]["timestamp"] != events[3]["deliveredTimestamp"]:
         return False
-    if not any(e["deliveredTimestamp"] == sequence[3]["timestamp"] and e["owner"] == "details" for e in events[4:]):
+    details = next((e for e in events[4:] if e["owner"] == "details"), None)
+    if details is None or details["deliveredTimestamp"] != sequence[3]["timestamp"]:
+        return False
+    for row, event in ((sequence[0], events[2]), (sequence[2], events[3]), (sequence[3], details)):
+        if row["hoverDecision"] != event["hoverDecision"]:
+            return False
+    if any(a["hoverDecision"]["timestamp"] >= b["hoverDecision"]["timestamp"] for a, b in zip(sequence[1:], sequence[2:])):
+        return False
+    if (sequence[1]["hoverDecision"]["timestamp"] >= events[3]["deliveredAt"]
+            or sequence[4]["timestamp"] <= events[-1]["hoverDecision"]["timestamp"]):
         return False
     if abs(sequence[1]["timestamp"] - events[2]["deliveredAt"] - value["firstPollQuietSeconds"]) > 1e-8:
         return False
-    if abs(sequence[3]["timestamp"] - sequence[1]["timestamp"] - value["eventRecoverySeconds"]) > 1e-8:
+    recovery = sequence[3]["hoverDecision"]["timestamp"] - sequence[1]["hoverDecision"]["timestamp"]
+    if not .12 <= recovery < .8 or abs(recovery - value["eventRecoverySeconds"]) > 1e-8:
         return False
     if not .25 < sequence[4]["timestamp"] - events[-1]["deliveredAt"] < 1:
         return False
@@ -310,16 +352,25 @@ def example():
                            requestedTimestamp=stamp, constructedTimestamp=stamp, deliveredTimestamp=stamp,
                            deliveredAt=stamp + .001, screenPoint=screen,
                            localPoint=[screen[0] + 900, screen[1] + 700],
-                           owner="details" if i >= 6 else "idle", target=1 if i >= 6 else 0))
+                           owner="details" if i >= 6 else "idle", target=1 if i >= 6 else 0,
+                           hoverDecision=None if i < 3 else dict(timestamp=stamp + .0015, inside=True,
+                                                                expandedBefore=i > 6, expandedAfter=i >= 6)))
     sequence = [dict(kind=kind, owner=owner, target=1 if owner == "details" else 0,
                      point=[636, 735], timestamp=stamp)
                 for kind, owner, stamp in (("event", "idle", 100.08), ("poll", "idle", 100.35),
                                            ("event", "idle", 100.36), ("event", "details", 100.48),
                                            ("poll", "details", 100.83))]
+    for i, row in enumerate(sequence):
+        if i in (0, 2, 3):
+            row["hoverDecision"] = deepcopy(events[{0: 2, 2: 3, 3: 6}[i]]["hoverDecision"])
+        else:
+            row["hoverDecision"] = dict(timestamp=row["timestamp"] + .0005, inside=True,
+                                        expandedBefore=i == 4, expandedAfter=i == 4)
     value["eventRecovery"] = dict(syntheticPollLocation=True, nativeLocalEvents=True,
                                   globalSystemDelivery=False, actualTimerPolling=True,
                                   naturalPaint=True, noEnvelopeExit=True, unavailableLyrics=True,
-                                  eventRecoverySeconds=.13, firstPollQuietSeconds=.269,
+                                  eventRecoverySeconds=.131, firstPollQuietSeconds=.269,
+                                  recoveryClock="hover-decision-uptime",
                                   constructed=events, sequence=sequence)
     value["indicator"] = dict(INDICATOR_BOOLS, **INDICATOR_INTS)
     indicator = value["indicator"]
@@ -411,6 +462,70 @@ def self_test():
         for key, val in (("kind", "synthetic"), ("target", 9), ("point", [1, 2]), ("timestamp", 1)):
             bad = deepcopy(value); bad["eventRecovery"]["sequence"][i][key] = val
             assert not valid(output_for(bad)), (i, key); count += 1
+    for collection in ("constructed", "sequence"):
+        for i, row in enumerate(value["eventRecovery"][collection]):
+            bad = deepcopy(value); del bad["eventRecovery"][collection][i]["hoverDecision"]
+            assert not valid(output_for(bad)), (collection, i, "missing-hover-decision"); count += 1
+            decision = row["hoverDecision"]
+            wrong_presence = None if decision is not None else value["eventRecovery"]["sequence"][1]["hoverDecision"]
+            for replacement in (wrong_presence, False, {}, "monitor-time"):
+                bad = deepcopy(value); bad["eventRecovery"][collection][i]["hoverDecision"] = replacement
+                assert not valid(output_for(bad)), (collection, i, replacement); count += 1
+            if decision is None:
+                continue
+            for key in decision:
+                bad = deepcopy(value); del bad["eventRecovery"][collection][i]["hoverDecision"][key]
+                assert not valid(output_for(bad)), (collection, i, key); count += 1
+            for key, replacements in {
+                "timestamp": (-1, True, float("nan"), float("inf")),
+                "inside": (False, 1, "true"),
+                "expandedBefore": (not decision["expandedBefore"], 0, None),
+                "expandedAfter": (not decision["expandedAfter"], 1, None),
+            }.items():
+                for replacement in replacements:
+                    bad = deepcopy(value); bad["eventRecovery"][collection][i]["hoverDecision"][key] = replacement
+                    assert not valid(output_for(bad)), (collection, i, key, replacement); count += 1
+    for clock in ("event-source-timestamp", "monitor-delivery-uptime", "hover-decision-uptime "):
+        bad = deepcopy(value); bad["eventRecovery"]["recoveryClock"] = clock
+        assert not valid(output_for(bad)), clock; count += 1
+    for index in (2, 3):
+        bad = deepcopy(value); bad["eventRecovery"]["sequence"][index]["hoverDecision"]["timestamp"] += .0001
+        assert not valid(output_for(bad)), (index, "unbound-hover-decision"); count += 1
+    # A source sample can fall just before the dwell boundary while the actual
+    # hover decision occurs afterward. These are synthetic parser controls, not
+    # reconstructed timestamps attributed to an old native run.
+    edge = deepcopy(value)
+    recovery = edge["eventRecovery"]
+    recovery["sequence"][1]["timestamp"] = 100.3601
+    recovery["sequence"][1]["hoverDecision"]["timestamp"] = 100.3602
+    event = recovery["constructed"][3]
+    event.update(requestedTimestamp=100.37, constructedTimestamp=100.37,
+                 deliveredTimestamp=100.37, deliveredAt=100.371)
+    event["hoverDecision"]["timestamp"] = 100.3715
+    recovery["sequence"][2].update(timestamp=100.37, hoverDecision=deepcopy(event["hoverDecision"]))
+    recovery["firstPollQuietSeconds"] = recovery["sequence"][1]["timestamp"] - recovery["constructed"][2]["deliveredAt"]
+    recovery["eventRecoverySeconds"] = recovery["sequence"][3]["hoverDecision"]["timestamp"] - recovery["sequence"][1]["hoverDecision"]["timestamp"]
+    assert recovery["sequence"][3]["timestamp"] - recovery["sequence"][1]["timestamp"] < .12
+    assert valid(output_for(edge)); count += 1
+    for delta in (recovery["sequence"][3]["timestamp"] - recovery["sequence"][1]["timestamp"],
+                  recovery["constructed"][6]["deliveredAt"] - recovery["sequence"][1]["timestamp"]):
+        bad = deepcopy(edge); bad["eventRecovery"]["eventRecoverySeconds"] = delta
+        assert not valid(output_for(bad)), "source-or-monitor-proxy"; count += 1
+    for delta, expected in ((.11999, False), (.12, True)):
+        changed = deepcopy(edge); event_recovery = changed["eventRecovery"]
+        event_recovery["sequence"][1]["hoverDecision"]["timestamp"] = event_recovery["sequence"][3]["hoverDecision"]["timestamp"] - delta
+        actual = event_recovery["sequence"][3]["hoverDecision"]["timestamp"] - event_recovery["sequence"][1]["hoverDecision"]["timestamp"]
+        event_recovery["eventRecoverySeconds"] = max(.12, actual)
+        assert valid(output_for(changed)) is expected, (delta, actual); count += 1
+    late = deepcopy(edge); event_recovery = late["eventRecovery"]
+    for event in event_recovery["constructed"][6:]:
+        for key in ("requestedTimestamp", "constructedTimestamp", "deliveredTimestamp", "deliveredAt"):
+            event[key] += .7
+        event["hoverDecision"]["timestamp"] += .7
+    for row in event_recovery["sequence"][3:]:
+        row["timestamp"] += .7; row["hoverDecision"]["timestamp"] += .7
+    event_recovery["eventRecoverySeconds"] = .799
+    assert not valid(output_for(late)), "actual-hover-delta-exceeds-upper-bound"; count += 1
     for key, val in value["indicator"].items():
         bad = deepcopy(value); del bad["indicator"][key]
         assert not valid(output_for(bad)), key; count += 1
