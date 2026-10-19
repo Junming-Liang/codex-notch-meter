@@ -400,13 +400,21 @@ final class MusicRenderHarness: NSObject {
             try require(!panel.isInteracting && panel.smokeExpansionOwner != .details && panel.smokeTargetProgress != 1,
                         "queued moving or protected sample never promotes transient details")
         }
-        func enqueue(_ point: CGPoint) throws -> GestureRecoveryEvent {
+        var bufferedEnqueueChecks: [String] = []
+        func checkEnqueue(_ valid: Bool, _ label: String, bufferSuccess: Bool) throws {
+            if valid && bufferSuccess {
+                guard bufferedEnqueueChecks.count < 32 else { throw Failure(label: "queued crossing check buffer exceeded bound") }
+                checks += 1
+                bufferedEnqueueChecks.append(label)
+            } else { try require(valid, label) }
+        }
+        func enqueue(_ point: CGPoint, bufferChecks: Bool = false) throws -> GestureRecoveryEvent {
             guard constructed.count < 256 else { throw Failure(label: "gesture recovery event evidence exceeded bound") }
             if let protectedStart {
-                try require(geometry.hoverContains(point, progress: 1),
-                            "post-crossing queue remains inside the unchanged full hover envelope")
-                try require(!panel.smokePointerIngress.dropFirst(protectedStart).contains { $0.kind == "poll" },
-                            "live-pointer polling cannot supply an unobserved recovery exit")
+                try checkEnqueue(geometry.hoverContains(point, progress: 1),
+                    "post-crossing queue remains inside the unchanged full hover envelope", bufferSuccess: bufferChecks)
+                try checkEnqueue(!panel.smokePointerIngress.dropFirst(protectedStart).contains { $0.kind == "poll" },
+                    "live-pointer polling cannot supply an unobserved recovery exit", bufferSuccess: bufferChecks)
             }
             let requested = ProcessInfo.processInfo.systemUptime
             let number = 24_000 + constructed.count
@@ -417,10 +425,10 @@ final class MusicRenderHarness: NSObject {
                 throw Failure(label: "cannot construct gesture recovery native event")
             }
             let timestamp = event.timestamp
-            try require(requested > lastRequested && timestamp > lastConstructed && timestamp.isFinite
+            try checkEnqueue(requested > lastRequested && timestamp > lastConstructed && timestamp.isFinite
                 && abs(timestamp - requested) < 0.000000001 && event.eventNumber == number
                 && event.window === sourceWindow && event.locationInWindow == local,
-                        "gesture recovery construction preserves ordered timestamp and unique 16-bit identity")
+                "gesture recovery construction preserves ordered timestamp and unique 16-bit identity", bufferSuccess: bufferChecks)
             let evidence = GestureRecoveryEvent(number: number, type: event.type.rawValue,
                 window: event.windowNumber, requested: requested, constructed: timestamp,
                 deliveredAt: 0, local: local, screen: point)
@@ -496,29 +504,34 @@ final class MusicRenderHarness: NSObject {
             try await post(point, allowDetails: allowDetails)
         }
         // Generate real input independently of rendering/async receipt waits.
-        // Like the existing pointer backlog fixture, this synchronous helper
-        // queues actual-time samples; only the ordinary app run loop delivers
-        // them after return. No invented/future time, direct injection or retry.
+        // The recognizer has no minimum traversal duration. Queue six actual-
+        // time samples without artificial sleep or synchronous success logging;
+        // only the ordinary app run loop delivers them after return. No invented
+        // or future time, direct injection, spin-wait or retry is permitted.
         func enqueueCrossing(open: Bool) throws -> [GestureRecoveryEvent] {
             let fractions: [CGFloat] = open ? [-0.04, 0.02, 0.25, 0.52, 0.75, 0.98]
                 : [1.04, 0.98, 0.75, 0.48, 0.25, 0.02]
             let began = ProcessInfo.processInfo.systemUptime
             var queued: [GestureRecoveryEvent] = []
             for (index, fraction) in fractions.enumerated() {
-                if index > 0 { Thread.sleep(forTimeInterval: 0.012) }
                 phase = "\(open ? "open" : "reverse")-crossing-queued-\(index)"
-                queued.append(try enqueue(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded())))
+                queued.append(try enqueue(CGPoint(x: (corridor.minX + corridor.width * fraction).rounded(), y: corridor.midY.rounded()), bufferChecks: true))
             }
-            try require(ProcessInfo.processInfo.systemUptime - began <= 0.20
+            try checkEnqueue(ProcessInfo.processInfo.systemUptime - began <= 0.20
                 && zip(queued, queued.dropFirst()).allSatisfy { before, after in
                     after.constructed > before.constructed && after.constructed - before.constructed <= 0.25
-                }, "queued crossing uses bounded real-time generation with every actual sample gap within 0.25 seconds")
+                }, "queued crossing uses bounded real-time generation with every actual sample gap within 0.25 seconds", bufferSuccess: true)
             return queued
         }
         func cross(open: Bool) async throws {
             let ingressStart = panel.smokePointerIngress.count
             let queued = try enqueueCrossing(open: open)
             for evidence in queued { try await awaitQueued(evidence) }
+            // Successful checks were evaluated synchronously above, but their
+            // bounded stderr write cannot consume an event's delivery budget.
+            let messages = bufferedEnqueueChecks.map { "SMOKE_STAGE: music \($0) valid=true\n" }.joined()
+            bufferedEnqueueChecks.removeAll(keepingCapacity: true)
+            FileHandle.standardError.write(Data(messages.utf8))
             let numbers = Set(queued.map { $0.number })
             let observed = observation.events.filter { numbers.contains($0.number) }
             let accepted = panel.smokePointerIngress.dropFirst(ingressStart).filter { $0.kind == "event" }
