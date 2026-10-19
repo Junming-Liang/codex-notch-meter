@@ -108,6 +108,8 @@ public struct IslandGeometry: Equatable, Sendable {
     public var collapsedSize: CGSize { frame(progress: 0).size }
     /// Optional visible music wings are not camera geometry or calibration.
     public var showsMusicAccessories = false
+    /// Driven on the same frame clock as expansion, including playback edges.
+    public var musicAccessoryProgress: Double = 1
     public var expandedSize: CGSize { frame(progress: 1).size }
     public let contentHeight: CGFloat
     public let compactWidth: CGFloat
@@ -213,8 +215,7 @@ public struct IslandGeometry: Equatable, Sendable {
     }
     public func frame(progress: Double) -> CGRect {
         let contour = IslandContour(rect: drawingFrame(progress: progress), progress: progress, cornerAdjustment: shapeCalibration.corner, referenceDepth: notch.height).bounds
-        let envelope = showsMusicAccessories ? contour.union(musicAccessoryFrame) : contour
-        return Self.nativeFrame(containing: envelope, screen: screen, scale: backingScale)
+        return Self.nativeFrame(containing: contour, screen: screen, scale: backingScale)
     }
     /// Black side wings retain the hardware depth. The raw camera exclusion and
     /// original U path stay separate and unchanged; near-edge space fails closed.
@@ -224,7 +225,8 @@ public struct IslandGeometry: Equatable, Sendable {
                height: notch.height)
     }
     public var canShowMusicAccessories: Bool {
-        calibratedNotch.minX - screen.minX >= 34 && screen.maxX - calibratedNotch.maxX >= 34 && notch.height >= 20
+        calibratedNotch.minX - screen.minX >= 35 && screen.maxX - calibratedNotch.maxX >= 35
+            && notch.height >= 20 && contourFrame.height >= notch.height
     }
     /// Fixed at the original hardware anchor, never at the moving card edge.
     public var musicGestureCorridor: CGRect {
@@ -253,7 +255,10 @@ public struct IslandGeometry: Equatable, Sendable {
     }
     private func drawingFrame(progress: Double) -> CGRect {
         let p = CGFloat(min(1, max(0, progress.isFinite ? progress : 0)))
-        if p == 0 { return contourFrame }
+        let accessory = showsMusicAccessories ? CGFloat(min(1, max(0, musicAccessoryProgress))) : 0
+        let closedWidth = contourFrame.width + (musicAccessoryFrame.width - contourFrame.width) * accessory
+        let closed = CGRect(x: contourFrame.midX - closedWidth / 2, y: contourFrame.minY, width: closedWidth, height: contourFrame.height)
+        if p == 0 { return closed }
         if p == 1 { return expandedContourFrame }
         // Reach one shared compact width, retain it through all music/notice
         // heights, then grow toward details. This map never depends on text.
@@ -264,7 +269,7 @@ public struct IslandGeometry: Equatable, Sendable {
         }
         let compactEase = ease(p / lower)
         let detailEase = ease((p - upper) / (1 - upper))
-        let width = contourFrame.width + (compactWidth - contourFrame.width) * compactEase
+        let width = closedWidth + (compactWidth - closedWidth) * compactEase
             + (expandedContourFrame.width - compactWidth) * detailEase
         let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * p
         let center = calibratedNotch.midX + (expandedContourFrame.midX - calibratedNotch.midX) * compactEase
