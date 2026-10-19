@@ -528,9 +528,10 @@ final class MusicRenderCacheChecks {
             "first-poll-starts-fresh-hover-dwell")
         observations.append(snapshot("after-first-quiet-poll"))
         recoveryStage = "stationary-event-recovery"
-        // Immediately replace the event history after its quiet-period poll,
-        // then keep events flowing faster than the 250 ms poll guard. A timeout
-        // of the old 1.2 s recognizer cannot make this negative control pass.
+        // Queue stationary input after the quiet-period poll, then keep events
+        // flowing faster than the 250 ms poll guard. A queued event takes over
+        // only when its actual local monitor runs, not at its source timestamp.
+        // A timeout of the old 1.2 s recognizer cannot make this control pass.
         let firstEvent = try await post(endpoint)
         try require(firstEvent.owner == .idle && firstEvent.target == 0, "first-reentry-event-still-idle")
         for _ in 0..<5 {
@@ -542,11 +543,32 @@ final class MusicRenderCacheChecks {
         }), let lastEvent = panel.smokePointerIngress.last(where: { $0.kind == "event" }) else {
             throw Failure(label: "event-stream-did-not-recover-details")
         }
+        guard let firstStationary = queuedEvents.first(where: { $0.number == 28_003 }),
+              let firstStationaryEntry = localEntry(firstStationary),
+              let firstPollIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "poll" && $0.timestamp == firstPoll.timestamp && $0.point == firstPoll.point
+              }), let firstEventIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "event" && $0.timestamp == firstStationaryEntry.timestamp && $0.point == firstStationaryEntry.screenPoint
+              }), let lastEventIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "event" && $0.timestamp == lastEvent.timestamp && $0.point == lastEvent.point
+              }), firstPollIndex < firstEventIndex, firstEventIndex <= lastEventIndex else {
+            throw Failure(label: "stationary-native-receipt-boundaries")
+        }
+        // Timer polls remain legitimate while the first event is only queued.
+        // Receipt order is actual production execution order; event timestamps
+        // instead record source sampling and can precede those pending polls.
+        let preTakeover = panel.smokePointerIngress[firstPollIndex..<firstEventIndex]
+        try require(firstStationaryEntry.timestamp == firstEvent.timestamp
+            && firstEvent.timestamp > firstPoll.timestamp
+            && preTakeover.allSatisfy {
+                $0.kind == "poll" && $0.point == endpoint && $0.owner == .idle && $0.target == 0
+                    && $0.timestamp >= firstPoll.timestamp && $0.timestamp < firstStationaryEntry.delivered
+            }, "quiet-polls-precede-actual-event-takeover")
+        let eventStream = panel.smokePointerIngress[firstEventIndex...lastEventIndex]
         let recovery = detailsEvent.timestamp - firstPoll.timestamp
         try require(recovery >= 0.12 && recovery < 0.8 && detailsEvent.point == endpoint
-            && !panel.smokePointerIngress.contains(where: {
-                $0.kind == "poll" && $0.timestamp > firstPoll.timestamp && $0.timestamp < detailsEvent.timestamp
-            }), "events-recover-before-recognizer-timeout")
+            && !eventStream.contains(where: { $0.kind == "poll" }),
+            "events-recover-before-recognizer-timeout")
         recoveryStage = "final-natural-quiet-poll"
         try await until("quiet-poll-retains-details", timeout: 1) {
             panel.smokePointerIngress.contains { $0.kind == "poll" && $0.timestamp > lastEvent.timestamp && $0.owner == .details }
