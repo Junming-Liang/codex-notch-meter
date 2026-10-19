@@ -230,8 +230,8 @@ public struct IslandGeometry: Equatable, Sendable {
     }
     /// Fixed at the original hardware anchor, never at the moving card edge.
     public var musicGestureCorridor: CGRect {
-        CGRect(x: musicAccessoryFrame.minX, y: screen.maxY - min(18, notch.height),
-               width: musicAccessoryFrame.width, height: min(18, notch.height))
+        CGRect(x: musicAccessoryFrame.minX, y: contourFrame.minY,
+               width: musicAccessoryFrame.width, height: contourFrame.height)
     }
     public func musicAccessoryRects(progress: Double) -> (left: CGRect, right: CGRect) {
         let native = frame(progress: progress)
