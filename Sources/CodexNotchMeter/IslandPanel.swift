@@ -435,6 +435,10 @@ final class IslandPanelController: NSObject {
     }
     @objc private func pollPointer(_ timer: Timer) {
         guard !stopped, timer === pointerTimer, placementIsValid else { return }
+        // This own-event fixture isolates queued AppKit input from the unrelated
+        // physical cursor. The separate cache gate still exercises real polling.
+        guard !(model.demo && CommandLine.arguments.contains("--music-test")
+            && CommandLine.arguments.contains("--gesture-recovery-test")) else { return }
         observePointer()
     }
     private func resetCrossings() { crossing.reset(); fallbackCrossing.reset() }

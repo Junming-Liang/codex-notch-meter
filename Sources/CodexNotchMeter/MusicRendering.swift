@@ -205,7 +205,7 @@ final class MusicRenderHarness: NSObject {
         }
         print("MUSIC_GESTURE_RECOVERY_CLEANUP_OK: controllers=9 pendingRequests=0 countsStable=true panelsStopped=true monitorsRemoved=true")
         gestureRecoveryCompleted = true
-        print("MUSIC_GESTURE_RECOVERY_GATE_OK: independent=true deadline=100 oldMusicDeadline=150 oldPointerDeadline=45 cases=9 nativeEventQueue=true controllerInjection=false scanout=false")
+        print("MUSIC_GESTURE_RECOVERY_GATE_OK: independent=true deadline=100 oldMusicDeadline=150 oldPointerDeadline=45 cases=9 nativeEventQueue=true inputSourceMode=appkit-local-events-only controllerInjection=false scanout=false")
     }
 
     private func verifyGestureRecoveryCase(_ name: String) async throws {
@@ -572,6 +572,7 @@ final class MusicRenderHarness: NSObject {
                         "acceptedOwner": String(describing: accepted.owner), "acceptedTarget": accepted.target]
             }
             let evidence: [String: Any] = ["kind": name, "stage": stage, "events": rows, "overflow": false,
+                "inputSourceMode": "appkit-local-events-only",
                 "crossingStart": crossingStart, "crossingEnd": crossingEnd, "corridor": [Double(corridor.minX), Double(corridor.minY), Double(corridor.width), Double(corridor.height)],
                 "sameEnvelope": protectedSegment.allSatisfy { geometry.hoverContains($0.point, progress: 1) },
                 "pollAfterCrossing": protectedSegment.contains { $0.kind == "poll" }, "details": panel.isInteracting,
