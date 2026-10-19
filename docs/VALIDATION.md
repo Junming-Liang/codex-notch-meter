@@ -2,6 +2,12 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## v1.0.2 candidate (not yet a verified release)
+
+Based on main `24126f586e3e098a17cb318fc240704f469f9de5`. The repair adds shared music-shell/perimeter geometry, fast sampled-crossing support, gesture/hover ownership, coupled playback-width motion, and complete painted notification dwell despite pointer movement or delayed readiness. See [changes](RELEASE-1.0.2.md) and [reproduction/verification plan](MUSIC-INTERACTION-FIX.md).
+
+Local cloud source/privacy preflight, 24 dictionary safety tests, 22 installer mock tests, 38 release-source/asset safety tests and 261 Music and 15 update native-receipt parser controls passed. Swift compilation, XCTest, universal packaging, native interaction/pixel gates and manual native PNG review are pending. No physical-device fix claim is made. Packaged build-source metadata will identify the exact commit/tree/run rather than the earlier base commit above.
+
 ## v1.0.1 observed formal release
 
 [Release Run #46](https://github.com/Junming-Liang/codex-notch-meter/actions/runs/38912458921) passed every required gate on 2026-10-16 and published [v1.0.1](https://github.com/Junming-Liang/codex-notch-meter/releases/tag/v1.0.1). The tag pins source `d44de9cf94ab8532308cb0109b9b290171694798`, tree `16f6cf70888e328b4ac25c026c7ac8c95eecc437`, unchanged from the fully passing diagnostic below. Existing v1.0.0, Beta 1 and v0.1.9 tags/assets remain available.
