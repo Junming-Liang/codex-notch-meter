@@ -266,6 +266,15 @@ final class MusicRenderCacheChecks {
         // nine events, real timestamps, quiet guard and deadlines are unchanged.
         panel.smokeSetPolledPointer(endpoint)
         let began = ProcessInfo.processInfo.systemUptime
+        struct QueuedEvent {
+            let event: NSEvent
+            let number: Int
+            let requested: TimeInterval
+            let constructed: TimeInterval
+            let local: CGPoint
+            let screen: CGPoint
+        }
+        var queuedEvents: [QueuedEvent] = []
         var constructed: [[String: Any]] = []
         var observations: [[String: Any]] = []
         var recoveryStage = "initial-crossing"
@@ -315,8 +324,18 @@ final class MusicRenderCacheChecks {
                 }
                 let receipts = panel.smokePointerIngress.filter { $0.timestamp >= began }
                 let entries = panel.smokePointerEntries.filter { (28_000...28_008).contains($0.eventNumber) }
+                let stationaryEntries = entries.filter { $0.monitor == "local" && $0.eventNumber >= 28_003 }
                 let evidence: [String: Any] = ["stage": recoveryStage, "sourceReadiness": sourceReadiness,
                     "constructed": constructed, "snapshots": observations,
+                    "queued": queuedEvents.map { e -> [String: Any] in
+                        ["eventNumber": e.number, "requestedTimestamp": e.requested,
+                         "constructedTimestamp": e.constructed, "point": point(e.screen), "localPoint": point(e.local)]
+                    },
+                    "stationaryIntervals": zip(stationaryEntries, stationaryEntries.dropFirst()).map { a, b -> [String: Any] in
+                        ["fromEvent": a.eventNumber, "toEvent": b.eventNumber,
+                         "sampleGap": b.timestamp - a.timestamp, "samePoint": a.screenPoint == b.screenPoint,
+                         "exceedsQuietGuard": b.timestamp - a.timestamp > 0.25]
+                    },
                     "finalSnapshot": snapshot("failure"), "initialCrossingOracle": oracleRows,
                     "initialCrossingOracleCompletedRight": completedRight,
                     "oracleUsesDeliveredEventsOnly": true, "oracleDoesNotMutateProduction": true,
@@ -340,8 +359,9 @@ final class MusicRenderCacheChecks {
                 } else { print("MUSIC_RENDER_CACHE_RECOVERY_DIAGNOSTIC_FAILED: bounded-json-encoding") }
             }
         }
-        func post(_ p: CGPoint) async throws -> IslandPointerIngressReceipt {
-            let number = 28_000 + constructed.count, requested = ProcessInfo.processInfo.systemUptime
+        func enqueue(_ p: CGPoint) throws -> QueuedEvent {
+            try require(queuedEvents.count < 9, "bounded-local-event-queue")
+            let number = 28_000 + queuedEvents.count, requested = ProcessInfo.processInfo.systemUptime
             let location = source.convertPoint(fromScreen: p)
             guard let event = NSEvent.mouseEvent(with: .mouseMoved, location: location,
                 modifierFlags: [], timestamp: requested, windowNumber: source.windowNumber,
@@ -351,72 +371,148 @@ final class MusicRenderCacheChecks {
             let timestamp = event.timestamp
             try require(event.window === source && event.eventNumber == number
                 && event.locationInWindow == location && timestamp.isFinite
-                && abs(timestamp - requested) < 1e-9, "constructed-event-identity")
-            // The native queue quantizes timestamps below one nanosecond (also
-            // measured by the independent pointer-ingress gate). Resolve the
-            // unique delivered event first, then bind acceptance exactly to its
-            // delivered timestamp. Construction-time bit equality loses a real
-            // accepted event even though all identity bounds are satisfied.
-            func localEntry() -> IslandPointerEntryReceipt? {
-                let entries = panel.smokePointerEntries.filter { $0.monitor == "local" && $0.eventNumber == number }
-                guard entries.count == 1, let entry = entries.first,
-                      entry.eventType == NSEvent.EventType.mouseMoved.rawValue,
-                      entry.windowNumber == source.windowNumber, entry.localPoint == location, entry.screenPoint == p,
-                      entry.timestamp.isFinite, abs(entry.timestamp - requested) < 1e-9,
-                      abs(entry.timestamp - timestamp) < 1e-9 else { return nil }
-                return entry
-            }
-            func acceptedReceipt() -> IslandPointerIngressReceipt? {
-                guard let entry = localEntry() else { return nil }
-                return panel.smokePointerIngress.first {
-                    $0.kind == "event" && $0.timestamp == entry.timestamp && $0.point == entry.screenPoint
-                }
-            }
+                && abs(timestamp - requested) < 1e-9
+                && requested > (queuedEvents.last?.requested ?? -.infinity)
+                && timestamp > (queuedEvents.last?.constructed ?? -.infinity), "constructed-event-identity")
+            let queued = QueuedEvent(event: event, number: number, requested: requested,
+                constructed: timestamp, local: location, screen: p)
+            queuedEvents.append(queued)
             NSApp.postEvent(event, atStart: false)
-            do {
-                try await until("accepted-local-event", timeout: 1) { acceptedReceipt() != nil }
-            } catch {
-                // Failure-only, bounded diagnostics distinguish missing delivery,
-                // native identity drift, and production rejection on the next run.
-                let entries = panel.smokePointerEntries.filter { $0.eventNumber == number }.prefix(8)
-                let evidence: [String: Any] = ["eventNumber": number, "windowNumber": source.windowNumber,
-                    "requestedTimestamp": requested, "constructedTimestamp": timestamp,
-                    "expectedPoint": point(p), "expectedLocalPoint": point(location),
-                    "sourceFrame": rect(source.frame), "sourceBackingScale": Double(source.backingScaleFactor),
-                    "constructedQuartzPoint": event.cgEvent.map { point($0.location) as Any } ?? NSNull(),
-                    "monitorEntries": entries.map { e -> [String: Any] in
-                        ["monitor": e.monitor, "eventType": e.eventType, "windowNumber": e.windowNumber,
-                         "timestamp": e.timestamp, "deltaNanoseconds": (e.timestamp - timestamp) * 1e9,
-                         "screenPoint": point(e.screenPoint), "localPoint": point(e.localPoint),
-                         "stopped": e.stopped, "placementValid": e.placementValid]
-                    },
-                    "recentReceipts": panel.smokePointerIngress.suffix(8).map { r -> [String: Any] in
-                        ["kind": r.kind, "timestamp": r.timestamp, "point": point(r.point)]
-                    }]
-                if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
-                   let json = String(data: data, encoding: .utf8) {
-                    print("MUSIC_RENDER_CACHE_INGRESS_DIAGNOSTIC_JSON: " + json)
+            return queued
+        }
+        // Resolve the unique delivered identity first, allowing only AppKit's
+        // measured sub-nanosecond timestamp quantization, then bind production
+        // acceptance exactly to that delivered timestamp and screen point.
+        func localEntry(_ queued: QueuedEvent) -> IslandPointerEntryReceipt? {
+            let entries = panel.smokePointerEntries.filter { $0.monitor == "local" && $0.eventNumber == queued.number }
+            guard entries.count == 1, let entry = entries.first,
+                  entry.eventType == NSEvent.EventType.mouseMoved.rawValue,
+                  entry.windowNumber == source.windowNumber, entry.localPoint == queued.local, entry.screenPoint == queued.screen,
+                  entry.timestamp.isFinite, abs(entry.timestamp - queued.requested) < 1e-9,
+                  abs(entry.timestamp - queued.constructed) < 1e-9,
+                  entry.delivered >= queued.requested, entry.delivered - queued.requested <= 1 else { return nil }
+            return entry
+        }
+        func acceptedReceipt(_ queued: QueuedEvent) -> IslandPointerIngressReceipt? {
+            guard let entry = localEntry(queued) else { return nil }
+            return panel.smokePointerIngress.first {
+                $0.kind == "event" && $0.timestamp == entry.timestamp && $0.point == entry.screenPoint
+            }
+        }
+        func awaitQueued(_ batch: [QueuedEvent]) async throws -> [IslandPointerIngressReceipt] {
+            guard let first = batch.first else { throw Failure(label: "empty-local-event-batch") }
+            func received() -> Bool {
+                batch.allSatisfy {
+                    guard let entry = localEntry($0) else { return false }
+                    return entry.delivered <= first.requested + 1 && acceptedReceipt($0) != nil
                 }
-                throw error
             }
-            guard let entry = localEntry(), let receipt = acceptedReceipt() else {
-                throw Failure(label: "unique-local-event-receipt")
+            var deliveryError: Error?
+            do {
+                if !received() {
+                    let remaining = max(0, first.requested + 1 - ProcessInfo.processInfo.systemUptime)
+                    try await until("accepted-local-event", timeout: remaining) { received() }
+                }
+            } catch {
+                // A late task wake may inspect already timely native receipts.
+                // Never renew the original delivery deadline or forgive retirement.
+                if finished || Task.isCancelled || !received() { deliveryError = error }
             }
-            constructed.append(["eventNumber": number, "eventType": entry.eventType, "windowNumber": entry.windowNumber,
-                "requestedTimestamp": requested, "constructedTimestamp": timestamp, "deliveredTimestamp": entry.timestamp,
-                "deliveredAt": entry.delivered, "screenPoint": point(p), "localPoint": point(location),
-                "owner": String(describing: receipt.owner), "target": receipt.target])
-            observations.append(snapshot("after-accepted-event", eventNumber: number))
+            if let deliveryError {
+                for queued in batch.prefix(3) {
+                    // Failure-only diagnostics distinguish missing delivery,
+                    // native identity drift and production rejection.
+                    let entries = panel.smokePointerEntries.filter { $0.eventNumber == queued.number }.prefix(8)
+                    let evidence: [String: Any] = ["eventNumber": queued.number, "windowNumber": source.windowNumber,
+                        "requestedTimestamp": queued.requested, "constructedTimestamp": queued.constructed,
+                        "expectedPoint": point(queued.screen), "expectedLocalPoint": point(queued.local),
+                        "sourceFrame": rect(source.frame), "sourceBackingScale": Double(source.backingScaleFactor),
+                        "constructedQuartzPoint": queued.event.cgEvent.map { point($0.location) as Any } ?? NSNull(),
+                        "monitorEntries": entries.map { e -> [String: Any] in
+                            ["monitor": e.monitor, "eventType": e.eventType, "windowNumber": e.windowNumber,
+                             "timestamp": e.timestamp, "deltaNanoseconds": (e.timestamp - queued.constructed) * 1e9,
+                             "deliveredAt": e.delivered, "deliverySeconds": e.delivered - queued.requested,
+                             "screenPoint": point(e.screenPoint), "localPoint": point(e.localPoint),
+                             "stopped": e.stopped, "placementValid": e.placementValid]
+                        },
+                        "recentReceipts": panel.smokePointerIngress.suffix(8).map { r -> [String: Any] in
+                            ["kind": r.kind, "timestamp": r.timestamp, "point": point(r.point)]
+                        }]
+                    if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+                       data.count <= 16_384, let json = String(data: data, encoding: .utf8) {
+                        print("MUSIC_RENDER_CACHE_INGRESS_DIAGNOSTIC_JSON: " + json)
+                    }
+                }
+                throw deliveryError
+            }
+            var receipts: [IslandPointerIngressReceipt] = []
+            for queued in batch {
+                guard !finished, !Task.isCancelled, queued.number == 28_000 + constructed.count,
+                      let entry = localEntry(queued), let receipt = acceptedReceipt(queued) else {
+                    throw Failure(label: "unique-local-event-receipt")
+                }
+                constructed.append(["eventNumber": queued.number, "eventType": entry.eventType, "windowNumber": entry.windowNumber,
+                    "requestedTimestamp": queued.requested, "constructedTimestamp": queued.constructed, "deliveredTimestamp": entry.timestamp,
+                    "deliveredAt": entry.delivered, "screenPoint": point(queued.screen), "localPoint": point(queued.local),
+                    "owner": String(describing: receipt.owner), "target": receipt.target])
+                receipts.append(receipt)
+            }
+            // This is current collection-time state, not a historical per-event
+            // snapshot. Per-event ownership is retained in production receipts.
+            observations.append(snapshot(batch.count > 1 ? "after-burst-receipt-collection" : "after-accepted-event",
+                eventNumber: batch.last?.number))
+            return receipts
+        }
+        func post(_ p: CGPoint) async throws -> IslandPointerIngressReceipt {
+            let queued = try enqueue(p)
+            let receipts = try await awaitQueued([queued])
+            guard let receipt = receipts.first else { throw Failure(label: "missing-local-event-receipt") }
             return receipt
         }
-        var failed: IslandPointerIngressReceipt?
-        for p in path {
-            failed = try await post(p)
-            if p != endpoint { try await Task.sleep(nanoseconds: 40_000_000) }
-        }
-        guard let failed, let failedEntry = panel.smokePointerEntries.last(where: { $0.eventNumber == 28_002 }) else {
+        // Sample the synthetic moving path independently of UI-task scheduling.
+        // No sleep, snapshot, await or success logging separates these real-time
+        // AppKit posts. Stationary recovery below retains its actual dwell.
+        let generationBegan = ProcessInfo.processInfo.systemUptime
+        let initialQueue = try path.map { try enqueue($0) }
+        try require(ProcessInfo.processInfo.systemUptime - generationBegan <= 0.25
+            && zip(initialQueue, initialQueue.dropFirst()).allSatisfy { a, b in
+                b.constructed > a.constructed && b.constructed - a.constructed <= 0.25
+            }, "initial-moving-samples-within-continuity-limit")
+        let deliveredInitial = try await awaitQueued(initialQueue)
+        guard let failed = deliveredInitial.last,
+              let failedEntry = panel.smokePointerEntries.last(where: { $0.eventNumber == 28_002 }) else {
             throw Failure(label: "failed-open-event")
         }
+        let initialEntries = panel.smokePointerEntries.filter {
+            $0.monitor == "local" && (28_000...28_002).contains($0.eventNumber)
+        }
+        guard let firstDelivered = deliveredInitial.first,
+              let firstReceiptIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "event" && $0.timestamp == firstDelivered.timestamp && $0.point == firstDelivered.point
+              }), let finalReceiptIndex = panel.smokePointerIngress.firstIndex(where: {
+                  $0.kind == "event" && $0.timestamp == failed.timestamp && $0.point == failed.point
+              }), firstReceiptIndex <= finalReceiptIndex else { throw Failure(label: "initial-native-receipt-boundaries") }
+        let initialReceipts = panel.smokePointerIngress[firstReceiptIndex...finalReceiptIndex]
+        try require(initialEntries.map { $0.eventNumber } == initialQueue.map { $0.number }
+            && zip(initialEntries, initialEntries.dropFirst()).allSatisfy { a, b in
+                b.timestamp > a.timestamp && b.timestamp - a.timestamp <= 0.25 && b.delivered >= a.delivered
+            }
+            && initialReceipts.count == initialQueue.count
+            && zip(initialReceipts, initialEntries).allSatisfy { receipt, entry in
+                receipt.kind == "event" && receipt.timestamp == entry.timestamp && receipt.point == entry.screenPoint
+                    && receipt.owner == .idle && receipt.target == 0
+            }, "initial-moving-events-reach-production-in-order-without-poll")
+        var initialOracle = IslandCrossing()
+        for (index, entry) in initialEntries.enumerated() {
+            let action = initialOracle.update(point: entry.screenPoint, now: entry.timestamp,
+                corridor: corridor, enabled: true, buttonDown: !entry.buttons.isEmpty)
+            try require(index == initialEntries.count - 1 ? action == .right : action == nil,
+                        "initial-delivered-crossing-completes-right")
+        }
+        let rejectedInput = panel.smokeMusicInputState(at: endpoint)
+        try require(rejectedInput?["needsCorridorExit"] as? Bool == true
+            && rejectedInput?["gestureSuppressed"] as? Bool == false,
+            "actual-rejected-open-releases-hover-before-source-switch")
         try require(controller.isFreshPlaying && !controller.isPlayingForPresentation && !controller.lyricsModeEnabled
             && failed.owner == .idle && failed.target == 0 && !panel.isInteracting,
             "unavailable-lyrics-open-does-not-claim")
