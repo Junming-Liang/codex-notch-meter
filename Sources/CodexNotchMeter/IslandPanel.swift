@@ -259,7 +259,7 @@ final class IslandPanelController: NSObject {
     private var lastEventDelivery: TimeInterval = -.infinity
     private var lastAppliedGestureTime: TimeInterval = -.infinity
     private var fallbackCrossing = IslandCrossing()
-    private var musicHoverAnchor: CGPoint?
+    private var musicHoverReservation = IslandMusicHoverReservation()
     private var eventButtons: Set<Int> = []
     private var buttonStateTime: TimeInterval = -.infinity
     private(set) var smokeHistoryOverflow = false
@@ -454,13 +454,14 @@ final class IslandPanelController: NSObject {
     private func resetCrossings() { crossing.reset(); fallbackCrossing.reset() }
     private func releaseMusicGestureToHover() {
         gestureHoverGate.reset()
+        musicHoverReservation.reset()
         // The event and fallback histories intentionally reset each other.
         // Keep this cancellation outside either recognizer so switching sources
         // cannot reserve the same stationary endpoint again after a failed open.
         musicGestureNeedsCorridorExit = true
         resetCrossings()
         if !hover.isExpanded { hover.reset() }
-        musicHoverAnchor = nil
+        musicHoverReservation.resetDwell()
     }
     private func recordPointer(_ point: CGPoint, timestamp: TimeInterval, kind: String,
                                hoverDecision: IslandPointerHoverDecision? = nil) {
@@ -491,7 +492,7 @@ final class IslandPanelController: NSObject {
             // queued traversal into many copies of the cursor's final position.
             let isMove = event.type == .mouseMoved
             // Even a duplicate-timestamp button is a trajectory boundary.
-            if !isMove { resetCrossings(); if !hover.isExpanded { hover.reset() }; musicHoverAnchor = nil }
+            if !isMove { musicHoverReservation.reset(); resetCrossings(); if !hover.isExpanded { hover.reset() }; musicHoverReservation.resetDwell() }
             guard event.timestamp.isFinite, event.timestamp >= lastEventTime else { return }
             if !isMove, event.timestamp >= buttonStateTime {
                 buttonStateTime = event.timestamp
@@ -510,7 +511,7 @@ final class IslandPanelController: NSObject {
             }
             fallbackCrossing.reset()
             guard event.type == .mouseMoved else {
-                resetCrossings(); musicHoverAnchor = nil
+                resetCrossings(); musicHoverReservation.resetDwell()
                 lastAppliedGestureTime = max(lastAppliedGestureTime, event.timestamp)
                 recordPointer(point, timestamp: event.timestamp, kind: "button")
                 return
@@ -542,7 +543,7 @@ final class IslandPanelController: NSObject {
         // A passive pointer cannot consume the user's configured readable dwell.
         // Keep hover history empty so expiry cannot inherit an already-armed hover.
         if noticeTargetActive {
-            hover.reset(); resetCrossings(); gestureHoverGate.claim()
+            hover.reset(); resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.claim()
             panel.ignoresMouseEvents = true
             return nil
         }
@@ -555,10 +556,18 @@ final class IslandPanelController: NSObject {
         }
         let gestureEnabled = model.music.isFreshPlaying && passiveMusicAllowed
             && !musicGestureNeedsCorridorExit && !noticeTargetActive
+        // Ownership uses one delivery-clock lease across both input histories.
+        // Native event timestamps remain untouched for gesture recognition.
+        let reservationNow = source == .synthetic ? now : ProcessInfo.processInfo.systemUptime
+        let insideCorridor = point.x >= corridor.minX && point.x <= corridor.maxX
+            && point.y >= corridor.minY && point.y <= corridor.maxY
+        let buttonDown = buttonDownOverride ?? (NSEvent.pressedMouseButtons != 0)
         var recognizer = source == .poll ? fallbackCrossing : crossing
         let action = recognizer.update(point: point, now: now, corridor: corridor,
-            enabled: gestureEnabled, buttonDown: buttonDownOverride ?? (NSEvent.pressedMouseButtons != 0))
+            enabled: gestureEnabled, buttonDown: buttonDown)
         if source == .poll { fallbackCrossing = recognizer } else { crossing = recognizer }
+        let reservesHover = musicHoverReservation.reservesPointer(recognizer.reservesPointer,
+            insideCorridor: insideCorridor, enabled: gestureEnabled && !buttonDown, now: reservationNow)
         if let action, source == .synthetic || now > lastAppliedGestureTime {
             if source != .synthetic { lastAppliedGestureTime = now }
             let hadHover = hover.isExpanded
@@ -577,22 +586,20 @@ final class IslandPanelController: NSObject {
         }
         // A successful crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
-        if recognizer.reservesPointer { updateClickRouting(point); return nil }
+        if reservesHover { updateClickRouting(point); return nil }
         if gestureHoverGate.suppresses(insideStableEnvelope: geometry.canonicalHoverContains(point, progress: 1)) {
             updateClickRouting(point); return nil
         }
         // A moving pointer near the music shell is approaching a gesture, not
-        // asking to open full details. Only a genuinely stationary dwell may do so.
+        // asking to open full details. Allow small hand jitter around a fixed dwell anchor.
         if model.music.isFreshPlaying, !hover.isExpanded {
-            if let anchor = musicHoverAnchor,
-               hypot(point.x - anchor.x, point.y - anchor.y) > 0.25 {
-                hover.reset(); musicHoverAnchor = point
-            } else if musicHoverAnchor == nil { musicHoverAnchor = point }
-        } else { musicHoverAnchor = nil }
+            if musicHoverReservation.shouldResetDwell(at: point) { hover.reset() }
+        } else { musicHoverReservation.resetDwell() }
         let before = hover.isExpanded
         // Preserve argument evaluation order: hit testing precedes the one clock
         // read used by the actual hover decision.
         let inside = currentHoverContains(point)
+        if !inside { musicHoverReservation.resetDwell() }
         let hoverNow = source == .synthetic ? now : ProcessInfo.processInfo.systemUptime
         hover.update(inside: inside, now: hoverNow,
             resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
@@ -820,7 +827,7 @@ final class IslandPanelController: NSObject {
         guard !stopped else { return }
         let previousOwner = expansionOwner
         if observedPlaybackRevision != model.music.playbackRevision || !model.music.isFreshPlaying {
-            resetCrossings(); observedPlaybackRevision = model.music.playbackRevision
+            resetCrossings(); musicHoverReservation.reset(); observedPlaybackRevision = model.music.playbackRevision
         }
         musicEligible = model.music.isPlayingForPresentation && model.music.lyricsModeEnabled
         if gestureHoverGate.releaseIfLyricsUnavailable(lyricsAvailable: musicEligible) {
@@ -847,14 +854,14 @@ final class IslandPanelController: NSObject {
     func setMusicPresentationAllowed(_ allowed: Bool) {
         guard !stopped, passiveMusicAllowed != allowed else { return }
         let previousOwner = expansionOwner
-        passiveMusicAllowed = allowed; resetCrossings(); gestureHoverGate.reset()
-        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
+        passiveMusicAllowed = allowed; resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()
         updateMusicPresentation(forceRetarget: expansionOwner != previousOwner)
     }
     @discardableResult func showRefreshNotice(_ notice: RefreshNotice) -> Bool {
         guard !stopped, notice.isEligible, model.refreshNoticesEnabled, !hover.isExpanded, placementIsValid else { return false }
         if presentation.notice?.id == notice.id && noticeTargetActive { return true }
-        cancelNoticeTimers(); resetCrossings(); musicGestureNeedsCorridorExit = false
+        cancelNoticeTimers(); resetCrossings(); musicHoverReservation.reset(); musicGestureNeedsCorridorExit = false
         // Every new notice, including replacement, acknowledges its own paint revision.
         noticePaintRequiredAfter = CACurrentMediaTime()
         presentation.notice = notice; presentation.showingDetails = false; noticeTargetActive = true
@@ -931,15 +938,15 @@ final class IslandPanelController: NSObject {
     func collapse() {
         guard !stopped else { return }
         cancelNoticeTimers(); noticeTargetActive = false
-        hover.reset(); resetCrossings(); gestureHoverGate.reset()
-        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
+        hover.reset(); resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()
         panel.ignoresMouseEvents = true; startMotion()
     }
     func stop() {
         guard !stopped else { return }
         stopped = true; ordinaryWidthCycle = false; widthBridge = nil
-        resetCrossings(); gestureHoverGate.reset()
-        musicGestureNeedsCorridorExit = false; musicHoverAnchor = nil
+        resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
+        musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()
         smokePolledPointer = nil
         if let localPointerMonitor { NSEvent.removeMonitor(localPointerMonitor); self.localPointerMonitor = nil }
         if let globalPointerMonitor { NSEvent.removeMonitor(globalPointerMonitor); self.globalPointerMonitor = nil }
@@ -1020,7 +1027,7 @@ final class IslandPanelController: NSObject {
         guard model.demo, CommandLine.arguments.contains("--music-test"),
               CommandLine.arguments.contains("--music-cache-test") else { return nil }
         func finite(_ value: TimeInterval) -> Any { value.isFinite ? value as Any : NSNull() }
-        let anchor: Any = musicHoverAnchor.map { [Double($0.x), Double($0.y)] as Any } ?? NSNull()
+        let anchor: Any = musicHoverReservation.stationaryAnchor.map { [Double($0.x), Double($0.y)] as Any } ?? NSNull()
         return ["gestureSuppressed": gestureHoverGate.isSuppressing,
             "needsCorridorExit": musicGestureNeedsCorridorExit,
             "eventTracking": crossing.isTracking, "eventReserves": crossing.reservesPointer,

@@ -33,6 +33,17 @@ final class MusicLyricsController: ObservableObject {
     private var previewHeightCache = MusicPreviewLayout.Cache()
     var playbackRevision: UUID { trackRevision }
 
+    /// Settings-only summary of the latest bounded provider status. No song
+    /// metadata, event payloads, or persistent diagnostic history is exposed.
+    var providerDiagnosticText: String? {
+        guard enabled, let provider = reader as? MusicAppReader else { return nil }
+        let read = provider.readDiagnostic, art = provider.artworkDiagnostic
+        let seconds = String(format: "%.2f", read.elapsed)
+        let failure = read.failure.map { String(describing: $0) } ?? "none"
+        let artworkFailure = art.failure.map { String(describing: $0) } ?? "none"
+        return "Music: \(read.phase) · \(seconds)s · \(failure)\nArtwork: \(art.phase) · \(artworkFailure)"
+    }
+
     func previewContentHeight(width: CGFloat) -> CGFloat {
         previewHeightCache.contentHeight(trackRevision: trackRevision, line: line, nextLine: nextLine,
             width: width, countSyntheticMeasurement: synthetic)
@@ -245,6 +256,9 @@ final class MusicLyricsController: ObservableObject {
     }
 
     private func clearPlayback(retainingSuccessfulLyrics: Bool = false) {
+        // Retire optional provider work together with presentation eligibility.
+        // This never extends the last mandatory playback observation.
+        reader.invalidate()
         if retainingSuccessfulLyrics {
             if let track = current?.track {
                 if case .unavailable = document.content {

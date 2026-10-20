@@ -13,19 +13,31 @@ import NotchCore
 /// which to launch Music. We revalidate the process identity before every event
 /// and after the read; no retry redirects an event to a newly launched process.
 final class MusicAppReader: MusicSnapshotProvider, @unchecked Sendable {
-    // Shared slot prevents accidental additional reader instances from creating
-    // simultaneous IPC or piling up behind a stalled system authorization dialog.
+    // Separate shared slots bound required playback and optional artwork. A
+    // stalled artwork decoder cannot occupy the required reader worker.
+    private static let diagnostics = MusicReadDiagnosticStore()
+    private static let artworkCache = MusicArtworkCache()
+
     private static let reader = BoundedMusicSnapshotProvider { request in
         autoreleasepool {
-            do { return try MusicAppleEvents.read(request) }
+            diagnostics.begin()
+            do { return try MusicAppleEvents.read(request, artworkCache: artworkCache, diagnostic: diagnostics) }
             catch let failure as MusicReadFailure { return .unavailable(failure) }
             catch { return .unavailable(.invalidResponse) }
         }
     }
 
     func read(allowPermissionPrompt: Bool) async -> MusicReadResult {
-        await Self.reader.read(allowPermissionPrompt: allowPermissionPrompt)
+        await withTaskCancellationHandler {
+            let result = await Self.reader.read(allowPermissionPrompt: allowPermissionPrompt)
+            if result != .unavailable(.busy) { Self.diagnostics.finish(result) }
+            if case .unavailable = result { Self.artworkCache.invalidate() }
+            return result
+        } onCancel: { Self.artworkCache.invalidate() }
     }
+    func invalidate() { Self.artworkCache.invalidate() }
+    var readDiagnostic: MusicReadDiagnostic { Self.diagnostics.snapshot }
+    var artworkDiagnostic: MusicArtworkDiagnostic { Self.artworkCache.diagnostic }
 }
 
 private enum MusicAppleEvents {
@@ -35,10 +47,8 @@ private enum MusicAppleEvents {
     private static let maximumReplyBytes = 65_536
     private static let maximumDescriptorBytes = 16_384
     private static let maximumArtworkReplyBytes = MusicArtworkDecodingPolicy.maximumEncodedBytes + 65_536
-    // Optional art gets a short IPC budget, leaving the unchanged outer read
-    // deadline and the second identity/state read in charge of correctness.
+    // Optional IPC has its own short budget on a separate bounded worker.
     private static let artworkWaitLimit: TimeInterval = 0.15
-    private static let artworkReadReserve: TimeInterval = 1
 
     // Public Music scripting dictionary properties; none is a write/control
     // command. Mac CI compiles this adapter and inspects the public dictionary.
@@ -98,7 +108,9 @@ private enum MusicAppleEvents {
             && application.executableURL?.standardizedFileURL.path == executablePath
     }
 
-    static func read(_ request: MusicReadRequest) throws -> MusicReadResult {
+    static func read(_ request: MusicReadRequest, artworkCache: MusicArtworkCache,
+                     diagnostic: MusicReadDiagnosticStore) throws -> MusicReadResult {
+        let session = artworkCache.sessionToken
         try request.checkCancellation()
         let target = try Target()
         try target.validate()
@@ -109,61 +121,66 @@ private enum MusicAppleEvents {
         // false must never be upgraded to true by a polling/recovery path.
         // This OS call has no cancellation primitive; the outer bounded gate
         // releases the caller while retaining its sole occupied worker slot.
+        diagnostic.mark(.permission)
         let permission = AEDeterminePermissionToAutomateTarget(address, AEEventClass(kAECoreSuite),
                                                               AEEventID(kAEGetData), request.allowPermissionPrompt)
         guard permission == noErr else { throw MusicReadFailure.appleEventStatus(permission) }
         try request.checkCancellation()
 
-        let beforeState = try state(target: target, request: request)
-        let before = try track(target: target, request: request)
-        // Earliest observation time is conservative: IPC latency never makes an
-        // old position look newly sampled when the response is finally received.
-        let observedAt = ProcessInfo.processInfo.systemUptime
-        let position = try number(get(Property.playerPosition, target: target, request: request))
-        let artwork: MusicArtwork?
-        if beforeState == .playing { artwork = try optionalArtwork(target: target, request: request) }
-        else { artwork = nil }
-        let after = try track(target: target, request: request)
-        let afterState = try state(target: target, request: request)
-        try request.checkCancellation()
-        try target.validate()
-        return MusicPlaybackValidation.result(before: before, after: after,
-                                               stateBefore: beforeState, stateAfter: afterState,
-                                               position: position, observedAt: observedAt, artwork: artwork)
+        let result = try transaction(target: target, request: request).playback(request: request, diagnostic: diagnostic)
+        guard case .snapshot(let snapshot) = result, snapshot.state == .playing else {
+            artworkCache.invalidate()
+            return result
+        }
+        let key = MusicArtworkKey(pid: target.pid, launchDate: target.launchDate, track: snapshot.track)
+        let artwork = artworkCache.cachedArtwork(for: key, session: session) { optionalRequest in
+            try autoreleasepool { try readArtwork(for: key, request: optionalRequest) }
+        }
+        guard let enriched = MusicPlaybackSnapshot(track: snapshot.track, state: snapshot.state,
+                                                   position: snapshot.position, observedAt: snapshot.observedAt,
+                                                   artwork: artwork) else { return result }
+        return .snapshot(enriched)
     }
 
-    private static func optionalArtwork(target: Target, request: MusicReadRequest) throws -> MusicArtwork? {
+    private static func readArtwork(for key: MusicArtworkKey, request: MusicReadRequest) throws -> MusicArtwork? {
         try request.checkCancellation()
-        guard request.remainingTime >= artworkReadReserve + artworkWaitLimit else { return nil }
-        do {
-            // Read only raw data of artwork 1 of current track. No enumeration,
-            // library lookup, file URL, image download, or alternate source.
-            let container = try firstArtwork(of: property(Property.currentTrack))
-            let value = try get(Property.artworkRawData, container: container,
-                                target: target, request: request,
-                                replyLimit: maximumArtworkReplyBytes, waitLimit: artworkWaitLimit)
-            guard !isMissing(value),
-                  MusicArtworkDecodingPolicy.acceptsEncodedByteCount(descriptorSize(value)) else { return nil }
-            // Raw data is opaque. Do not coerce a URL/file/other descriptor or
-            // ask AppKit to interpret it: ImageIO accepts only JPEG/PNG bytes.
-            let allowedTypes: [DescType] = [DescType(typeData), code("JPEG"), code("PNGf")]
-            guard allowedTypes.contains(value.descriptorType) else { return nil }
-            let data = value.data
-            try request.checkCancellation()
-            let artwork = MusicArtworkDecoder.decode(data)
-            try request.checkCancellation()
-            return artwork
-        } catch let failure as MusicReadFailure {
-            switch failure {
-            case .cancelled, .targetMismatch, .notRunning, .permissionDenied, .authorizationRequired:
-                throw failure
-            default:
-                // Missing, malformed, oversized or locally timed-out artwork
-                // does not invalidate a usable playback/lyrics observation.
-                try request.checkCancellation()
-                return nil
-            }
+        let target = try Target()
+        guard target.pid == key.pid, target.launchDate == key.launchDate else {
+            throw MusicReadFailure.targetMismatch
         }
+        try target.validate()
+        guard let address = target.address.aeDesc else { throw MusicReadFailure.invalidResponse }
+        let permission = AEDeterminePermissionToAutomateTarget(address, AEEventClass(kAECoreSuite),
+                                                              AEEventID(kAEGetData), false)
+        guard permission == noErr else { throw MusicReadFailure.appleEventStatus(permission) }
+        try request.checkCancellation()
+        return try transaction(target: target, request: request).artwork(
+            for: key.track, request: request,
+            read: { try optionalArtworkData(target: target, request: request) },
+            decode: MusicArtworkDecoder.decode)
+    }
+
+    private static func transaction(target: Target, request: MusicReadRequest) -> MusicReadTransaction {
+        MusicReadTransaction(
+            state: { try state(target: target, request: request) },
+            track: { try track(target: target, request: request) },
+            position: { try number(get(Property.playerPosition, target: target, request: request)) },
+            validate: { try target.validate() })
+    }
+
+    private static func optionalArtworkData(target: Target, request: MusicReadRequest) throws -> Data? {
+        try request.checkCancellation()
+        // Read only raw data of artwork 1 of current track. No enumeration,
+        // library lookup, file URL, image download, or alternate source.
+        let container = try firstArtwork(of: property(Property.currentTrack))
+        let value = try get(Property.artworkRawData, container: container,
+                            target: target, request: request,
+                            replyLimit: maximumArtworkReplyBytes, waitLimit: artworkWaitLimit)
+        guard !isMissing(value),
+              MusicArtworkDecodingPolicy.acceptsEncodedByteCount(descriptorSize(value)) else { return nil }
+        let allowedTypes: [DescType] = [DescType(typeData), code("JPEG"), code("PNGf")]
+        guard allowedTypes.contains(value.descriptorType) else { return nil }
+        return value.data
     }
 
     private static func track(target: Target, request: MusicReadRequest) throws -> MusicTrackFields {

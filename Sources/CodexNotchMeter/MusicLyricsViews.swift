@@ -158,6 +158,10 @@ struct MusicLyricsSettings: View {
                 if music.enabled {
                     Text(music.statusText).font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let diagnostic = music.providerDiagnosticText {
+                        Text(diagnostic).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if music.needsAuthorization {
                         Button("请求 Music 授权…") { music.requestAuthorization() }
                             .controlSize(.small).disabled(music.synthetic)
