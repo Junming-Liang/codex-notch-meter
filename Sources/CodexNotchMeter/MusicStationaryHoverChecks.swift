@@ -289,6 +289,33 @@ final class MusicStationaryHoverChecks {
     }
     private func controls() async throws -> [String: Any] {
         let f = try await prepare(); defer { f.stop(); active = nil }
+        var completed = false
+        var phase = "import"
+        defer {
+            if !completed {
+                let probe = f.panel.motionProbe
+                var diagnostic: [String: Any] = ["name": "controls", "phase": phase,
+                    "freshPlaying": f.controller.isFreshPlaying,
+                    "playingForPresentation": f.controller.isPlayingForPresentation,
+                    "lyricsSelected": f.controller.lyricsModeEnabled,
+                    "hasLocalLyrics": f.controller.hasLocalLyrics,
+                    "owner": String(describing: f.panel.smokeExpansionOwner),
+                    "target": f.panel.smokeTargetProgress,
+                    "renderedProgress": probe.renderedProgress, "motionRunning": probe.running,
+                    "outsideInputState": f.panel.smokeMusicInputState(at: f.outside) ?? [:],
+                    "receipts": f.panel.smokePointerIngress.suffix(24).map { r -> [String: Any] in
+                        var row: [String: Any] = ["kind": r.kind, "timestamp": r.timestamp,
+                            "point": point(r.point), "owner": String(describing: r.owner), "target": r.target]
+                        if let h = r.hoverDecision { row["hover"] = ["timestamp": h.timestamp,
+                            "inside": h.inside, "expandedBefore": h.expandedBefore, "expandedAfter": h.expandedAfter] }
+                        return row
+                    }]
+                if let paint = f.panel.paintReceipt {
+                    diagnostic["paint"] = ["observedAt": paint.observed, "progress": paint.frame.progress]
+                }
+                emit("MUSIC_STATIONARY_HOVER_DIAGNOSTIC_JSON", diagnostic)
+            }
+        }
         guard let token = f.controller.importSelectionToken else { throw Failure(label: "controls-import-token") }
         f.controller.importLyrics(from: URL(fileURLWithPath: "/synthetic-stationary-hover.lrc"), for: token)
         try await until("controls-lyrics-ready") { f.controller.isPlayingForPresentation && f.controller.hasLocalLyrics }
@@ -309,15 +336,73 @@ final class MusicStationaryHoverChecks {
                 && b.delivered - a.delivered < 0.25 }, "controls-continuous-native-crossing")
             f.panel.smokeSetPolledPointer(path.last!)
         }
+        phase = "crossings"
         try await crossing(true)
         try await until("genuine-right-opens-lyrics") { f.controller.lyricsModeEnabled && f.panel.smokeExpansionOwner == .music }
         try await crossing(false)
         try await until("genuine-reverse-closes-lyrics") { !f.controller.lyricsModeEnabled && f.panel.smokeExpansionOwner == .idle }
         try await crossing(true)
         try require(f.controller.lyricsModeEnabled, "genuine-right-reopens-lyrics")
+        let endpoint = CGPoint(x: c.maxX - 20, y: y)
+        func recordControlState(_ name: String) {
+            emit("MUSIC_CONTROL_STATE_JSON", ["phase": name,
+                "freshPlaying": f.controller.isFreshPlaying,
+                "playingForPresentation": f.controller.isPlayingForPresentation,
+                "lyricsSelected": f.controller.lyricsModeEnabled,
+                "owner": String(describing: f.panel.smokeExpansionOwner),
+                "target": f.panel.smokeTargetProgress,
+                "motionRunning": f.panel.motionProbe.running,
+                "endpointInputState": f.panel.smokeMusicInputState(at: endpoint) ?? [:]])
+        }
+        // Preserve the original stationary endpoint scenario. Pause releases
+        // the lyric gesture gate, allowing ordinary details hover; resuming
+        // playback must not steal that manual owner (IslandExpansionOwner).
+        phase = "pause-at-edge"
+        recordControlState("before-pause-at-edge")
+        await f.reader.setPaused(true)
+        try await until("pause-at-edge-clears-lyrics-presentation") {
+            !f.controller.isFreshPlaying && !f.controller.isPlayingForPresentation
+        }
+        try require(f.controller.lyricsModeEnabled && f.controller.hasLocalLyrics,
+            "pause-at-edge-preserves-selection-and-document")
+        try await until("pause-at-edge-restores-ordinary-details") {
+            guard let paint = f.panel.paintReceipt else { return false }
+            return f.panel.smokeExpansionOwner == .details && f.panel.smokeTargetProgress == 1
+                && paint.frame.progress == 1 && !f.panel.motionProbe.running
+        }
+        recordControlState("paused-at-edge")
+        phase = "resume-under-details"
+        await f.reader.setPaused(false)
+        try await until("resume-under-details-restores-lyrics") {
+            f.controller.isFreshPlaying && f.controller.isPlayingForPresentation
+        }
+        try require(f.controller.lyricsModeEnabled, "resume-under-details-preserves-selection")
+        try await until("resume-preserves-manual-details-owner") {
+            guard let paint = f.panel.paintReceipt else { return false }
+            return f.panel.smokeExpansionOwner == .details && f.panel.smokeTargetProgress == 1
+                && paint.frame.progress == 1 && !f.panel.motionProbe.running
+        }
+        recordControlState("resumed-under-details")
+        // Independently test passive restoration with an explicit native exit.
+        // Details must yield to selected Music before the outside pause cycle.
+        phase = "exit-before-passive-pause"
+        f.panel.smokeSetPolledPointer(f.outside); _ = try await post(f.outside, f)
+        try await until("passive-music-owner-before-pause") {
+            f.panel.smokeExpansionOwner == .music
+                && f.panel.smokeMusicInputState(at: f.outside)?["hoverExpanded"] as? Bool == false
+        }
+        recordControlState("outside-before-passive-pause")
+        phase = "pause"
         await f.reader.setPaused(true)
         try await until("pause-clears-presentation") { !f.controller.isFreshPlaying && !f.controller.isPlayingForPresentation }
         try require(f.controller.lyricsModeEnabled && f.controller.hasLocalLyrics, "pause-preserves-selection-and-document")
+        try await until("pause-clears-native-music-owner") {
+            guard let paint = f.panel.paintReceipt else { return false }
+            return f.panel.smokeExpansionOwner == .idle && f.panel.smokeTargetProgress == 0
+                && paint.frame.progress == 0 && !f.panel.motionProbe.running
+        }
+        recordControlState("paused-outside")
+        phase = "resume"
         await f.reader.setPaused(false)
         try await until("resume-restores-lyrics") { f.controller.isFreshPlaying && f.controller.isPlayingForPresentation }
         try require(f.controller.lyricsModeEnabled, "resume-preserves-selection")
@@ -327,6 +412,8 @@ final class MusicStationaryHoverChecks {
                 && paint.frame.progress == f.panel.smokeTargetProgress
                 && !f.panel.motionProbe.running
         }
+        recordControlState("resumed-outside")
+        phase = "track-change"
         guard let next = MusicTrackIdentity(title: "Stationary Hover B", artist: "Fixture", album: "Native", duration: 120) else {
             throw Failure(label: "controls-next-track")
         }
@@ -342,6 +429,7 @@ final class MusicStationaryHoverChecks {
             return f.panel.smokeExpansionOwner == .details && f.panel.smokeProgress == 1
                 && paint.frame.progress == 1 && !f.controller.isPlayingForPresentation
         }
+        completed = true
         return ["name": "controls", "genuineRight": true, "genuineReverse": true,
             "pauseResume": true, "trackChange": true, "ordinaryRecovery": true, "nativeEvents": true]
     }
