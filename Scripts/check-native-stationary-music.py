@@ -134,16 +134,16 @@ def validate(log):
 
 def self_test():
     # Parser-only fabricated records. Never presented as native execution proof.
-    def edge(name):
+    def edge(name, cadence=.31, poll_delay=.27):
         center = [20 if name == "left" else 200, 2]
         events, receipts = [], []
         for i in range(16):
-            t = 10 + i * .31
+            t = 10 + i * cadence
             p = [center[0] + (-1 if i % 2 == 0 else 1), 2]
             e = dict(eventNumber=31001 + i, sourceAt=t, deliveredAt=t + .001, point=p, localPoint=p)
             if i:
                 previous = events[-1]
-                poll = dict(timestamp=previous["deliveredAt"] + .27, point=previous["point"],
+                poll = dict(timestamp=previous["deliveredAt"] + poll_delay, point=previous["point"],
                             owner="details" if i >= 5 else "idle", target=1 if i >= 5 else 0)
                 receipts.append(dict(kind="poll", **poll))
                 e.update(gap=e["deliveredAt"] - previous["deliveredAt"], polls=[poll])
@@ -165,13 +165,20 @@ def self_test():
     def text(p):
         return PREFIX + json.dumps(p) + "\n" + GATE + "\n" + SHUTDOWN + "\n"
     validate(text(payload))
+    # A native Timer may run after +0.30. Receipt-aware scheduling may wait
+    # for it, but only within the original measured 0.30...0.45 s bound.
+    delayed = copy.deepcopy(payload)
+    delayed["cases"][:2] = [edge("left", .40, .34), edge("right", .40, .34)]
+    validate(text(delayed))
     mutations = [lambda p: p.update(globalSystemDelivery=True), lambda p: p.update(elapsed=61),
                  lambda p: p["cases"][0]["events"][1].update(polls=[]),
                  lambda p: p["cases"][0].update(recoverySeconds=3),
                  lambda p: p["cases"][0]["events"][1].update(point=[100, 2]),
                  lambda p: p["cases"][1]["paint"].update(observedAt=0),
                  lambda p: p["cases"][2].update(genuineReverse=False),
-                 lambda p: p["cases"][0].update(playbackReads=1)]
+                 lambda p: p["cases"][0].update(playbackReads=1),
+                 lambda p: p["cases"].__setitem__(0, edge("left", .46, .34)),
+                 lambda p: p["cases"][0]["events"][1]["polls"][0].update(timestamp=10.20)]
     for mutate in mutations:
         damaged = copy.deepcopy(payload); mutate(damaged)
         try:
@@ -215,7 +222,7 @@ def self_test():
         except ValueError:
             continue
         raise AssertionError("invalid red evidence accepted")
-    print("MUSIC_STATIONARY_HOVER_PARSER_SELF_TEST_OK: assertions=20 nativeAppRun=false")
+    print("MUSIC_STATIONARY_HOVER_PARSER_SELF_TEST_OK: assertions=23 nativeAppRun=false")
 
 
 

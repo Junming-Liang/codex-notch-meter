@@ -39,8 +39,18 @@ INDICATOR_BOOLS = dict(synthetic=True, ownPresentationLayerPixels=True, scanout=
 INDICATOR_INTS = dict(schema=2, changedBars=3, barCount=3, iconWidth=20, iconHeight=20,
                       unchangedUpdates=100, unchangedLayouts=100)
 KEYS = set(BOOLS) | set(INTS) | {
-    "elapsed", "layout", "freshnessAge", "latestPosition", "clearBoundaries", "readerCalls", "eventRecovery", "indicator",
+    "elapsed", "layout", "freshnessAge", "latestPosition", "clearBoundaries", "readerCalls", "eventRecovery", "indicator", "frameRecovery",
 }
+
+
+FRAME_RECOVERY_BOOLS = dict(syntheticFault=True, fieldRootProven=False, redNoProgress=True,
+    greenNaturalPaint=True, productionVisibilityGuard=True, invalidTimestampsRejected=True, hoverRecovered=True, singleFallback=True, retiredCallbacksInert=True,
+    hiddenNoFallback=True, reducedMotionPreserved=True, stoppedNoWatchdog=True, visibilityResume=True, scanout=False)
+
+def valid_frame_recovery(value):
+    return (isinstance(value, dict) and set(value) == set(FRAME_RECOVERY_BOOLS) | {"fallbackElapsed"}
+        and all(type(value[k]) is bool and value[k] is v for k, v in FRAME_RECOVERY_BOOLS.items())
+        and finite(value["fallbackElapsed"]) and .3 <= value["fallbackElapsed"] < 2)
 
 
 def finite(value):
@@ -303,7 +313,7 @@ def valid_payload(value):
         return False
     if type(value["readerCalls"]) is not int or not 15 <= value["readerCalls"] <= 21:
         return False
-    if not valid_event_recovery(value["eventRecovery"]) or not valid_indicator(value["indicator"]):
+    if not valid_frame_recovery(value["frameRecovery"]) or not valid_event_recovery(value["eventRecovery"]) or not valid_indicator(value["indicator"]):
         return False
     rows = value["layout"]
     if not isinstance(rows, list) or len(rows) != len(STEPS):
@@ -366,6 +376,7 @@ def example():
         else:
             row["hoverDecision"] = dict(timestamp=row["timestamp"] + .0005, inside=True,
                                         expandedBefore=i == 4, expandedAfter=i == 4)
+    value["frameRecovery"] = dict(FRAME_RECOVERY_BOOLS, fallbackElapsed=.35)
     value["eventRecovery"] = dict(syntheticPollLocation=True, nativeLocalEvents=True,
                                   globalSystemDelivery=False, actualTimerPolling=True,
                                   naturalPaint=True, noEnvelopeExit=True, unavailableLyrics=True,
@@ -448,6 +459,14 @@ def self_test():
     assert not valid(bad); count += 1
     bad = deepcopy(value); bad["extra"] = True
     assert not valid(output_for(bad)); count += 1
+    for key, val in value["frameRecovery"].items():
+        bad = deepcopy(value); del bad["frameRecovery"][key]
+        assert not valid(output_for(bad)); count += 1
+        bad = deepcopy(value); bad["frameRecovery"][key] = not val if type(val) is bool else None
+        assert not valid(output_for(bad)); count += 1
+    for elapsed in (.299, 2, float("nan"), True):
+        bad = deepcopy(value); bad["frameRecovery"]["fallbackElapsed"] = elapsed
+        assert not valid(output_for(bad)); count += 1
     for key, val in value["eventRecovery"].items():
         bad = deepcopy(value); del bad["eventRecovery"][key]
         assert not valid(output_for(bad)), key; count += 1
