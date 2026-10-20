@@ -98,7 +98,8 @@ public struct MusicPlaybackSnapshot: Equatable, Sendable {
     /// Earliest monotonic time at which the position could have been observed;
     /// all consumers must use ProcessInfo.systemUptime, never wall-clock Date.
     public let observedAt: TimeInterval
-    /// Optional pixels from this exact bracketed track read, never a prior song.
+    /// Optional pixels from a separately bracketed read of this exact process/track,
+    /// never a prior song. Attaching cached pixels must not refresh observedAt.
     public let artwork: MusicArtwork?
 
     public init?(track: MusicTrackIdentity, state: MusicPlaybackState,
@@ -142,9 +143,12 @@ public enum MusicReadResult: Equatable, Sendable {
 public protocol MusicSnapshotProvider: Sendable {
     /// Only a current, explicit user enable/retry action may pass true.
     func read(allowPermissionPrompt: Bool) async -> MusicReadResult
+    /// Clear optional work when monitoring is disabled or stopped.
+    func invalidate()
 }
 
 public extension MusicSnapshotProvider {
+    func invalidate() {}
     func read() async -> MusicReadResult { await read(allowPermissionPrompt: false) }
 }
 
@@ -207,7 +211,7 @@ public struct MusicReadRequest: Sendable {
     public let deadline: TimeInterval
     private let active: @Sendable () -> Bool
 
-    fileprivate init(allowPermissionPrompt: Bool, deadline: TimeInterval,
+    init(allowPermissionPrompt: Bool, deadline: TimeInterval,
                      active: @escaping @Sendable () -> Bool) {
         self.allowPermissionPrompt = allowPermissionPrompt
         self.deadline = deadline
