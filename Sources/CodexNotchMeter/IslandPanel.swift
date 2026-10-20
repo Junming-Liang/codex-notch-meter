@@ -318,16 +318,18 @@ final class IslandPanelController: NSObject {
     private var renderedAt = CACurrentMediaTime()
     private let hovered: () -> Void
     private let activityChanged: () -> Void
+    private let testFrameFactory: IslandFrameFactory?
 
     init(model: MeterModel, geometry: IslandGeometry, startPolling: Bool = true, reducedMotionOverride: Bool? = nil,
          motionProfile: IslandMotionProfile = .adaptive, drainsClosePresentation: Bool = true, motionSample: ((IslandMotionSample) -> Void)? = nil,
-         musicPresentationAllowed: Bool = true,
+         musicPresentationAllowed: Bool = true, testFrameFactory: IslandFrameFactory? = nil,
          activityChanged: @escaping () -> Void = {}, hovered: @escaping () -> Void, refresh: @escaping () -> Void,
          settings: @escaping () -> Void, quit: @escaping () -> Void) {
         let motionDiagnostic = model.demo && (CommandLine.arguments.contains("--motion-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")))
         self.motionProfile = motionDiagnostic ? motionProfile : .adaptive
         self.drainsClosePresentation = model.demo && (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) ? drainsClosePresentation : true
         self.motionSample = motionSample
+        self.testFrameFactory = model.demo && CommandLine.arguments.contains("--music-cache-test") ? testFrameFactory : nil
         self.model = model
         self.passiveMusicAllowed = musicPresentationAllowed
         self.musicEligible = model.music.isPlayingForPresentation && model.music.lyricsModeEnabled
@@ -744,9 +746,11 @@ final class IslandPanelController: NSObject {
             guard let self, !self.stopped, self.frameGeneration == generation, self.motionFrames != nil else { return }
             self.advanceFrame(to: time)
         }
-        if motionProfile == .synchronousBaseline { motionFrames = TimerIslandFrames(callback: callback) }
+        if let testFrameFactory { motionFrames = testFrameFactory(callback) }
+        else if motionProfile == .synchronousBaseline { motionFrames = TimerIslandFrames(callback: callback) }
         else if #available(macOS 14.0, *), motionProfile == .adaptive, let view = panel.contentView {
-            motionFrames = DisplayIslandFrames(view: view, callback: callback)
+            motionFrames = RecoveringIslandFrames(makePrimary: { DisplayIslandFrames(view: view, callback: $0) },
+                presentationAllowed: { [weak self] in self?.permitsMotionRecovery == true }, callback: callback)
         } else { motionFrames = DispatchIslandFrames(callback: callback) }
     }
     private func advanceFrame(to time: TimeInterval) {
@@ -823,6 +827,16 @@ final class IslandPanelController: NSObject {
         motionFrames?.stop(); motionFrames = nil
     }
     var isInteracting: Bool { hover.isExpanded }
+    var permitsMotionRecovery: Bool {
+        guard let view = panel.contentView else { return false }
+        return !stopped && panel.isVisible && panel.screen != nil
+            && panel.occlusionState.contains(.visible) && !NSApp.isHidden
+            && !view.isHiddenOrHasHiddenAncestor && !view.visibleRect.isEmpty
+    }
+    func refreshMotionAvailability() {
+        guard !stopped else { return }
+        (motionFrames as? RecoveringIslandFrames)?.presentationAvailabilityChanged()
+    }
     private func updateMusicPresentation(forceRetarget: Bool = false) {
         guard !stopped else { return }
         let previousOwner = expansionOwner

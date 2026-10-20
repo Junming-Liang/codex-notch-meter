@@ -637,6 +637,7 @@ final class MusicRenderCacheChecks {
     }
 
     private func run() async throws {
+        let frameRecovery = try await FrameRecoveryChecks.run()
         let layout = try layoutChecks()
         let document = try LRCParser.parse("[00:00]Amber paper birds cross the bay\n[00:45]Quiet kites circle the harbor")
         guard let track = MusicTrackIdentity(title: "Synthetic Cache A", artist: "Fixture", album: "Cache", duration: 120),
@@ -738,6 +739,7 @@ final class MusicRenderCacheChecks {
         let result: [String: Any] = [
             "schema": 1, "synthetic": true, "realPolling": true, "controllerOnly": false, "scanout": false,
             "deadlineSeconds": 30, "elapsed": CACurrentMediaTime() - began,
+            "frameRecovery": frameRecovery,
             "layout": layout, "fontStrategyEquivalent": true, "controllerWidthMeasurements": 2,
             "identicalPolls": 3, "publications": publications, "presentationRevisionUnchanged": revisionUnchanged,
             "identicalImageReused": reusedImage, "identicalImageBuilds": identicalImageBuilds,

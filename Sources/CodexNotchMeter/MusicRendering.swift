@@ -2707,15 +2707,16 @@ final class MusicRenderHarness: NSObject {
         let stationary = CGPoint(x: musicFrame.midX, y: musicFrame.minY + 10)
         try require(panel.geometry.hoverContains(stationary, progress: panel.smokeMusicTargetProgress)
             && !corridor.contains(stationary), "stationary details hover uses visible music body outside the crossing band")
-        // Each delta is below the 0.25 pt tolerance, but cumulative movement is
-        // not. Updating the anchor after every sample would misclassify this
-        // slow approach as a stationary 120 ms dwell and briefly open details.
+        // Each 2 pt delta is below the 3 pt hand-jitter tolerance, but the
+        // cumulative motion exceeds it before the intentional 120 ms dwell.
+        // Updating the anchor after every sample would incorrectly open details.
+        // Sub-3 pt jitter that stays near one anchor is covered by the stationary gate.
         for step in 0..<12 {
-            try await postPoint(CGPoint(x: stationary.x + CGFloat(step) * 0.2, y: stationary.y), window: nil)
+            try await postPoint(CGPoint(x: stationary.x + CGFloat(step) * 2, y: stationary.y), window: nil)
             try await dwell(0.025)
         }
         try require(!panel.isInteracting && panel.smokeLyricsSelected,
-                    "cumulative 0.2-point native motion is measured from a fixed hover anchor")
+                    "cumulative 2-point native motion is measured from a fixed hover anchor")
         let stationaryRead = try await read(fixture)
         try await release(fixture, stationaryRead, position: 1)
         try await postPoint(outside, window: nil)

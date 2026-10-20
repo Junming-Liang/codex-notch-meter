@@ -205,8 +205,16 @@ final class MusicStationaryHoverChecks {
             // Schedule from the previous actual delivery. A task wake never
             // substitutes for receipt time or proves that a poll actually ran.
             if let previous = entries.last {
-                try await until("event-cadence-deadline", timeout: 1) {
+                // A runnable Task can resume before the run loop services a
+                // delayed Timer. Queueing at +0.30 alone can reset the quiet
+                // guard before any real poll is accepted. Wait for its receipt,
+                // without extending the existing 0.45 s delivery bound.
+                try await until("actual-poll-before-next-event-" + name,
+                    timeout: max(0.001, previous.delivered + 0.45 - ProcessInfo.processInfo.systemUptime)) {
                     ProcessInfo.processInfo.systemUptime >= previous.delivered + 0.30
+                        && f.panel.smokePointerIngress.contains {
+                            $0.kind == "poll" && $0.timestamp > previous.delivered
+                        }
                 }
             }
             let p = CGPoint(x: center.x + (index % 2 == 0 ? -1 : 1), y: center.y)

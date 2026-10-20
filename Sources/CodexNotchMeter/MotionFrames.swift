@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import QuartzCore
+import NotchCore
 
 /// Geometry callbacks run directly on the main run loop; no queued task can pile up.
 @MainActor
@@ -104,6 +105,97 @@ final class DisplayIslandFrames: NSObject, IslandFrameSource {
         stop()
         if let old { tick(old) }
         return !isRunning && deliveries == count
+    }
+}
+
+typealias IslandFrameFactory = (@escaping (TimeInterval) -> Void) -> IslandFrameSource
+
+/// A view display link may exist without delivering callbacks. During a visible
+/// transition only, switch once to the existing coalescing timer after a bounded
+/// delivery gap. Stop the old link first; never run two animation clocks.
+@MainActor
+final class RecoveringIslandFrames: NSObject, IslandFrameSource {
+    private var source: IslandFrameSource?
+    private var watchdog: Timer?
+    private var liveness: IslandFrameLiveness
+    private let callback: (TimeInterval) -> Void
+    private let presentationAllowed: () -> Bool
+    private let clock: () -> TimeInterval
+    private var generation = 1
+    private var stopped = false
+    private var deliveries = 0
+    private var lastFrameTime: TimeInterval?
+    private(set) var fallbackCount = 0
+    private(set) var fallbackAt: TimeInterval?
+    var kind: String { fallbackCount == 0 ? (source?.kind ?? "view-display-link") : "dispatch-60hz-recovery" }
+    var isRunning: Bool { !stopped && source?.isRunning == true }
+    var hasWatchdog: Bool { watchdog != nil }
+
+    init(makePrimary: IslandFrameFactory, presentationAllowed: @escaping () -> Bool,
+         clock: @escaping () -> TimeInterval = { CACurrentMediaTime() },
+         callback: @escaping (TimeInterval) -> Void) {
+        self.callback = callback; self.presentationAllowed = presentationAllowed; self.clock = clock
+        liveness = IslandFrameLiveness(now: clock())
+        super.init()
+        let token = generation
+        source = makePrimary { [weak self] time in self?.deliver(time, generation: token) }
+        armWatchdog()
+    }
+    private func armWatchdog() {
+        guard !stopped, fallbackCount == 0, watchdog == nil else { return }
+        let timer = Timer(timeInterval: 0.1, target: self, selector: #selector(check(_:)), userInfo: nil, repeats: true)
+        watchdog = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+    private func deliver(_ time: TimeInterval, generation token: Int) {
+        guard !stopped, token == generation else { return }
+        if fallbackCount > 0 && !presentationAllowed() {
+            generation += 1; source?.stop(); source = nil
+            watchdog?.invalidate(); watchdog = nil
+            return
+        }
+        // Invalid or repeated target times cannot prove animation liveness.
+        guard time.isFinite, lastFrameTime.map({ time > $0 }) ?? true else { return }
+        lastFrameTime = time
+        deliveries += 1; liveness.delivered(at: clock())
+        // A normally resumed display link can re-arm after temporary invisibility.
+        if presentationAllowed() { armWatchdog() }
+        callback(time)
+    }
+    @objc private func check(_ sender: Timer) {
+        guard !stopped, sender === watchdog else { return }
+        switch liveness.probe(at: clock(), presentationAllowed: presentationAllowed()) {
+        case .wait: return
+        case .suspend, .stopped:
+            watchdog?.invalidate(); watchdog = nil
+        case .recover:
+            watchdog?.invalidate(); watchdog = nil
+            generation += 1; source?.stop(); source = nil
+            fallbackCount += 1; fallbackAt = clock()
+            let token = generation
+            source = DispatchIslandFrames { [weak self] time in self?.deliver(time, generation: token) }
+        }
+    }
+    /// Called on existing window/session activity notifications; no hidden polling.
+    func presentationAvailabilityChanged() {
+        guard !stopped, presentationAllowed() else { return }
+        if fallbackCount > 0 && source == nil {
+            let token = generation
+            source = DispatchIslandFrames { [weak self] time in self?.deliver(time, generation: token) }
+        } else if fallbackCount == 0 {
+            armWatchdog()
+        }
+    }
+    func stop() {
+        guard !stopped else { return }
+        stopped = true; generation += 1; liveness.stop()
+        watchdog?.invalidate(); watchdog = nil
+        source?.stop(); source = nil
+    }
+    func verifyRetiredCallbackIsInert() -> Bool {
+        let token = generation, oldTimer = watchdog, count = deliveries
+        stop(); deliver(clock(), generation: token)
+        if let oldTimer { check(oldTimer) }
+        return deliveries == count && !isRunning && !hasWatchdog
     }
 }
 

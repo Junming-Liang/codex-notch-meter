@@ -228,7 +228,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func updateSkinActivity() {
         model.music.setActive(!sleeping && !displaySleeping && sessionActive && !terminating && !NSApp.isHidden)
-        islands.forEach { $0.setMusicPresentationAllowed(passiveMusicAllowed) }
+        islands.forEach { $0.setMusicPresentationAllowed(passiveMusicAllowed); $0.refreshMotionAvailability() }
         let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
         let visibleIsland = islands.contains { (coloredPrimary || $0.displaysColoredDetails) && $0.panel.isVisible && $0.panel.occlusionState.contains(.visible) }
         // A visible details header is also a color consumer; empty/zero collapsed contours are not.
