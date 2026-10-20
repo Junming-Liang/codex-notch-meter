@@ -48,8 +48,16 @@ enum FrameRecoveryChecks {
         guard CommandLine.arguments.contains("--music-cache-test"), let screen = NSScreen.main else {
             throw Failure(label: "explicit-native-test-only")
         }
-        let geometry = IslandGeometry(notch: CGRect(x: screen.frame.midX - 100, y: screen.frame.maxY - 32, width: 200, height: 32),
-            screen: screen.frame, backingScale: screen.backingScaleFactor, contentHeight: 260)
+        let frame = screen.frame
+        guard let notch = NotchGeometry.calculate(screen: frame, topInset: 32,
+            auxiliaryLeft: CGRect(x: frame.minX, y: frame.maxY - 32,
+                width: frame.midX - 100 - frame.minX, height: 32),
+            auxiliaryRight: CGRect(x: frame.midX + 100, y: frame.maxY - 32,
+                width: frame.maxX - frame.midX - 100, height: 32)) else {
+            throw Failure(label: "frame-recovery-geometry")
+        }
+        let geometry = IslandGeometry(notch: notch,
+            screen: frame, backingScale: screen.backingScaleFactor, contentHeight: 260)
         let model = MeterModel(demo: true)
         defer { model.stop() }
         let change = try notice()
