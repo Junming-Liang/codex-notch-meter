@@ -5,8 +5,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "App packaging requires macOS and Xcode Command Line Tools." >&2
   exit 1
 fi
-version="1.1.1"
-release_version="1.1.1"
+version="1.1.2"
+release_version="1.1.2"
 args=(-c release --product CodexNotchMeter)
 path_args=(-c release --show-bin-path)
 if [[ "${1:-}" == "--universal" ]]; then
@@ -37,7 +37,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>CFBundleExecutable</key><string>CodexNotchMeter</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
-<key>CFBundleVersion</key><string>18</string>
+<key>CFBundleVersion</key><string>19</string>
 <key>CodexNotchMeterReleaseVersion</key><string>$release_version</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>

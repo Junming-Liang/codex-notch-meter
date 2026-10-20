@@ -21,9 +21,9 @@ import sys
 import tempfile
 
 
-VERSION = "1.1.1"
-RELEASE_VERSION = "1.1.1"
-BUNDLE_BUILD = "18"
+VERSION = "1.1.2"
+RELEASE_VERSION = "1.1.2"
+BUNDLE_BUILD = "19"
 APP_NAME = "Codex Notch Meter.app"
 IMAGE_NAME = f"CodexNotchMeter-{RELEASE_VERSION}-universal.dmg"
 INSTRUCTIONS_NAME = "Install - 安装说明.txt"
