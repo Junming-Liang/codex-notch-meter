@@ -223,6 +223,7 @@ enum MusicPlayingIndicatorVerification {
         let originalKeyWindow = NSApp.keyWindow
         defer { view.dismantle(); window.orderOut(nil); window.contentView = nil; window.close() }
         var samples: [Sample] = [], lifecycle: [[String: Any]] = []
+        var timing: [[String: Any]] = []
         var completed = false
         func state() -> [String: Any] {
             ["time": CACurrentMediaTime() - began, "animationKeys": view.animationKeys,
@@ -232,6 +233,19 @@ enum MusicPlayingIndicatorVerification {
         }
         func record(_ stage: String) {
             var row = state(); row["stage"] = stage; lifecycle.append(row)
+        }
+        func pause(until target: TimeInterval, stage: String) async throws {
+            let requested = CACurrentMediaTime()
+            try await nativePause(until: target)
+            timing.append(["stage": stage, "requested": requested - began,
+                "target": target - began, "resumed": CACurrentMediaTime() - began])
+        }
+        func capture(_ stage: String) throws -> Capture {
+            let started = CACurrentMediaTime()
+            let image = try Self.capture(host, scale: window.backingScaleFactor)
+            timing.append(["stage": stage, "started": started - began,
+                "finished": CACurrentMediaTime() - began])
+            return image
         }
         // A failed run retains the observations needed to distinguish aliasing,
         // absent pixels, interruption, restart, and a real scheduling deadline.
@@ -244,6 +258,12 @@ enum MusicPlayingIndicatorVerification {
                    let json = String(data: data, encoding: .utf8) {
                     print("MUSIC_INDICATOR_DIAGNOSTIC_JSON: \(json)")
                 }
+            }
+            // Scheduling and export observations are diagnostic only. The
+            // existing success receipt and all deadlines remain unchanged.
+            if let data = try? JSONSerialization.data(withJSONObject: ["schema": 1, "timing": timing], options: [.sortedKeys]),
+               let json = String(data: data, encoding: .utf8) {
+                print("MUSIC_INDICATOR_TIMING_JSON: \(json)")
             }
         }
         view.configure(active: true, reduceMotion: false)
@@ -286,17 +306,23 @@ enum MusicPlayingIndicatorVerification {
             let heights = layers.map { Double($0.frame.height) }
             try require(layers.count == 3 && scales.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1 })
                 && heights.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 14 }), "missing-native-presentation")
-            let image = try capture(host, scale: window.backingScaleFactor)
+            let image = try capture("playing-capture")
             receipt["scales"] = scales; receipt["heights"] = heights; receipt["pngSHA256"] = image.pngSHA256
             return Sample(time: sampledAt, scales: scales, image: image, receipt: receipt)
         }
-        try await Task.sleep(nanoseconds: 140_000_000)
+        try await pause(until: CACurrentMediaTime() + 0.14, stage: "initial-presentation")
         samples.append(try sample())
-        let observationDeadline = began + samples[0].time + 2.1
+        let observationStart = began + samples[0].time
+        let observationDeadline = observationStart + 2.1
         // Observe a complete period, even when an early pair already differs.
         // This is one bounded observation window, not retries of a failed test.
         while samples.last!.time - samples[0].time < 1.6 {
-            try await Task.sleep(nanoseconds: 80_000_000)
+            // Use real observation timestamps rather than adding capture time
+            // to every interval. Missed 80ms slots are skipped, never replayed
+            // as a burst; actual samples still stay at least 80ms apart.
+            let nextSlot = floor((CACurrentMediaTime() - observationStart) / 0.08) + 1
+            let nextSample = max(observationStart + nextSlot * 0.08, began + samples.last!.time + 0.08)
+            try await pause(until: nextSample, stage: "cycle-sample")
             try require(CACurrentMediaTime() <= observationDeadline && CACurrentMediaTime() <= deadline,
                 "full-cycle-observation-deadline")
             samples.append(try sample())
@@ -324,24 +350,24 @@ enum MusicPlayingIndicatorVerification {
         view.configure(active: false, reduceMotion: false)
         record("paused")
         try require(stopped(view), "pause-removes-animations")
-        try await Task.sleep(nanoseconds: 40_000_000)
-        let paused = try capture(host, scale: window.backingScaleFactor)
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try require(try capture(host, scale: window.backingScaleFactor).pixels == paused.pixels,
+        try await pause(until: CACurrentMediaTime() + 0.04, stage: "paused-presentation")
+        let paused = try capture("paused-capture")
+        try await pause(until: CACurrentMediaTime() + 0.05, stage: "paused-stability")
+        try require(try capture("paused-stability-capture").pixels == paused.pixels,
             "paused-pixels-stable")
         try require(resting(view), "pause-restores-model-pose")
 
         view.configure(active: true, reduceMotion: false)
         try await wait(deadline, label: "resume-before-reduce-motion") { running(view) }
         record("resume-before-reduce-motion")
-        try await Task.sleep(nanoseconds: 30_000_000)
+        try await pause(until: CACurrentMediaTime() + 0.03, stage: "resumed-presentation")
         view.configure(active: true, reduceMotion: true)
         record("reduced-motion")
         try require(stopped(view), "reduce-motion-removes-animations")
-        try await Task.sleep(nanoseconds: 40_000_000)
-        let reduced = try capture(host, scale: window.backingScaleFactor)
-        try await Task.sleep(nanoseconds: 50_000_000)
-        try require(try capture(host, scale: window.backingScaleFactor).pixels == reduced.pixels
+        try await pause(until: CACurrentMediaTime() + 0.04, stage: "reduced-presentation")
+        let reduced = try capture("reduced-capture")
+        try await pause(until: CACurrentMediaTime() + 0.05, stage: "reduced-stability")
+        try require(try capture("reduced-stability-capture").pixels == reduced.pixels
             && reduced.pixels == paused.pixels && resting(view), "reduce-motion-static-pose")
 
         view.configure(active: true, reduceMotion: false)
@@ -372,11 +398,14 @@ enum MusicPlayingIndicatorVerification {
         try require(stopped(view), "dismantled-view-cannot-restart")
         try require(CACurrentMediaTime() <= deadline, "native-evidence-bounded")
 
+        let exportStarted = CACurrentMediaTime()
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let captures = [("playing-a", playingA), ("playing-b", playingB), ("paused", paused), ("reduced-motion", reduced)]
         for (name, image) in captures {
             try image.png.write(to: outputDirectory.appendingPathComponent("perimeter-indicator-\(name).png"), options: .atomic)
         }
+        timing.append(["stage": "png-export", "started": exportStarted - began,
+            "finished": CACurrentMediaTime() - began])
         let elapsed = CACurrentMediaTime() - began
         try require(elapsed <= 3.0, "native-capture-and-export-bounded")
         completed = true
@@ -400,7 +429,26 @@ enum MusicPlayingIndicatorVerification {
     private static func wait(_ deadline: TimeInterval, label: String, _ condition: () -> Bool) async throws {
         while !condition() {
             try require(CACurrentMediaTime() <= deadline, label)
-            try await Task.sleep(nanoseconds: 10_000_000)
+            try await nativePause(until: CACurrentMediaTime() + 0.01)
+        }
+    }
+    /// Give each fixture wait an explicit native run-loop wake, not only a
+    /// concurrency-task continuation. Timers are not real-time guarantees: the
+    /// actual monotonic deadlines above still apply. This never advances CA
+    /// time, forces a display, or changes the production animation behavior.
+    private static func nativePause(until target: TimeInterval) async throws {
+        try Task.checkCancellation()
+        while CACurrentMediaTime() < target {
+            let remaining = target - CACurrentMediaTime()
+            guard remaining > 0 else { break }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let timer = Timer(timeInterval: remaining, repeats: false) { _ in
+                    continuation.resume()
+                }
+                timer.tolerance = 0
+                RunLoop.main.add(timer, forMode: .common)
+            }
+            try Task.checkCancellation()
         }
     }
     private static func running(_ view: MusicPlayingIndicatorView) -> Bool {
