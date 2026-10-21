@@ -178,17 +178,12 @@ def self_test() -> int:
     return 0
 
 
-def main() -> int:
-    if sys.argv[1:] == ["--self-test"]:
-        return self_test()
-    if sys.argv[1:]:
-        print("Usage: check-native-lyrics-recovery.py [--self-test]", file=sys.stderr)
-        return 2
+def run_native(extra_flags=(), validator=receipts_valid) -> int:
     root = Path(__file__).resolve().parent.parent
     executable = root / "dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter"
     try:
         process = subprocess.Popen(
-            [str(executable), "--music-test", "--lyrics-recovery-test"], cwd=root,
+            [str(executable), "--music-test", "--lyrics-recovery-test", *extra_flags], cwd=root,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
     except OSError as error:
@@ -210,10 +205,69 @@ def main() -> int:
     if timed_out:
         print(f"Native lyrics recovery exceeded its {RUN_TIMEOUT_SECONDS} s runner deadline.", file=sys.stderr)
         return 1
-    if process.returncode != 0 or not receipts_valid(stdout):
+    if process.returncode != 0 or not validator(stdout):
         print("Native lyrics recovery or orderly-shutdown contract failed.", file=sys.stderr)
         return 1
     return 0
+
+
+def cross_track_receipts():
+    return [
+        f"MUSIC_LYRICS_CROSS_TRACK_CASE_OK: result={result} loadingHidden=true "
+        "oldContentRejected=true selectedPreserved=true freshBRecovered=true "
+        "newCrossing=true nativeEventDelivery=false"
+        for result in ("matched", "no-match", "gap")
+    ] + [
+        "MUSIC_LYRICS_CROSS_TRACK_CLEANUP_OK: controllers=3 pendingRequests=0 countsStable=true panelsStopped=true",
+        "MUSIC_LYRICS_CROSS_TRACK_GATE_OK: cases=3 deadline=90 nativeEventDelivery=false scanout=false",
+    ]
+
+
+def cross_track_valid(stdout):
+    lines = stdout.splitlines()
+    if any(re.search(r"(?:^|\W)(?:[A-Z_]+_FAILED|fatal error|Fatal error)(?:\W|$)", line) for line in lines):
+        return False
+    selected = [line for line in lines if line.startswith(("MUSIC_LYRICS_", "SMOKE_OK:"))]
+    if len(selected) != 7 or selected[:5] != cross_track_receipts() or selected[-1] != SHUTDOWN_RECEIPT:
+        return False
+    done = re.fullmatch(
+        r"MUSIC_LYRICS_CROSS_TRACK_DONE: checks=([0-9]+) elapsed=([0-9]+(?:\.[0-9]+)?) "
+        r"synthetic=true nativeEventDelivery=false scanout=false", selected[5])
+    if not done or int(done[1]) < 30 or not 0 < float(done[2]) <= 90:
+        return False
+    return not any((line != line.lstrip() and line.lstrip().startswith(("MUSIC_LYRICS_", "SMOKE_OK:")))
+                   or line.startswith(("MUSIC_OK:", "MUSIC_POINTER_GATE_OK:")) for line in lines)
+
+
+def cross_track_self_test():
+    sample = "\n".join(cross_track_receipts() + [
+        "MUSIC_LYRICS_CROSS_TRACK_DONE: checks=90 elapsed=8.000 synthetic=true nativeEventDelivery=false scanout=false",
+        SHUTDOWN_RECEIPT, ""])
+    assert cross_track_valid(sample)
+    for line in sample.splitlines():
+        for changed in (sample.replace(line + "\n", "", 1), sample + line + "\n",
+                        sample.replace(line, line + " malformed", 1), sample.replace(line, " " + line, 1)):
+            assert not cross_track_valid(changed)
+    for before, after in (("checks=90", "checks=29"), ("elapsed=8.000", "elapsed=90.001"),
+                          ("nativeEventDelivery=false", "nativeEventDelivery=true"),
+                          ("panelsStopped=true", "panelsStopped=false")):
+        assert not cross_track_valid(sample.replace(before, after, 1))
+    assert not receipts_valid(sample), "cross-track run must not satisfy the unchanged legacy gate"
+    assert not cross_track_valid("\n".join(expected_receipts())), "legacy evidence cannot satisfy cross-track gate"
+    assert not cross_track_valid(sample + "MUSIC_LYRICS_RECOVERY_FAILED: failure\n")
+    print("MUSIC_CROSS_TRACK_RECEIPT_SELF_TEST_OK: nativeAppRun=false legacyContractUnchanged=true")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test() or cross_track_self_test()
+    if sys.argv[1:]:
+        print("Usage: check-native-lyrics-recovery.py [--self-test]", file=sys.stderr)
+        return 2
+    # Two bounded child processes, each with fresh fixtures. The original
+    # red-green runner imports receipts_valid and retains its exact old flags.
+    return run_native() or run_native(("--lyrics-cross-track-test",), cross_track_valid)
 
 
 if __name__ == "__main__":
