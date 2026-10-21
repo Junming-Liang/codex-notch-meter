@@ -36,6 +36,8 @@ jobs:
         run: swift --version
       - name: Public source checks
         run: python3 Scripts/check-source.py
+      - name: Debug capture privacy/parser safety tests
+        run: python3 Scripts/check-debug-capture.py --self-test
       - name: Release source binding safety tests
         run: python3 Scripts/test-verify-release-source.py
       - name: Synthetic Music dictionary discovery safety tests
@@ -49,6 +51,8 @@ jobs:
       - name: Build and verify universal app
         id: package
         run: bash Scripts/build-app.sh --universal
+      - name: Native debug capture instrumentation and lifecycle fixture
+        run: python3 Scripts/check-debug-capture.py --app "dist/Codex Notch Meter.app/Contents/MacOS/CodexNotchMeter"
       - name: Native demo startup and orderly-exit smoke test
         run: |
           python3 - <<'PYSMOKE'
