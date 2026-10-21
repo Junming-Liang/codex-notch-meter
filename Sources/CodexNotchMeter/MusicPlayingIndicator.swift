@@ -203,6 +203,37 @@ enum MusicPlayingIndicatorVerification {
         let receipt: [String: Any]
     }
 
+    // Fixture-only diagnostics. Store raw clocks in a bounded buffer; do not
+    // encode, print, add a wake source, or change scheduling while observing.
+    private struct NativeWake: Sendable {
+        let armed: TimeInterval
+        let fired: TimeInterval
+    }
+    @MainActor private final class WakeTrace {
+        static let capacity = 256
+        private struct Row {
+            let stage: String
+            let target: TimeInterval
+            let interval: TimeInterval
+            let wake: NativeWake
+            let resumed: TimeInterval
+        }
+        private var rows: [Row] = []
+        private(set) var dropped = 0
+        func record(stage: String, target: TimeInterval, interval: TimeInterval,
+                    wake: NativeWake, resumed: TimeInterval) {
+            guard rows.count < Self.capacity else { dropped += 1; return }
+            rows.append(Row(stage: stage, target: target, interval: interval, wake: wake, resumed: resumed))
+        }
+        func receipt(relativeTo began: TimeInterval) -> [[String: Any]] {
+            rows.enumerated().map { index, row in
+                ["sequence": index + 1, "stage": row.stage, "target": row.target - began,
+                 "interval": row.interval, "armed": row.wake.armed - began,
+                 "fired": row.wake.fired - began, "resumed": row.resumed - began]
+            }
+        }
+    }
+
     static func run(outputDirectory: URL) async throws -> [String: Any] {
         try require(CommandLine.arguments.contains("--music-test")
             && CommandLine.arguments.contains("--music-cache-test"), "synthetic-cache-only")
@@ -224,6 +255,7 @@ enum MusicPlayingIndicatorVerification {
         defer { view.dismantle(); window.orderOut(nil); window.contentView = nil; window.close() }
         var samples: [Sample] = [], lifecycle: [[String: Any]] = []
         var timing: [[String: Any]] = []
+        let wakes = WakeTrace()
         var completed = false
         func state() -> [String: Any] {
             ["time": CACurrentMediaTime() - began, "animationKeys": view.animationKeys,
@@ -236,7 +268,7 @@ enum MusicPlayingIndicatorVerification {
         }
         func pause(until target: TimeInterval, stage: String) async throws {
             let requested = CACurrentMediaTime()
-            try await nativePause(until: target)
+            try await nativePause(until: target, trace: wakes, stage: stage)
             timing.append(["stage": stage, "requested": requested - began,
                 "target": target - began, "resumed": CACurrentMediaTime() - began])
         }
@@ -261,7 +293,9 @@ enum MusicPlayingIndicatorVerification {
             }
             // Scheduling and export observations are diagnostic only. The
             // existing success receipt and all deadlines remain unchanged.
-            if let data = try? JSONSerialization.data(withJSONObject: ["schema": 1, "timing": timing], options: [.sortedKeys]),
+            if let data = try? JSONSerialization.data(withJSONObject: ["schema": 1, "timing": timing,
+                "wakeSchema": 1, "wakeCapacity": WakeTrace.capacity, "droppedWakes": wakes.dropped,
+                "wakes": wakes.receipt(relativeTo: began)], options: [.sortedKeys]),
                let json = String(data: data, encoding: .utf8) {
                 print("MUSIC_INDICATOR_TIMING_JSON: \(json)")
             }
@@ -269,7 +303,7 @@ enum MusicPlayingIndicatorVerification {
         view.configure(active: true, reduceMotion: false)
         window.orderFrontRegardless()
         host.layoutSubtreeIfNeeded()
-        try await wait(deadline, label: "native-visible-start") { running(view) }
+        try await wait(deadline, label: "native-visible-start", trace: wakes) { running(view) }
         record("started")
         try require(!window.isKeyWindow && NSApp.keyWindow === originalKeyWindow
             && view.frame.size == MusicPlayingIndicatorView.iconSize, "fixed-size-non-key")
@@ -358,7 +392,7 @@ enum MusicPlayingIndicatorVerification {
         try require(resting(view), "pause-restores-model-pose")
 
         view.configure(active: true, reduceMotion: false)
-        try await wait(deadline, label: "resume-before-reduce-motion") { running(view) }
+        try await wait(deadline, label: "resume-before-reduce-motion", trace: wakes) { running(view) }
         record("resume-before-reduce-motion")
         try await pause(until: CACurrentMediaTime() + 0.03, stage: "resumed-presentation")
         view.configure(active: true, reduceMotion: true)
@@ -371,25 +405,25 @@ enum MusicPlayingIndicatorVerification {
             && reduced.pixels == paused.pixels && resting(view), "reduce-motion-static-pose")
 
         view.configure(active: true, reduceMotion: false)
-        try await wait(deadline, label: "resume-after-reduce-motion") { running(view) }
+        try await wait(deadline, label: "resume-after-reduce-motion", trace: wakes) { running(view) }
         record("resume-after-reduce-motion")
         host.isHidden = true
         record("ancestor-hidden")
         try require(stopped(view), "hidden-ancestor-removes-animations")
         host.isHidden = false
-        try await wait(deadline, label: "unhide-resumes") { running(view) }
+        try await wait(deadline, label: "unhide-resumes", trace: wakes) { running(view) }
         record("ancestor-unhidden")
         window.orderOut(nil)
-        try await wait(deadline, label: "order-out-removes-animations") { !window.isVisible && stopped(view) }
+        try await wait(deadline, label: "order-out-removes-animations", trace: wakes) { !window.isVisible && stopped(view) }
         record("ordered-out")
         window.orderFrontRegardless()
-        try await wait(deadline, label: "order-front-resumes") { running(view) }
+        try await wait(deadline, label: "order-front-resumes", trace: wakes) { running(view) }
         record("ordered-front")
         view.removeFromSuperview()
         record("detached")
         try require(stopped(view), "detach-removes-animations")
         host.addSubview(view)
-        try await wait(deadline, label: "reattach-resumes") { running(view) }
+        try await wait(deadline, label: "reattach-resumes", trace: wakes) { running(view) }
         record("reattached")
         view.dismantle()
         record("dismantled")
@@ -426,28 +460,32 @@ enum MusicPlayingIndicatorVerification {
     private static func require(_ value: Bool, _ label: String) throws {
         if !value { throw Failure(label: "music-indicator-" + label) }
     }
-    private static func wait(_ deadline: TimeInterval, label: String, _ condition: () -> Bool) async throws {
+    private static func wait(_ deadline: TimeInterval, label: String, trace: WakeTrace,
+                             _ condition: () -> Bool) async throws {
         while !condition() {
             try require(CACurrentMediaTime() <= deadline, label)
-            try await nativePause(until: CACurrentMediaTime() + 0.01)
+            try await nativePause(until: CACurrentMediaTime() + 0.01, trace: trace, stage: label)
         }
     }
     /// Give each fixture wait an explicit native run-loop wake, not only a
     /// concurrency-task continuation. Timers are not real-time guarantees: the
     /// actual monotonic deadlines above still apply. This never advances CA
     /// time, forces a display, or changes the production animation behavior.
-    private static func nativePause(until target: TimeInterval) async throws {
+    private static func nativePause(until target: TimeInterval, trace: WakeTrace, stage: String) async throws {
         try Task.checkCancellation()
         while CACurrentMediaTime() < target {
             let remaining = target - CACurrentMediaTime()
             guard remaining > 0 else { break }
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let wake = await withCheckedContinuation { (continuation: CheckedContinuation<NativeWake, Never>) in
+                let armed = CACurrentMediaTime()
                 let timer = Timer(timeInterval: remaining, repeats: false) { _ in
-                    continuation.resume()
+                    continuation.resume(returning: NativeWake(armed: armed, fired: CACurrentMediaTime()))
                 }
                 timer.tolerance = 0
                 RunLoop.main.add(timer, forMode: .common)
             }
+            let resumed = CACurrentMediaTime()
+            trace.record(stage: stage, target: target, interval: remaining, wake: wake, resumed: resumed)
             try Task.checkCancellation()
         }
     }
