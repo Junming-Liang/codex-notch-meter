@@ -1137,6 +1137,13 @@ final class IslandPanelController: NSObject {
             && motion.velocity == before.1 && panel.frame == before.2 && presentation.notice?.id == before.3
     }
     var smokeNoticeTargetActive: Bool { noticeTargetActive }
+    // Read-only fixture snapshots: do not expose a mutable Timer or add any
+    // recurring work to the production notification/animation paths.
+    var smokeMusicAccessoryTargetActive: Bool { accessoryTarget }
+    var smokeNoticeExpiry: (identity: ObjectIdentifier, fireDate: Date, isValid: Bool)? {
+        guard model.demo, CommandLine.arguments.contains("--music-test"), let noticeExpiry else { return nil }
+        return (ObjectIdentifier(noticeExpiry), noticeExpiry.fireDate, noticeExpiry.isValid)
+    }
     var smokeTargetProgress: Double { motionTargetValue }
     var smokeProgress: Double { motion.progress }
     var smokeVelocity: Double { motion.velocity }
@@ -1214,4 +1221,7 @@ final class IslandPanelController: NSObject {
         return motion.progress == 1 && motion.isSettled && panel.isVisible && quitVisible && clickable && rendered
     }
 }
+// Only the current full Music fixture consumes these read-only probes. Older
+// production panels overlaid with the same harness need not conform.
+extension IslandPanelController: MusicNoticePauseProbeProviding {}
 #endif

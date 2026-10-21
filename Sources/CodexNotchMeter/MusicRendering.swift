@@ -5,6 +5,14 @@ import SwiftUI
 import Vision
 import NotchCore
 
+/// Optional fixture-only surface. Historical red/green overlays compile this
+/// harness without requiring new members on their untouched production panel.
+@MainActor
+protocol MusicNoticePauseProbeProviding: AnyObject {
+    var smokeMusicAccessoryTargetActive: Bool { get }
+    var smokeNoticeExpiry: (identity: ObjectIdentifier, fireDate: Date, isValid: Bool)? { get }
+}
+
 /// Synthetic, in-process integration of the production controller and existing
 /// CompactDetailView. No Music IPC, network, selected files or preference writes.
 /// The only raster inspected is this harness's own NSView cache, never a screen.
@@ -1199,6 +1207,7 @@ final class MusicRenderHarness: NSObject {
 
     private func run() async throws {
         try verifyOCRMatchingControls()
+        try verifyNoticePauseControls()
         try verifyArtworkDecoder()
         let primary = makeFixture()
         let model = MeterModel(demo: true, music: primary.controller)
@@ -2271,13 +2280,34 @@ final class MusicRenderHarness: NSObject {
         guard let pausedArm = panel.smokeNoticeArmedAt, let pausedPaint = panel.smokeNoticePaintReadyAt else {
             throw Failure(label: "missing paused-notice readiness times")
         }
-        let pausedRetarget = panel.smokeRetarget?.eventTime
+        guard let pauseProbe = (panel as AnyObject) as? MusicNoticePauseProbeProviding else {
+            throw Failure(label: "missing native notice pause probes")
+        }
+        let beforePause = noticePauseState(panel, probe: pauseProbe)
+        var pauseEvidenceEmitted = false
+        defer {
+            if !pauseEvidenceEmitted {
+                emitNoticePauseDiagnostic(before: beforePause, after: noticePauseState(panel, probe: pauseProbe),
+                    deadline: pausedArm + pausedNotice.holdDuration, phase: "incomplete")
+            }
+        }
+        try require(beforePause.noticeID == pausedNotice.id && beforePause.armed == pausedArm && beforePause.painted == pausedPaint
+            && beforePause.accessoryTarget && beforePause.expiryValid && fixture.controller.isFreshPlaying,
+            "pause notice starts with applied playing accessories and a live original expiry timer")
         let pause = try await read(fixture)
         try await release(fixture, pause, position: 1, state: .paused)
         try await until("real paused sample revokes passive Music") { !fixture.controller.isPlayingForPresentation && fixture.controller.line.isEmpty && fixture.controller.nextLine.isEmpty }
-        try require(panel.smokeNoticeTargetActive && panel.smokeNoticeID == pausedNotice.id
-            && panel.smokeNoticeArmedAt == pausedArm && panel.smokeNoticePaintReadyAt == pausedPaint
-            && panel.smokeRetarget?.eventTime == pausedRetarget && !panel.smokeMusicTargetActive,
+        // Controller publication precedes the queued panel update. Its accessory
+        // target must consume the pause before checking notification invariants.
+        // A generic motion retarget is expected while those accessories retract;
+        // only the actual notification timer determines whether dwell restarted.
+        try await until("native panel consumes paused accessory target") { !pauseProbe.smokeMusicAccessoryTargetActive }
+        let afterPause = noticePauseState(panel, probe: pauseProbe)
+        let pauseChecks = noticePauseChecks(before: beforePause, after: afterPause)
+        emitNoticePauseDiagnostic(before: beforePause, after: afterPause,
+            deadline: pausedArm + pausedNotice.holdDuration, phase: "after-panel-update")
+        pauseEvidenceEmitted = true
+        try require(pauseChecks.values.allSatisfy { $0 },
             "pause during quota notice does not clear the notice or restart its deadline")
         try await until("paused notice expires on its original real deadline", timeout: 5) { !panel.smokeNoticeTargetActive }
         let pausedHold = CACurrentMediaTime() - pausedArm
@@ -3823,6 +3853,89 @@ final class MusicRenderHarness: NSObject {
         func normalized(_ value: String) -> String { value.lowercased().filter { !$0.isWhitespace } }
         let needle = normalized(expected)
         return !needle.isEmpty && normalized(observations.joined(separator: " ")).contains(needle)
+    }
+    private struct NoticePauseState {
+        var noticeID: UUID?
+        var armed: TimeInterval?
+        var painted: TimeInterval?
+        var expiryIdentity: ObjectIdentifier?
+        var expiryFireDate: Date?
+        var expiryValid: Bool
+        var noticeTarget: Bool
+        var musicTarget: Bool
+        var accessoryTarget: Bool
+        var owner: IslandExpansionOwner
+        var retarget: TimeInterval?
+    }
+    private func noticePauseState(_ panel: IslandPanelController, probe: MusicNoticePauseProbeProviding) -> NoticePauseState {
+        let expiry = probe.smokeNoticeExpiry
+        return NoticePauseState(noticeID: panel.smokeNoticeID, armed: panel.smokeNoticeArmedAt,
+            painted: panel.smokeNoticePaintReadyAt, expiryIdentity: expiry?.identity,
+            expiryFireDate: expiry?.fireDate, expiryValid: expiry?.isValid == true,
+            noticeTarget: panel.smokeNoticeTargetActive, musicTarget: panel.smokeMusicTargetActive,
+            accessoryTarget: probe.smokeMusicAccessoryTargetActive, owner: panel.smokeExpansionOwner,
+            retarget: panel.smokeRetarget?.eventTime)
+    }
+    private func noticePauseChecks(before: NoticePauseState, after: NoticePauseState) -> [String: Bool] {
+        ["sameNotice": before.noticeID != nil && after.noticeID == before.noticeID,
+         "sameArmed": before.armed != nil && after.armed == before.armed,
+         "samePaint": before.painted != nil && after.painted == before.painted,
+         "sameExpiryTimer": before.expiryIdentity != nil && after.expiryIdentity == before.expiryIdentity,
+         "sameExpiryFireDate": before.expiryFireDate != nil && after.expiryFireDate == before.expiryFireDate,
+         "expiryStillValid": before.expiryValid && after.expiryValid,
+         "noticeStillOwns": before.noticeTarget && after.noticeTarget && after.owner == .quotaNotice,
+         "musicRevoked": !after.musicTarget,
+         "panelConsumedPause": before.accessoryTarget && !after.accessoryTarget]
+    }
+    private func emitNoticePauseDiagnostic(before: NoticePauseState, after: NoticePauseState,
+                                           deadline: TimeInterval, phase: String) {
+        let value: [String: Any] = ["schema": 1, "phase": phase,
+            "checks": noticePauseChecks(before: before, after: after), "observed": CACurrentMediaTime(),
+            "originalMonotonicDeadline": deadline,
+            "originalArmed": before.armed as Any? ?? NSNull(), "currentArmed": after.armed as Any? ?? NSNull(),
+            "originalPaint": before.painted as Any? ?? NSNull(), "currentPaint": after.painted as Any? ?? NSNull(),
+            "originalTimerFireDateReferenceSeconds": before.expiryFireDate?.timeIntervalSinceReferenceDate as Any? ?? NSNull(),
+            "currentTimerFireDateReferenceSeconds": after.expiryFireDate?.timeIntervalSinceReferenceDate as Any? ?? NSNull(),
+            "originalRetarget": before.retarget as Any? ?? NSNull(), "currentRetarget": after.retarget as Any? ?? NSNull()]
+        if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) { print("MUSIC_PAUSE_NOTICE_DIAGNOSTIC_JSON: " + json) }
+    }
+    private func verifyNoticePauseControls() throws {
+        // Pure fabricated state controls, not native Timer or scheduling proof.
+        // This is the same predicate used for the real before/after snapshots.
+        let originalTimer = NSObject(), replacementTimer = NSObject()
+        let before = NoticePauseState(noticeID: UUID(), armed: 10, painted: 9.9,
+            expiryIdentity: ObjectIdentifier(originalTimer), expiryFireDate: Date(timeIntervalSinceReferenceDate: 14),
+            expiryValid: true, noticeTarget: true, musicTarget: false, accessoryTarget: true,
+            owner: .quotaNotice, retarget: 9.8)
+        var after = before; after.accessoryTarget = false; after.retarget = 11
+        try require(after.retarget != before.retarget && noticePauseChecks(before: before, after: after).values.allSatisfy { $0 },
+            "notice pause control allows accessory-only retarget without replacing the live original deadline")
+        try require(!noticePauseChecks(before: before, after: before).values.allSatisfy { $0 },
+            "notice pause control rejects checking controller state before the panel consumes pause")
+        let mutations: [(String, (inout NoticePauseState) -> Void)] = [
+            ("notice-cleared", { $0.noticeTarget = false }),
+            ("notice-replaced", { $0.noticeID = UUID() }),
+            ("notice-missing", { $0.noticeID = nil }),
+            ("armed-restarted", { $0.armed = 11 }),
+            ("armed-missing", { $0.armed = nil }),
+            ("paint-replaced", { $0.painted = 10.9 }),
+            ("paint-missing", { $0.painted = nil }),
+            ("timer-replaced", { $0.expiryIdentity = ObjectIdentifier(replacementTimer) }),
+            ("timer-missing", { $0.expiryIdentity = nil }),
+            ("expiry-earlier", { $0.expiryFireDate = Date(timeIntervalSinceReferenceDate: 13) }),
+            ("expiry-later", { $0.expiryFireDate = Date(timeIntervalSinceReferenceDate: 15) }),
+            ("expiry-missing", { $0.expiryFireDate = nil }),
+            ("expiry-fired-or-invalidated", { $0.expiryValid = false }),
+            ("owner-released", { $0.owner = .idle }),
+            ("music-restored", { $0.musicTarget = true }),
+            ("panel-update-pending", { $0.accessoryTarget = true })]
+        for (label, mutate) in mutations {
+            var damaged = after; mutate(&damaged)
+            try require(!noticePauseChecks(before: before, after: damaged).values.allSatisfy { $0 },
+                "notice pause control rejects " + label)
+        }
+        print("MUSIC_PAUSE_NOTICE_CONTROLS_OK: positive=1 negative=17 actualNoticePredicate=true nativeTimerRun=false")
     }
     private func verifyOCRMatchingControls() throws {
         let cases: [([String], String, Bool)] = [
