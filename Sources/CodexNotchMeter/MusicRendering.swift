@@ -13,6 +13,15 @@ protocol MusicNoticePauseProbeProviding: AnyObject {
     var smokeNoticeExpiry: (identity: ObjectIdentifier, fireDate: Date, isValid: Bool)? { get }
 }
 
+/// Optional typed observation of the exact production hover clock. Historical
+/// harness overlays need no new members on their unchanged production panel.
+@MainActor
+protocol MusicPointerHoverProbeProviding: AnyObject {
+    var smokeMusicStationaryRadius: CGFloat { get }
+    func smokePointerHoverDecision(at eventTime: TimeInterval, kind: String) ->
+        (timestamp: TimeInterval, inside: Bool, expandedBefore: Bool, expandedAfter: Bool)?
+}
+
 /// Synthetic, in-process integration of the production controller and existing
 /// CompactDetailView. No Music IPC, network, selected files or preference writes.
 /// The only raster inspected is this harness's own NSView cache, never a screen.
@@ -2668,6 +2677,11 @@ final class MusicRenderHarness: NSObject {
         sourceWindow.ignoresMouseEvents = true
         sourceWindow.orderFrontRegardless()
         defer { panel.stop(); sourceWindow.close() }
+        guard let hoverProbe = (panel as AnyObject) as? MusicPointerHoverProbeProviding else {
+            throw Failure(label: "missing native pointer hover-clock probe")
+        }
+        try require(hoverProbe.smokeMusicStationaryRadius == 3,
+            "native moving and jitter fixtures use the unchanged three-point fixed-anchor tolerance")
         try require(sourceWindow.windowNumber > 0 && sourceWindow.frame.minX < 0 && sourceWindow.frame.minY < 0,
                     "queued pointer fixture owns a static negative-origin native window")
         try await waitIdle(panel, after: 0)
@@ -2716,7 +2730,10 @@ final class MusicRenderHarness: NSObject {
                         ? receipt.kind == "event" : (receipt.kind == "button" || receipt.kind == "stale"))
             }
         }
+        var ingressEvidenceDumped = false
         func dumpIngressEvidence(_ point: CGPoint, timestamp: TimeInterval) {
+            guard !ingressEvidenceDumped else { return }
+            ingressEvidenceDumped = true
             let entries: [[String: Any]] = panel.smokePointerEntries.map { entry in
                 ["monitor": entry.monitor, "eventNumber": entry.eventNumber, "eventType": entry.eventType,
                  "windowNumber": entry.windowNumber, "localPoint": evidencePoint(entry.localPoint),
@@ -2729,9 +2746,14 @@ final class MusicRenderHarness: NSObject {
             }
             let nonPoll = panel.smokePointerIngress.filter { $0.kind != "poll" }
             func accepted(_ receipt: IslandPointerIngressReceipt) -> [String: Any] {
-                ["point": evidencePoint(receipt.point), "timestamp": evidenceNumber(receipt.timestamp),
-                 "deltaNs": evidenceNumber((receipt.timestamp - timestamp) * 1_000_000_000),
-                 "kind": receipt.kind, "owner": String(describing: receipt.owner), "target": receipt.target]
+                var row: [String: Any] = ["point": evidencePoint(receipt.point), "timestamp": evidenceNumber(receipt.timestamp),
+                    "deltaNs": evidenceNumber((receipt.timestamp - timestamp) * 1_000_000_000),
+                    "kind": receipt.kind, "owner": String(describing: receipt.owner), "target": receipt.target]
+                if let hover = hoverProbe.smokePointerHoverDecision(at: receipt.timestamp, kind: receipt.kind) {
+                    row["hover"] = ["timestamp": hover.timestamp, "inside": hover.inside,
+                        "expandedBefore": hover.expandedBefore, "expandedAfter": hover.expandedAfter]
+                } else { row["hover"] = NSNull() }
+                return row
             }
             let expectedIDs = postedEvidence.filter { ($0["constructedTimestamp"] as? Double) == timestamp }
                 .compactMap { $0["eventNumber"] as? Int }
@@ -2740,11 +2762,23 @@ final class MusicRenderHarness: NSObject {
                 "monitorOverflow": panel.smokePointerEntriesOverflow, "acceptedHistoryOverflow": panel.smokeHistoryOverflow,
                 "nonPollCount": nonPoll.count, "nonPollReceipts": nonPoll.prefix(256).map(accepted),
                 "nearestReceipts": nonPoll.sorted { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }.prefix(8).map(accepted),
-                "latestReceipts": panel.smokePointerIngress.suffix(4).map(accepted)]
+                "latestReceipts": panel.smokePointerIngress.suffix(4).map(accepted),
+                "recentAcceptedReceipts": panel.smokePointerIngress.suffix(256).map(accepted),
+                "recentAcceptedTruncated": panel.smokePointerIngress.count > 256]
             if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys]),
                data.count < 1_000_000, let json = String(data: data, encoding: .utf8) {
                 print("MUSIC_POINTER_INGRESS_EVIDENCE_JSON: \(json)")
             } else { print("MUSIC_POINTER_EVIDENCE_FAILED: bounded synthetic ingress evidence could not be encoded") }
+        }
+        var ingressSucceeded = false
+        defer {
+            // Preserve evidence for any later failed assertion, before panel
+            // teardown. A bounded dump is emitted at most once per fixture.
+            if !ingressSucceeded, let posted = postedEvidence.last,
+               let point = posted["requestedScreenPoint"] as? [Double], point.count == 2,
+               let timestamp = posted["constructedTimestamp"] as? Double {
+                dumpIngressEvidence(CGPoint(x: point[0], y: point[1]), timestamp: timestamp)
+            }
         }
         func enqueue(_ point: CGPoint, timestamp: TimeInterval, window: NSWindow?, type: NSEvent.EventType = .mouseMoved) throws -> TimeInterval {
             guard postedEvidence.count < 256 else { throw Failure(label: "synthetic pointer construction evidence exceeded 256 events") }
@@ -2807,8 +2841,15 @@ final class MusicRenderHarness: NSObject {
             }
         }
         func requireNoDetails() throws {
-            try require(!panel.isInteracting && panel.smokeExpansionOwner != .details
-                && panel.smokeTargetProgress != 1,
+            let valid = !panel.isInteracting && panel.smokeExpansionOwner != .details && panel.smokeTargetProgress != 1
+            if !valid, let posted = postedEvidence.last,
+               let point = posted["requestedScreenPoint"] as? [Double], point.count == 2,
+               let timestamp = posted["constructedTimestamp"] as? Double {
+                // Dump existing bounded ingress before cleanup: source timestamp,
+                // actual entry delivery, exact hover clock, and intervening polls.
+                dumpIngressEvidence(CGPoint(x: point[0], y: point[1]), timestamp: timestamp)
+            }
+            try require(valid,
                 "each delivered moving pointer sample preserves music or idle without a transient details target")
         }
         func postPoint(_ point: CGPoint, window: NSWindow?, forbidDetails: Bool = true) async throws {
@@ -2882,7 +2923,12 @@ final class MusicRenderHarness: NSObject {
         // First exit the full 400 pt shell, then approach across the music-only
         // shoulders slowly enough that an old 120 ms moving hover could fire.
         let closedAt = CACurrentMediaTime()
-        let slowOffsets: [CGFloat] = [230, 190, 176, 174, 172, 170, 162, 150, 140, 100, 0, -100, -140, -170, -210, -230]
+        // Every moving sample must leave the three-point jitter radius. A 2 pt
+        // step delivered after 120 ms is a valid stationary dwell, not evidence
+        // of broken gesture priority. Do not rely on Task.sleep being on time.
+        let slowOffsets: [CGFloat] = [230, 190, 176, 172, 168, 164, 160, 150, 140, 100, 0, -100, -140, -170, -210, -230]
+        try require(zip(slowOffsets, slowOffsets.dropFirst()).allSatisfy { pair in abs(pair.0 - pair.1) > hoverProbe.smokeMusicStationaryRadius },
+            "each slow native movement leaves the fixed-anchor jitter radius")
         for offset in slowOffsets {
             try await postPoint(CGPoint(x: center + offset, y: bottomY), window: sourceWindow)
             representativeEventNumbers.insert(lastPostedEventNumber)
@@ -2909,27 +2955,46 @@ final class MusicRenderHarness: NSObject {
         let stationary = CGPoint(x: musicFrame.midX, y: musicFrame.minY + 10)
         try require(panel.geometry.hoverContains(stationary, progress: panel.smokeMusicTargetProgress)
             && !corridor.contains(stationary), "stationary details hover uses visible music body outside the crossing band")
-        // Each 2 pt delta is below the 3 pt hand-jitter tolerance, but the
-        // cumulative motion exceeds it before the intentional 120 ms dwell.
-        // Updating the anchor after every sample would incorrectly open details.
-        // Sub-3 pt jitter that stays near one anchor is covered by the stationary gate.
-        for step in 0..<12 {
-            try await postPoint(CGPoint(x: stationary.x + CGFloat(step) * 2, y: stationary.y), window: nil)
+        // Native delivery may exceed the requested sleep. Use unambiguous
+        // movement here; fast cumulative 2 pt motion versus a rolling anchor is
+        // covered separately by deterministic tests of the actual core types.
+        let movingPoints = (0..<12).map { CGPoint(x: stationary.x + CGFloat($0) * 4, y: stationary.y) }
+        try require(movingPoints.allSatisfy { panel.geometry.hoverContains($0, progress: panel.smokeMusicTargetProgress) }
+            && zip(movingPoints, movingPoints.dropFirst()).allSatisfy { pair in
+                hypot(pair.0.x - pair.1.x, pair.0.y - pair.1.y) > hoverProbe.smokeMusicStationaryRadius
+            }, "native moving samples remain inside the visible body and each leave the jitter radius")
+        for point in movingPoints {
+            try await postPoint(point, window: nil)
             try await dwell(0.025)
         }
         try require(!panel.isInteracting && panel.smokeLyricsSelected,
-                    "cumulative 2-point native motion is measured from a fixed hover anchor")
+                    "unambiguous native motion inside the visible body never opens details")
         let stationaryRead = try await read(fixture)
         try await release(fixture, stationaryRead, position: 1)
         try await postPoint(outside, window: nil)
         let hoveredAt = CACurrentMediaTime()
         try await postPoint(stationary, window: nil)
+        guard let stationaryPosted = postedEvidence.last, let stationaryEntry = localEntry(stationaryPosted),
+              let firstHover = hoverProbe.smokePointerHoverDecision(at: stationaryEntry.timestamp, kind: "event") else {
+            throw Failure(label: "initial native stationary sample lacks its real hover decision")
+        }
+        try require(firstHover.inside && !firstHover.expandedAfter,
+            "initial native stationary sample starts the unexpanded hover dwell")
         try await dwell(0.14)
         let detailsPaintStart = CACurrentMediaTime()
         let detailsEventStart = ProcessInfo.processInfo.systemUptime
-        try await postPoint(stationary, window: nil, forbidDetails: false)
-        try require(panel.isInteracting && panel.smokeExpansionOwner == .details && panel.smokeTargetProgress == 1,
-                    "two genuinely stationary queued samples retain ordinary intentional details hover")
+        let stationaryJitter = CGPoint(x: stationary.x + 2, y: stationary.y)
+        try await postPoint(stationaryJitter, window: nil, forbidDetails: false)
+        guard let jitterPosted = postedEvidence.last, let jitterEntry = localEntry(jitterPosted),
+              let jitterHover = hoverProbe.smokePointerHoverDecision(at: jitterEntry.timestamp, kind: "event") else {
+            throw Failure(label: "native two-point jitter lacks its real hover decision")
+        }
+        let jitterDistance = hypot(stationaryJitter.x - stationary.x, stationaryJitter.y - stationary.y)
+        try require(jitterDistance == 2 && jitterDistance <= hoverProbe.smokeMusicStationaryRadius
+            && jitterHover.timestamp - firstHover.timestamp >= 0.12 && jitterHover.inside && jitterHover.expandedAfter
+            && panel.isInteracting && panel.smokeExpansionOwner == .details && panel.smokeTargetProgress == 1,
+            "two-point native jitter within the fixed anchor retains intentional hover after real dwell")
+        print("MUSIC_NATIVE_JITTER_DIAGNOSTIC: firstHover=\(firstHover.timestamp) jitterHover=\(jitterHover.timestamp) distance=\(jitterDistance) expandedBefore=\(jitterHover.expandedBefore) expandedAfter=\(jitterHover.expandedAfter)")
         let settleDeadline = CACurrentMediaTime() + 3.6
         while CACurrentMediaTime() < settleDeadline && !nativeSettled(panel, progress: 1, after: hoveredAt) {
             try await dwell(0.08)
@@ -3053,7 +3118,8 @@ final class MusicRenderHarness: NSObject {
         try require(!panel.smokeLyricsSelected && fixture.controller.isPlayingForPresentation
             && NSApp.keyWindow === initialKey && panel.smokePointerIngress.contains(where: { $0.kind == "poll" }),
             "queued native input preserves playback and key focus while the real polling fallback is installed")
-        print("MUSIC_NATIVE_INPUT_OK: localEventQueue=true globalSystemDelivery=false queuedPoints=true originalTimestamps=true windowCoordinates=true nilWindowCoordinates=true negativeOrigin=true lowerBand=true slowReverse=true noMovingDetails=true stationaryHover=true fixedHoverAnchor=true equalTimestampButtons=true heldButtons=true postedEvents=\(postedEvents)")
+        print("MUSIC_NATIVE_INPUT_OK: localEventQueue=true globalSystemDelivery=false queuedPoints=true originalTimestamps=true windowCoordinates=true nilWindowCoordinates=true negativeOrigin=true lowerBand=true slowReverse=true noMovingDetails=true stationaryHover=true movementOutsideJitter=true stationaryJitter=true equalTimestampButtons=true heldButtons=true postedEvents=\(postedEvents)")
+        ingressSucceeded = true
     }
 
     private func verifyRenderCommitHistory(_ panel: IslandPanelController, label: String) throws {

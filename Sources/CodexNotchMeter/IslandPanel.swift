@@ -25,7 +25,7 @@ struct IslandPointerIngressReceipt {
     let hoverDecision: IslandPointerHoverDecision?
 }
 
-/// Present only when the cache fixture's real input reaches hover.update.
+/// Present only when an explicit native-input fixture reaches hover.update.
 /// The timestamp is that call's exact clock argument, never a delivery proxy.
 struct IslandPointerHoverDecision: Equatable {
     let timestamp: TimeInterval
@@ -630,7 +630,8 @@ final class IslandPanelController: NSObject {
             resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
         let hoverDecision: IslandPointerHoverDecision?
         if model.demo, CommandLine.arguments.contains("--music-test"),
-           CommandLine.arguments.contains("--music-cache-test"), source != .synthetic {
+           (CommandLine.arguments.contains("--music-cache-test") || CommandLine.arguments.contains("--pointer-ingress-test")),
+           source != .synthetic {
             hoverDecision = IslandPointerHoverDecision(timestamp: hoverNow, inside: inside,
                 expandedBefore: before, expandedAfter: hover.isExpanded)
         } else { hoverDecision = nil }
@@ -1140,6 +1141,13 @@ final class IslandPanelController: NSObject {
     // Read-only fixture snapshots: do not expose a mutable Timer or add any
     // recurring work to the production notification/animation paths.
     var smokeMusicAccessoryTargetActive: Bool { accessoryTarget }
+    var smokeMusicStationaryRadius: CGFloat { IslandMusicHoverReservation.stationaryRadius }
+    func smokePointerHoverDecision(at eventTime: TimeInterval, kind: String) ->
+        (timestamp: TimeInterval, inside: Bool, expandedBefore: Bool, expandedAfter: Bool)? {
+        guard model.demo, CommandLine.arguments.contains("--pointer-ingress-test"),
+              let decision = smokePointerIngress.last(where: { $0.timestamp == eventTime && $0.kind == kind })?.hoverDecision else { return nil }
+        return (decision.timestamp, decision.inside, decision.expandedBefore, decision.expandedAfter)
+    }
     var smokeNoticeExpiry: (identity: ObjectIdentifier, fireDate: Date, isValid: Bool)? {
         guard model.demo, CommandLine.arguments.contains("--music-test"), let noticeExpiry else { return nil }
         return (ObjectIdentifier(noticeExpiry), noticeExpiry.fireDate, noticeExpiry.isValid)
@@ -1223,5 +1231,5 @@ final class IslandPanelController: NSObject {
 }
 // Only the current full Music fixture consumes these read-only probes. Older
 // production panels overlaid with the same harness need not conform.
-extension IslandPanelController: MusicNoticePauseProbeProviding {}
+extension IslandPanelController: MusicNoticePauseProbeProviding, MusicPointerHoverProbeProviding {}
 #endif
