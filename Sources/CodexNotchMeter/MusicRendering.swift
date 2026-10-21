@@ -66,6 +66,7 @@ final class MusicRenderHarness: NSObject {
         started = true; startedAt = CACurrentMediaTime(); initialKey = NSApp.keyWindow
         guard CommandLine.arguments.contains("--music-test") else { finish(false); return }
         guard [pointerVerificationOnly, lyricsRecoveryOnly, gestureRecoveryOnly].filter({ $0 }).count <= 1 else { finish(false); return }
+        guard !CommandLine.arguments.contains("--lyrics-cross-track-test") || lyricsRecoveryOnly else { finish(false); return }
         let deadline: TimeInterval = gestureRecoveryOnly ? 100 : (lyricsRecoveryOnly ? 90 : (pointerVerificationOnly ? 45 : 150))
         let timer = Timer(timeInterval: deadline, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -756,6 +757,10 @@ final class MusicRenderHarness: NSObject {
     /// Controller-only evidence through the production poll loop. This separate
     /// 90-second invocation neither extends nor replaces the 150-second paint gate.
     private func runLyricsRecoveryVerification() async throws {
+        if CommandLine.arguments.contains("--lyrics-cross-track-test") {
+            try await runCrossTrackLyricsVerification()
+            return
+        }
         try await verifySoftLyricsRecovery()
         try await verifyLyricsRecoveryBoundaries()
         try await verifySoftRecoveryLateResults()
@@ -780,6 +785,100 @@ final class MusicRenderHarness: NSObject {
         print("MUSIC_LYRICS_RECOVERY_CLEANUP_OK: controllers=\(fixtures.count) pendingRequests=0 countsStable=true")
         lyricsRecoveryCompleted = true
         print("MUSIC_LYRICS_RECOVERY_GATE_OK: independent=true deadline=90 oldMusicDeadline=150 softCases=8 boundaryCases=12 lateCases=2 chainCases=1 controllerOnly=true")
+    }
+
+    /// Separate invocation: never changes the original recovery/red-green
+    /// fixture order, count, failure point or receipt contract.
+    private func runCrossTrackLyricsVerification() async throws {
+        try await verifyCrossTrackLyricsAvailability()
+        for value in fixtures {
+            value.controller.stop()
+            await value.reader.releaseAll(.unavailable(.cancelled))
+            await value.lookup.releaseAll(.unavailable)
+            await value.importer.releaseAll(.unavailable)
+        }
+        let counts = await countsFor(fixtures)
+        try await dwell(0.10)
+        var pending = 0
+        for value in fixtures {
+            pending += await value.reader.pendingCount()
+            pending += await value.lookup.pendingCount()
+            pending += await value.importer.pendingCount()
+        }
+        let finalCounts = await countsFor(fixtures)
+        try require(pending == 0 && finalCounts == counts
+            && fixtures.count == 3 && passivePanels.allSatisfy { $0.smokeStopped },
+            "cross-track invocation retires all three controllers, panels and continuations")
+        print("MUSIC_LYRICS_CROSS_TRACK_CLEANUP_OK: controllers=3 pendingRequests=0 countsStable=true panelsStopped=true")
+        lyricsRecoveryCompleted = true
+        print("MUSIC_LYRICS_CROSS_TRACK_GATE_OK: cases=3 deadline=90 nativeEventDelivery=false scanout=false")
+    }
+
+    /// Real controller lookup/poll and island ownership across A -> B. Synthetic
+    /// pointer samples exercise production recognition, not native event delivery.
+    private func verifyCrossTrackLyricsAvailability() async throws {
+        for outcome in ["matched", "no-match", "gap"] {
+            let value = makeFixture()
+            let model = MeterModel(demo: true, music: value.controller)
+            value.controller.start(); value.controller.setOnlineLookupEnabled(true)
+            value.controller.setEnabled(true)
+            let aRead = try await readLyricsRecovery(value)
+            try await release(value, aRead, position: 1)
+            let aLookup = try await lookup(value)
+            try require(await value.lookup.release(aLookup.id, .matched(document("[00:00]\(Self.firstLine)"))),
+                        "complete actual A lookup")
+            try await until("A lyrics become eligible") { value.controller.isPlayingForPresentation }
+            guard let geometry = makeGeometry() else { throw Failure(label: "cross-track geometry unavailable") }
+            let panel = IslandPanelController(model: model, geometry: geometry, startPolling: false,
+                reducedMotionOverride: true, hovered: {}, refresh: {}, settings: {}, quit: {})
+            passivePanels.append(panel)
+            defer { panel.stop(); value.controller.stop() }
+            try openLyrics(panel)
+            let bRead = try await readLyricsRecovery(value)
+            try await release(value, bRead, track: "HARBOR B", position: 1)
+            let bLookup = try await lookup(value)
+            try await until("B loading hides A and releases music ownership") {
+                value.controller.lookupState == .loading && value.controller.line.isEmpty
+                    && !panel.smokeMusicTargetActive
+            }
+            try require(value.controller.lyricsModeEnabled && value.controller.isFreshPlaying,
+                        "track change retains only explicit mode, not A content")
+            let result: LyricsLookupResult
+            switch outcome {
+            case "no-match": result = .noMatch
+            case "gap": result = .matched(try document("[00:00]\(Self.secondLine)\n[00:00.50]\n[00:10]\(Self.secondLine)"))
+            default: result = .matched(try document("[00:00]\(Self.secondLine)"))
+            }
+            try require(await value.lookup.release(bLookup.id, result), "complete exact B result")
+            if outcome == "matched" {
+                try await until("fresh matched B restores existing music selection without another gesture") {
+                    value.controller.line == Self.secondLine && panel.smokeMusicTargetActive
+                }
+            } else {
+                try await until("B unavailable content exposes its actual reason") {
+                    value.controller.statusText == (outcome == "gap" ? "间奏" : "未找到匹配歌词，可导入本地 LRC")
+                }
+                try require(!value.controller.isPlayingForPresentation && !panel.smokeMusicTargetActive
+                    && value.controller.line.isEmpty, "no-match and gap never reuse A lyrics")
+                if outcome == "gap" {
+                    let resumed = try await readLyricsRecovery(value)
+                    try await release(value, resumed, track: "HARBOR B", position: 11)
+                } else {
+                    try await importDocument(value, text: "[00:00]\(Self.secondLine)", expectedCurrent: Self.secondLine)
+                }
+                try await until("newly usable B restores selected presentation") {
+                    value.controller.line == Self.secondLine && panel.smokeMusicTargetActive
+                }
+            }
+            // Clear both the corridor-exit latch and temporal history through
+            // the ordinary explicit exit, then require complete fresh crossings.
+            try await dwell(0.25)
+            try require(panel.smokeMusicGesture(openLyrics: false), "fresh reverse crossing closes B")
+            try await dwell(0.25)
+            try openLyrics(panel)
+            try require(value.controller.trackTitle == "HARBOR B", "crossing cannot restore A metadata")
+            print("MUSIC_LYRICS_CROSS_TRACK_CASE_OK: result=\(outcome) loadingHidden=true oldContentRejected=true selectedPreserved=true freshBRecovered=true newCrossing=true nativeEventDelivery=false")
+        }
     }
 
     /// Recovery-only cursor: ordinary legacy fixtures keep their existing reader
@@ -3761,6 +3860,9 @@ final class MusicRenderHarness: NSObject {
         if gestureRecoveryOnly {
             print(valid ? "MUSIC_GESTURE_RECOVERY_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true nativeQueue=true scanout=false"
                         : "MUSIC_GESTURE_RECOVERY_FAILED: native synthetic gesture recovery contract failed")
+        } else if lyricsRecoveryOnly && CommandLine.arguments.contains("--lyrics-cross-track-test") {
+            print(valid ? "MUSIC_LYRICS_CROSS_TRACK_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true nativeEventDelivery=false scanout=false"
+                        : "MUSIC_LYRICS_CROSS_TRACK_FAILED: cross-track availability contract failed")
         } else if lyricsRecoveryOnly {
             print(valid ? "MUSIC_LYRICS_RECOVERY_DONE: checks=\(checks) elapsed=\(decimal(elapsed)) synthetic=true realPolling=true controllerOnly=true scanout=false"
                         : "MUSIC_LYRICS_RECOVERY_FAILED: native synthetic recovery contract failed")

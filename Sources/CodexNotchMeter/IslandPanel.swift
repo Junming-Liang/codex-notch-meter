@@ -627,7 +627,10 @@ final class IslandPanelController: NSObject {
         widthBridge != nil || geometry.widthPresentation != nil ? presentation.progress : motion.progress
     }
     private func currentHoverContains(_ point: CGPoint) -> Bool {
-        geometry.hoverContains(point, progress: currentHoverProgress)
+        // Expanded hover owns details, even if the user's lyric-mode preference
+        // remains selected underneath. Passive lyrics never enable this hold.
+        geometry.hoverContains(point, progress: currentHoverProgress,
+            retainingMusicOrigin: model.music.isFreshPlaying && hover.isExpanded)
     }
     private func updateClickRouting(_ point: CGPoint) {
         panel.ignoresMouseEvents = !(hover.isExpanded && widthBridge == nil && motion.isSettled && motion.progress == 1 && geometry.interactiveContains(point))

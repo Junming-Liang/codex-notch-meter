@@ -156,6 +156,11 @@ struct MusicLyricsSettings: View {
                 Text("默认关闭。启用后播放时保持收起；鼠标从左向右划过顶部显示匹配歌词，反向划过关闭。暂停收起，恢复时保留所选模式；额度提示临时优先。启用时请求读取 Music 当前歌曲、播放位置和封面的自动化权限；不会打开 Music 或控制播放。")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if music.enabled {
+                    Label("本设置窗口可见时，顶部音乐显示与歌词手势会暂停；关闭窗口后恢复。歌词读取和匹配仍继续。", systemImage: "info.circle")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("musicSettingsPresentationNotice")
                     Text(music.statusText).font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let diagnostic = music.providerDiagnosticText {

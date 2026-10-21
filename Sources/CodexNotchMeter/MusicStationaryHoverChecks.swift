@@ -33,6 +33,12 @@ final class MusicStationaryHoverChecks {
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                if CommandLine.arguments.contains("--music-wide-quota-hover-test") {
+                    self.emit("MUSIC_WIDE_QUOTA_HOVER_JSON", try await self.wideMusicQuotaHover())
+                    print("MUSIC_WIDE_QUOTA_HOVER_OK: nativeLocal=true naturalPoll=true synthetic=true")
+                    self.finish(true)
+                    return
+                }
                 let began = ProcessInfo.processInfo.systemUptime
                 var rows: [[String: Any]] = []
                 for edge in ["left", "right"] { rows.append(try await self.edge(edge)) }
@@ -95,9 +101,9 @@ final class MusicStationaryHoverChecks {
         }
         func stop() { panel.stop(); source.close(); controller.stop() }
     }
-    private func prepare() async throws -> Fixture {
+    private func prepare(notchWidth: CGFloat = 220) async throws -> Fixture {
         guard let screen = NSScreen.main else { throw Failure(label: "native-screen") }
-        let s = screen.frame, inset: CGFloat = 32, half: CGFloat = 110
+        let s = screen.frame, inset: CGFloat = 32, half: CGFloat = notchWidth / 2
         guard let notch = NotchGeometry.calculate(screen: s, topInset: Double(inset),
             auxiliaryLeft: CGRect(x: s.minX, y: s.maxY - inset, width: s.midX - half - s.minX, height: inset),
             auxiliaryRight: CGRect(x: s.midX + half, y: s.maxY - inset, width: s.maxX - s.midX - half, height: inset)),
@@ -178,6 +184,63 @@ final class MusicStationaryHoverChecks {
         let queued = try enqueue(p, f)
         return try await delivered(queued, f)
     }
+    /// Isolated music-playing / lyrics-unselected / quota-hover regression.
+    /// Uses real local-event dispatch, the production poll timer, controller,
+    /// geometry, owner, spring and natural paint. It is not global user input.
+    private func wideMusicQuotaHover() async throws -> [String: Any] {
+        let f = try await prepare(notchWidth: 330)
+        defer { f.stop(); active = nil }
+        let g = f.panel.geometry
+        let p = CGPoint(x: g.calibratedNotch.midX + 194, y: g.screen.maxY - 16)
+        try require(g.hoverContains(p, progress: 0) && !g.hoverContains(p, progress: 1),
+            "wide-music-quota-geometric-counterexample")
+        let entered = ProcessInfo.processInfo.systemUptime
+        f.panel.smokeSetPolledPointer(p)
+        _ = try await post(p, f)
+        try await until("wide-music-quota-settled") {
+            guard let paint = f.panel.paintReceipt else { return false }
+            return f.panel.smokeExpansionOwner == .details && f.panel.smokeTargetProgress == 1
+                && f.panel.smokeProgress == 1 && paint.frame.progress == 1
+                && !f.panel.motionProbe.running
+        }
+        let settled = ProcessInfo.processInfo.systemUptime
+        while ProcessInfo.processInfo.systemUptime - settled < 2.4 {
+            try require(f.controller.isFreshPlaying && !f.controller.lyricsModeEnabled
+                && f.panel.smokeExpansionOwner == .details && f.panel.smokeTargetProgress == 1
+                && f.panel.smokeProgress == 1 && !f.panel.motionProbe.running,
+                "wide-music-quota-stationary-owner-must-not-oscillate")
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let polls = f.panel.smokePointerIngress.filter { $0.kind == "poll" && $0.timestamp >= settled }
+        let readCount = await f.reader.callCount
+        try require(polls.count >= 30 && readCount >= 3, "wide-music-quota-real-polls-and-refreshes")
+        try require(!f.panel.smokePointerIngress.contains {
+            $0.timestamp >= entered && $0.hoverDecision?.expandedBefore == true
+                && $0.hoverDecision?.expandedAfter == false
+        }, "wide-music-quota-no-animation-induced-exit")
+        f.panel.smokeSetPolledPointer(f.outside)
+        _ = try await post(f.outside, f)
+        try await until("wide-music-quota-real-exit-closes") {
+            f.panel.smokeExpansionOwner == .idle && f.panel.smokeProgress == 0 && !f.panel.motionProbe.running
+        }
+        // Re-enter, then pause without moving: freshness must release the
+        // retained music origin rather than leaving an invisible hover trap.
+        f.panel.smokeSetPolledPointer(p)
+        _ = try await post(p, f)
+        try await until("wide-music-quota-second-open") {
+            f.panel.smokeExpansionOwner == .details && f.panel.smokeProgress == 1 && !f.panel.motionProbe.running
+        }
+        await f.reader.setPaused(true)
+        try await until("wide-music-quota-pause-releases-origin") {
+            !f.controller.isFreshPlaying && f.panel.smokeExpansionOwner == .idle
+                && f.panel.smokeProgress == 0 && !f.panel.motionProbe.running
+        }
+        return ["schema": 1, "synthetic": true, "globalSystemDelivery": false,
+            "notchWidth": 330, "pointer": point(p), "settledHoldSeconds": 2.4,
+            "polls": polls.count, "playbackReads": readCount, "lyricsSelected": false,
+            "stableDetails": true, "realExitClosed": true, "pauseReleasedOrigin": true]
+    }
+
     private func edge(_ name: String) async throws -> [String: Any] {
         let f = try await prepare(); defer { f.stop(); active = nil }
         let corridor = f.panel.geometry.musicGestureCorridor
