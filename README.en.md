@@ -162,3 +162,7 @@ Visual principles are inspired by the Linear, Raycast and Apple entries in [Volt
 ## Unreleased: optional AMLL fallback
 
 A separately confirmed, default-off AMLL fallback is available in the candidate source. Existing LRCLIB consent does not enable it. It sends title, artist and album to api.amll.dev only after LRCLIB lacks usable lyrics or temporarily fails; local imports retain precedence. Exact identity/ambiguity checks deliberately prefer missing lyrics over wrong lyrics. See [matching, privacy and validation limits](docs/AMLL-LYRICS.md). This is not a release or a guarantee of song coverage.
+
+## Manual jitter diagnostics
+
+Start capture in Settings, then close Settings and menus before reproducing. The menu-bar `●REC` remains visible; right-click it to stop and export. Capture is off by default, limited to five minutes and 2 MiB, memory-only until an explicit Save, and never auto-uploaded. No account data, song/lyric text or full desktop pointer trajectory is recorded. See [steps, privacy and validation limits](docs/DEBUG-CAPTURE.md).

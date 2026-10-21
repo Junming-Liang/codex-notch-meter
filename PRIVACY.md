@@ -73,3 +73,9 @@ Track/source changes, disabled settings, sleep, inactive session and Quit cancel
 AMLL is separately off by default, including upgrades from existing LRCLIB opt-in. Its confirmation names `api.amll.dev` and discloses title, artist and album transmission for current and future played tracks. No duration, Music persistent ID, Apple catalogue ID, Apple account data or local lyric file is sent to AMLL. Both LRCLIB and AMLL toggles must be enabled for fallback requests. Turning either off cancels affected work; local imports take precedence.
 
 The only added destination is `https://api.amll.dev/v1/lrclib/search`. At most one AMLL request follows an unsuccessful LRCLIB attempt. All existing transport restrictions apply: HTTPS allowlist, no redirects/auth/cookies/cache, 10-second request deadline and 1 MiB streaming byte ceiling. No server is deployed, API key obtained or lyric corpus embedded. See [provider contract](docs/AMLL-LYRICS.md) for matching, licensing and verification limits.
+
+## 手动诊断日志 / Manual diagnostic capture
+
+抖动诊断默认关闭，不持久化录制开关。用户开始后，最多录制 5 分钟、保留不超过 2 MiB 的结构化日志（内存结构有少量额外开销）。仅收集有限几何/状态/时序和刘海附近相对坐标，不记录完整桌面轨迹、歌曲/歌词正文、账户数据、凭据、文件路径或窗口标题。没有新增网络传输、截图、音频或权限请求。用户停止后通过原生保存面板选择位置，再自行检查和分享；取消或失败保留内存记录，退出清除。详见 [诊断说明](docs/DEBUG-CAPTURE.md)。
+
+Manual diagnostics are off by default and never restored on launch. Capture is bounded, memory-only until you explicitly save, and never auto-uploaded. Finite geometry/state/timing fields exclude credentials, account content, music/lyric text, paths, window titles and a full cursor trajectory. An exported file remains wherever you chose to save it.
