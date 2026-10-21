@@ -12,7 +12,7 @@ NUM = r"([0-9]+(?:\.[0-9]+)?)"
 INPUT = ("MUSIC_NATIVE_INPUT_OK: localEventQueue=true globalSystemDelivery=false "
          "queuedPoints=true originalTimestamps=true windowCoordinates=true nilWindowCoordinates=true "
          "negativeOrigin=true lowerBand=true slowReverse=true noMovingDetails=true stationaryHover=true "
-         "fixedHoverAnchor=true equalTimestampButtons=true heldButtons=true postedEvents=")
+         "movementOutsideJitter=true stationaryJitter=true equalTimestampButtons=true heldButtons=true postedEvents=")
 GATE = "MUSIC_POINTER_GATE_OK: independent=true deadline=45 oldMusicDeadline=150 closedHeightMask=true nativeEventQueue=true"
 
 def valid_pointer_protocol(trace, expected_count):
@@ -235,6 +235,9 @@ def self_test():
         count += 2
     for a, b in [("=true", "=false"), ("globalSystemDelivery=false", "globalSystemDelivery=true"),
                  ("historyOverflow=false", "historyOverflow=true"),
+                 ("movementOutsideJitter=true", "movementOutsideJitter=false"),
+                 ("stationaryJitter=true", "stationaryJitter=false"),
+                 ("movementOutsideJitter=true stationaryJitter=true", "fixedHoverAnchor=true"),
                  ('"nativeFrameSampledAtPaint":true', '"nativeFrameSampledAtPaint":false'),
                  ('"nativeContentBounds":[0,0,300,40]', '"nativeContentBounds":[0,0,300,41]'), ("postedEvents=40", "postedEvents=2"),
                  ("maxAlphaDifference=0.0", "maxAlphaDifference=0.1"), ("visibleBottomPoints=3.0", "visibleBottomPoints=0"),
