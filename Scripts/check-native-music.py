@@ -83,6 +83,11 @@ def receipts_valid(stdout: str) -> bool:
         'MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true',
         'MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true',
     )
+    amll_boundaries = re.findall(r'^MUSIC_AMLL_BOUNDARY_OK: boundary=(revoke-amll|revoke-online|replace-track|local-import) lateRejected=true independentConsent=true$', stdout, re.MULTILINE)
+    if len(amll_boundaries) != 4 or set(amll_boundaries) != {'revoke-amll', 'revoke-online', 'replace-track', 'local-import'}:
+        return False
+    if sum(line.startswith('MUSIC_AMLL_BOUNDARY_OK:') for line in stdout.splitlines()) != 4:
+        return False
     lines = stdout.splitlines()
     singleton_prefixes = {line.split(':', 1)[0] for line in fixed} | {
         'MUSIC_NOTICE_POINTER_DWELL_OK', 'MUSIC_NATURAL_POINTER_OK', 'MUSIC_DISABLED_OK', 'MUSIC_CONSENT_OK', 'MUSIC_TIMELINE_OK', 'MUSIC_STALE_OK',
@@ -206,6 +211,10 @@ MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true w
 MUSIC_MINIMUM_FOOTER_OK: contentHeight=132 quotaRows=1,8 appearances=aqua,darkAqua observations=4 longLyric=true quitContained=true clickRouting=true ownViewPixels=true
 MUSIC_GESTURE_NEGATIVE_OK: center=true vertical=true jitter=true buttonDown=true trackReset=true pauseReset=true freshCrossingWorks=true realRecognizer=true sampledButtonState=true
 MUSIC_GESTURE_HOVER_OFF_OK: centerEntry=true selected=false owner=details quitVisible=true lyricAbsentOCR=true titleAbsentOCR=true quotaVisibleOCR=true returnedIdle=true naturalPaint=true sampledPointer=true
+MUSIC_AMLL_BOUNDARY_OK: boundary=revoke-amll lateRejected=true independentConsent=true
+MUSIC_AMLL_BOUNDARY_OK: boundary=revoke-online lateRejected=true independentConsent=true
+MUSIC_AMLL_BOUNDARY_OK: boundary=replace-track lateRejected=true independentConsent=true
+MUSIC_AMLL_BOUNDARY_OK: boundary=local-import lateRejected=true independentConsent=true
 MUSIC_OK: checks=400 elapsed=115.000 synthetic=true localViewPixels=true scanout=false
 SMOKE_OK: synthetic orderly shutdown
 '''

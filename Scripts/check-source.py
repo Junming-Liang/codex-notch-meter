@@ -36,6 +36,17 @@ for guard in ('guard consent else', 'components.host = "lrclib.net"', 'parts.per
               'guard let url = components.url, isAllowed(url: url)'):
     if guard not in lyrics_policy:
         failures.append(f'Optional lyrics request safety guard missing: {guard}')
+amll_policy = (root / 'Sources/NotchCore/AMLLLyricsLookup.swift').read_text()
+for guard in ('guard consent else', 'parts.host = "api.amll.dev"',
+              'p.percentEncodedPath == "/v1/lrclib/search"', 'records.count < pageSize',
+              'guard amllConsent, !track.album.isEmpty', 'guard selected == nil'):
+    if guard not in amll_policy:
+        failures.append(f'Optional AMLL safety guard missing: {guard}')
+controller = (root / 'Sources/CodexNotchMeter/MusicLyricsController.swift').read_text()
+if 'object(forKey: AMLLLookup.consentKey) as? Bool ?? false' not in controller:
+    failures.append('AMLL must have independent default-off consent')
+if 'self.amllFallbackEnabled == amllConsent' not in controller:
+    failures.append('AMLL completion must retain its consent snapshot')
 rpc = (root / 'Sources/NotchCore/RPC.swift').read_text()
 for required in ('refreshToken": false', 'F_SETNOSIGPIPE', 'SIGKILL', '4_194_304'):
     if required not in rpc:
