@@ -215,3 +215,7 @@ swift test
 原生设计参考 [VoltAgent / awesome-design-md](https://github.com/VoltAgent/awesome-design-md) 中 Linear、Raycast 与 Apple 的视觉原则，采用独立实现的界面与图标，不复用其品牌资产或代码。详见[设计说明](docs/DESIGN.md)。
 
 [MIT License](LICENSE) · 独立开源项目，不隶属于 OpenAI 或 Apple，也不代表其官方产品。Codex 等名称归各自权利人所有。
+
+## Unreleased: optional AMLL fallback
+
+A separately confirmed, default-off AMLL fallback is available in the candidate source. Existing LRCLIB consent does not enable it. It sends title, artist and album to api.amll.dev only after LRCLIB lacks usable lyrics or temporarily fails; local imports retain precedence. Exact identity/ambiguity checks deliberately prefer missing lyrics over wrong lyrics. See [matching, privacy and validation limits](docs/AMLL-LYRICS.md). This is not a release or a guarantee of song coverage.

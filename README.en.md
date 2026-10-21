@@ -158,3 +158,7 @@ The Codex account interface evolves. Native CI cannot validate a physical notch,
 Visual principles are inspired by the Linear, Raycast and Apple entries in [VoltAgent / awesome-design-md](https://github.com/VoltAgent/awesome-design-md). UI, icon and implementation are original; no brand assets or code were copied. [Design notes](docs/DESIGN.md).
 
 [MIT](LICENSE). Independent project, not affiliated with or endorsed by OpenAI or Apple. Product names belong to their respective owners.
+
+## Unreleased: optional AMLL fallback
+
+A separately confirmed, default-off AMLL fallback is available in the candidate source. Existing LRCLIB consent does not enable it. It sends title, artist and album to api.amll.dev only after LRCLIB lacks usable lyrics or temporarily fails; local imports retain precedence. Exact identity/ambiguity checks deliberately prefer missing lyrics over wrong lyrics. See [matching, privacy and validation limits](docs/AMLL-LYRICS.md). This is not a release or a guarantee of song coverage.
