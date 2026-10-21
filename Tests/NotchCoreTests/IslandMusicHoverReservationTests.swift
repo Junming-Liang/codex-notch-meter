@@ -158,6 +158,74 @@ final class IslandMusicHoverReservationTests: XCTestCase {
         XCTAssertTrue(hover.isExpanded)
     }
 
+    func testTwoPointJitterChangesFromWaitingToLegitimateHoverAtTheOriginalDwell() {
+        XCTAssertEqual(IslandMusicHoverReservation.stationaryRadius, 3)
+        for elapsed in [0.119, 0.120001, 0.14, 0.23] {
+            var lease = IslandMusicHoverReservation(), hover = IslandHoverState()
+            let anchor = CGPoint(x: 100, y: 100), jitter = CGPoint(x: 102, y: 100)
+            XCTAssertFalse(lease.shouldResetDwell(at: anchor))
+            hover.update(inside: true, now: 0)
+            XCTAssertFalse(lease.shouldResetDwell(at: jitter))
+            hover.update(inside: true, now: elapsed)
+            XCTAssertEqual(hover.isExpanded, elapsed >= 0.12)
+            XCTAssertEqual(lease.stationaryAnchor, anchor)
+        }
+    }
+
+    func testFastCumulativeTwoPointMovementRejectsRollingAnchorMutation() {
+        var lease = IslandMusicHoverReservation(), hover = IslandHoverState()
+        var rollingHover = IslandHoverState(), previous: CGPoint?
+        var mutationOpened = false
+        for tick in 0..<12 {
+            let point = CGPoint(x: 100 + CGFloat(tick) * 2, y: 100)
+            let time = Double(tick) * 0.045
+            // Same controller ordering outside its narrow gesture corridor but
+            // inside the larger visible hover body. Use the real core types.
+            XCTAssertFalse(lease.reservesPointer(false, insideCorridor: false, enabled: true, now: time))
+            if lease.shouldResetDwell(at: point) { hover.reset() }
+            hover.update(inside: true, now: time)
+            XCTAssertFalse(hover.isExpanded)
+            // Deliberately wrong previous-sample anchor: this negative control
+            // must open, proving the trajectory distinguishes the fixed anchor.
+            if let previous, hypot(point.x - previous.x, point.y - previous.y) > 3 { rollingHover.reset() }
+            previous = point
+            rollingHover.update(inside: true, now: time)
+            mutationOpened = mutationOpened || rollingHover.isExpanded
+        }
+        XCTAssertTrue(mutationOpened)
+    }
+
+    func testUnambiguousMovingSamplesResetDwellBeforeHoverAtDelayedDeliveries() {
+        for interval in [0.025, 0.045, 0.12, 0.14, 0.23] {
+            var lease = IslandMusicHoverReservation(), hover = IslandHoverState()
+            for tick in 0..<12 {
+                let point = CGPoint(x: 100 + CGFloat(tick) * 4, y: 100)
+                let time = Double(tick) * interval
+                if lease.shouldResetDwell(at: point) { hover.reset() }
+                hover.update(inside: true, now: time)
+                XCTAssertFalse(hover.isExpanded)
+            }
+            // Stop after true movement. The original hover dwell still works.
+            let stopped = CGPoint(x: 144, y: 100)
+            XCTAssertFalse(lease.shouldResetDwell(at: stopped))
+            hover.update(inside: true, now: 11 * interval + 0.14)
+            XCTAssertTrue(hover.isExpanded)
+        }
+    }
+
+    func testAlreadyOpenedHoverIsNotExcusedByALaterMovingSample() {
+        var lease = IslandMusicHoverReservation(), hover = IslandHoverState()
+        XCTAssertFalse(lease.shouldResetDwell(at: CGPoint(x: 100, y: 100)))
+        hover.update(inside: true, now: 0)
+        hover.update(inside: true, now: 0.14)
+        XCTAssertTrue(hover.isExpanded)
+        // Production resets moving dwell only before expansion. A delayed native
+        // poll that already opened details remains a failure of a no-details case.
+        if !hover.isExpanded, lease.shouldResetDwell(at: CGPoint(x: 104, y: 100)) { hover.reset() }
+        hover.update(inside: true, now: 0.18)
+        XCTAssertTrue(hover.isExpanded)
+    }
+
     func testFailedLyricsRecoveryCanReleaseCompletedGateWithoutRenewingReservation() {
         var h = Harness()
         h.gate.claim(requiresLyrics: true)
