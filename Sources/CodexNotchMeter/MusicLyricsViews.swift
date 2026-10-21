@@ -147,6 +147,7 @@ struct MusicLyricRow: View {
 struct MusicLyricsSettings: View {
     @ObservedObject var music: MusicLyricsController
     @State private var confirmOnlineLookup = false
+    @State private var confirmAMLLLookup = false
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
@@ -178,6 +179,13 @@ struct MusicLyricsSettings: View {
                         })).disabled(music.synthetic)
                     Text("单独选择开启后，会把歌曲名、歌手、专辑和时长发送给 LRCLIB 以匹配社区歌词。不会发送 Apple 账户、令牌或额度；歌词可能缺失或不匹配，并非 Apple 官方歌词。")
                         .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Toggle("使用 AMLL 作为备用歌词源", isOn: Binding(
+                        get: { music.amllFallbackEnabled }, set: { value in
+                            if value { confirmAMLLLookup = true }
+                            else { music.setAMLLFallbackEnabled(false) }
+                        })).disabled(music.synthetic)
+                    Text("默认关闭。启用后，LRCLIB 无可用歌词或暂时失败时，将歌曲名、歌手和专辑发送至 api.amll.dev。需同时开启 LRCLIB；只接受唯一且完整匹配的记录，覆盖率不保证。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button("为当前歌曲导入 LRC…", action: chooseLocalLyrics)
                             .disabled(!music.canImport || music.synthetic)
@@ -195,6 +203,12 @@ struct MusicLyricsSettings: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("将当前及后续播放歌曲的名称、歌手、专辑和时长发送至 lrclib.net，仅用于匹配社区歌词。可随时在这里关闭；本地导入不需要联网。")
+        }
+        .confirmationDialog("启用 AMLL 备用歌词？", isPresented: $confirmAMLLLookup, titleVisibility: .visible) {
+            Button("启用并向 AMLL 发送歌曲信息") { music.setAMLLFallbackEnabled(true) }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("将当前及后续歌曲的名称、歌手和专辑发送至 api.amll.dev，用于 LRCLIB 后备匹配。不会发送 Apple 账户、令牌或本地文件。可随时关闭；社区歌词并非 Apple 官方歌词。")
         }
     }
     private func chooseLocalLyrics() {

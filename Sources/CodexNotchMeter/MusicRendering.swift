@@ -188,9 +188,12 @@ final class MusicRenderHarness: NSObject {
             value.controller.stop()
             await value.reader.releaseAll(.unavailable(.cancelled))
             await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
             await value.importer.releaseAll(.unavailable)
         }
         let counts = await countsFor(fixtures)
+        var amllCounts: [Int] = []
+        for value in fixtures { amllCounts.append(await value.amll.calls().count) }
         try await dwell(0.10)
         var pending = 0
         for value in fixtures {
@@ -769,9 +772,12 @@ final class MusicRenderHarness: NSObject {
         for value in fixtures {
             await value.reader.releaseAll(.unavailable(.cancelled))
             await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
             await value.importer.releaseAll(.unavailable)
         }
         let counts = await countsFor(fixtures)
+        var amllCounts: [Int] = []
+        for value in fixtures { amllCounts.append(await value.amll.calls().count) }
         try await dwell(0.10)
         var pending = 0
         for value in fixtures {
@@ -795,9 +801,12 @@ final class MusicRenderHarness: NSObject {
             value.controller.stop()
             await value.reader.releaseAll(.unavailable(.cancelled))
             await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
             await value.importer.releaseAll(.unavailable)
         }
         let counts = await countsFor(fixtures)
+        var amllCounts: [Int] = []
+        for value in fixtures { amllCounts.append(await value.amll.calls().count) }
         try await dwell(0.10)
         var pending = 0
         for value in fixtures {
@@ -1208,6 +1217,9 @@ final class MusicRenderHarness: NSObject {
         print("MUSIC_DISABLED_OK: observed=\(decimal(CACurrentMediaTime() - disabledAt)) reads=0 lookups=0 imports=0")
         try await verifySyntheticDefaults()
         try await verifyStartupAndOnlineRevocation()
+        #if AMLL_FALLBACK
+        try await verifyAMLLBoundaries()
+        #endif
 
         primary.controller.setEnabled(true)
         let initial = try await read(primary)
@@ -1365,6 +1377,67 @@ final class MusicRenderHarness: NSObject {
         print("MUSIC_ONLINE_OFF_OK: pendingCancelled=true lateRejected=true localPreserved=true musicEnabled=true")
         fixture.controller.stop()
     }
+
+    #if AMLL_FALLBACK
+    private func verifyAMLLBoundaries() async throws {
+        for boundary in ["revoke-amll", "revoke-online", "replace-track", "local-import"] {
+            let value = makeFixture()
+            try require(!value.controller.amllFallbackEnabled, "AMLL defaults off independently")
+            value.controller.start(); value.controller.setAMLLFallbackEnabled(true)
+            value.controller.setEnabled(true)
+            let initial = try await read(value)
+            try await release(value, initial, position: 1)
+            let primaryCalls = await value.lookup.calls()
+            let fallbackCalls = await value.amll.calls()
+            try require(primaryCalls.isEmpty && fallbackCalls.isEmpty,
+                        "AMLL-on LRCLIB-off cannot send metadata")
+            value.controller.setOnlineLookupEnabled(true)
+            let primary = try await lookup(value)
+            try require(await value.lookup.release(primary.id, .noMatch), "primary miss starts fallback")
+            let fallback = try await next(value.amll, after: 0)
+            try require(fallback.input.consent && value.controller.statusText.contains("AMLL"),
+                        "fallback uses explicit consent and loading status")
+            switch boundary {
+            case "revoke-amll": value.controller.setAMLLFallbackEnabled(false)
+            case "revoke-online": value.controller.setOnlineLookupEnabled(false)
+            case "replace-track":
+                let nextRead = try await read(value)
+                try await release(value, nextRead, track: "HARBOR B", position: 1)
+            default: try await importDocument(value, text: timedText())
+            }
+            try await until("boundary cancels pending AMLL") { await value.amll.cancelledIDs().contains(fallback.id) }
+            try require(await value.amll.release(fallback.id, .matched(document("[00:00]\(Self.obsoleteLine)"))),
+                        "release noncooperative late AMLL completion")
+            try await until("late AMLL completion returns") { await value.amll.returnedIDs().contains(fallback.id) }
+            try await dwell(0.10)
+            try require(value.controller.line != Self.obsoleteLine, "late AMLL cannot replace current content")
+            if boundary == "local-import" {
+                try require(value.controller.hasLocalLyrics && value.controller.sourceLabel == "本地歌词"
+                    && value.controller.line == Self.firstLine, "local import wins over late fallback")
+            }
+            if boundary == "replace-track" {
+                let replacement = try await lookup(value)
+                try require(replacement.input.track.title == "HARBOR B", "new lookup retains new track identity")
+                try require(await value.lookup.release(replacement.id, .matched(document(timedText()))), "release new-track match")
+                try await until("new lookup survives obsolete completion") {
+                    value.controller.line == Self.firstLine && value.controller.trackTitle == "HARBOR B"
+                }
+            }
+            value.controller.stop()
+            await value.reader.releaseAll(.unavailable(.cancelled))
+            await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
+            let stoppedAMLLCalls = await value.amll.calls().count
+            try await dwell(0.10)
+            let finalAMLLCalls = await value.amll.calls().count
+            let pendingAMLL = await value.amll.pendingCount()
+            try require(stoppedAMLLCalls == finalAMLLCalls && pendingAMLL == 0,
+                        "AMLL stops with no pending or restarted work")
+            print("MUSIC_AMLL_BOUNDARY_OK: boundary=\(boundary) lateRejected=true independentConsent=true")
+        }
+    }
+
+    #endif
 
     private func verifyInvalidPlaybackStates() async throws {
         let states: [(String, MusicPlaybackState)] = [("unknown", .unknown), ("stopped", .stopped)]
@@ -3595,22 +3668,29 @@ final class MusicRenderHarness: NSObject {
         for value in fixtures {
             await value.reader.releaseAll(.unavailable(.cancelled))
             await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
             await value.importer.releaseAll(.unavailable)
         }
         if let gate = defaultReaderGate { await gate.releaseAll(.unavailable(.cancelled)) }
         island?.stop()
         for panel in passivePanels { panel.stop() }
         let counts = await countsFor(fixtures)
+        var amllCounts: [Int] = []
+        for value in fixtures { amllCounts.append(await value.amll.calls().count) }
         try await dwell(0.10)
         var outstanding = 0
         for value in fixtures {
             outstanding += await value.reader.pendingCount()
             outstanding += await value.lookup.pendingCount()
+            outstanding += await value.amll.pendingCount()
             outstanding += await value.importer.pendingCount()
         }
         try require(outstanding == 0 && island?.smokeStopped == true && passivePanels.allSatisfy(\.smokeStopped) && detailPanel == nil,
                     "all injected continuations and native windows retire before completion")
         try require(await countsFor(fixtures) == counts, "no fixture resumes external work during orderly cleanup")
+        var finalAMLLCounts: [Int] = []
+        for value in fixtures { finalAMLLCounts.append(await value.amll.calls().count) }
+        try require(amllCounts == finalAMLLCounts, "no AMLL work resumes during orderly cleanup")
         print("MUSIC_CLEANUP_OK: controllers=\(fixtures.count) pendingRequests=0 panelStopped=true")
     }
 
@@ -3885,6 +3965,7 @@ final class MusicRenderHarness: NSObject {
             Task {
                 await value.reader.releaseAll(.unavailable(.cancelled))
                 await value.lookup.releaseAll(.unavailable)
+            await value.amll.releaseAll(.unavailable)
                 await value.importer.releaseAll(.unavailable)
             }
         }
@@ -3943,6 +4024,7 @@ private struct MusicLookupInput: Sendable {
 private final class MusicFixture {
     let reader: MusicFixtureGate<Bool, MusicReadResult>
     let lookup: MusicFixtureGate<MusicLookupInput, LyricsLookupResult>
+    let amll: MusicFixtureGate<MusicLookupInput, LyricsLookupResult>
     let importer: MusicFixtureGate<URL, LyricsDocument>
     let controller: MusicLyricsController
     var readCursor = 0
@@ -3951,8 +4033,21 @@ private final class MusicFixture {
     init(lookupFailure: LyricsLookupError? = nil) {
         let reader = MusicFixtureGate<Bool, MusicReadResult>()
         let lookup = MusicFixtureGate<MusicLookupInput, LyricsLookupResult>()
+        let amll = MusicFixtureGate<MusicLookupInput, LyricsLookupResult>()
         let importer = MusicFixtureGate<URL, LyricsDocument>()
-        self.reader = reader; self.lookup = lookup; self.importer = importer
+        self.reader = reader; self.lookup = lookup; self.amll = amll; self.importer = importer
+        // The fixed old-red baseline overlays this harness alone. Its package
+        // has no AMLL_FALLBACK definition, so it type-checks only the old API.
+        #if AMLL_FALLBACK
+        controller = MusicLyricsController(synthetic: true, reader: MusicFixtureReader(gate: reader),
+            lookup: { track, consent in
+                let result = await lookup.invoke(MusicLookupInput(track: track, consent: consent))
+                if let lookupFailure { throw lookupFailure }
+                return result
+            },
+            amllLookup: { track, consent in await amll.invoke(MusicLookupInput(track: track, consent: consent)) },
+            importer: { url in await importer.invoke(url) })
+        #else
         controller = MusicLyricsController(synthetic: true, reader: MusicFixtureReader(gate: reader),
             lookup: { track, consent in
                 let result = await lookup.invoke(MusicLookupInput(track: track, consent: consent))
@@ -3960,6 +4055,7 @@ private final class MusicFixture {
                 return result
             },
             importer: { url in await importer.invoke(url) })
+        #endif
     }
 }
 

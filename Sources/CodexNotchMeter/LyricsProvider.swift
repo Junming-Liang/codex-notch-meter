@@ -14,8 +14,16 @@ final class LRCLIBLyricsProvider: Sendable {
     }
 }
 
+final class AMLLLyricsProvider: Sendable {
+    private let client = AMLLLyricsClient(transport: LRCLIBHTTPTransport())
+    func lookup(track: LyricsLookupTrack, consent: Bool) async throws -> LyricsLookupResult {
+        try await client.lookup(track: track, consent: consent)
+    }
+}
+
 /// This adapter is intentionally private: there is no generic URL/session entry
-/// point, redirect fallback, search, auth, persistent cache or retry mechanism.
+/// point, redirect fallback, auth, persistent cache or retry mechanism.
+/// Only the reviewed LRCLIB and separately opted-in AMLL endpoints are allowed.
 private struct LRCLIBHTTPTransport: LyricsLookupTransport {
     func fetch(_ request: LyricsLookupRequest) async throws -> LyricsLookupResponse {
         try await BoundedLyricsRequest(request: request).run()
@@ -58,7 +66,7 @@ private final class BoundedLyricsRequest: NSObject, URLSessionDataDelegate, @unc
             return
         }
         self.continuation = continuation
-        guard LRCLIBLookup.isAllowed(url: request.url), request.method == "GET",
+        guard (LRCLIBLookup.isAllowed(url: request.url) || AMLLLookup.isAllowed(url: request.url)), request.method == "GET",
               request.timeout == LRCLIBLookup.requestTimeout,
               request.maximumResponseBytes == LRCLIBLookup.maximumResponseBytes else {
             finish(.failure(.requestNotAllowed)); return
@@ -127,7 +135,7 @@ private final class BoundedLyricsRequest: NSObject, URLSessionDataDelegate, @unc
         guard !finished else { completionHandler(.cancel); return }
         guard let response = response as? HTTPURLResponse,
               response.url == request.url, let url = response.url,
-              LRCLIBLookup.isAllowed(url: url) else {
+              (LRCLIBLookup.isAllowed(url: url) || AMLLLookup.isAllowed(url: url)) else {
             completionHandler(.cancel); finish(.failure(.requestNotAllowed)); return
         }
         self.response = response

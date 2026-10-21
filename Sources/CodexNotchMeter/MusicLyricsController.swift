@@ -13,6 +13,7 @@ final class MusicLyricsController: ObservableObject {
 
     @Published private(set) var enabled: Bool
     @Published private(set) var onlineLookupEnabled: Bool
+    @Published private(set) var amllFallbackEnabled: Bool
     @Published private(set) var trackTitle = ""
     @Published private(set) var line = ""
     @Published private(set) var nextLine = ""
@@ -78,6 +79,7 @@ final class MusicLyricsController: ObservableObject {
     private let defaults: UserDefaults?
     private let reader: any MusicSnapshotProvider
     private let lookup: Lookup
+    private let amllLookup: Lookup
     private let importer: Import
     private let clock: () -> TimeInterval
     private var timeline = LyricsTimeline()
@@ -108,12 +110,19 @@ final class MusicLyricsController: ObservableObject {
     private var stopped = false
 
     init(synthetic: Bool, reader: (any MusicSnapshotProvider)? = nil,
-         lookup: Lookup? = nil, importer: Import? = nil,
+         lookup: Lookup? = nil, amllLookup: Lookup? = nil, importer: Import? = nil,
          clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.synthetic = synthetic
         defaults = synthetic ? nil : .standard
         enabled = synthetic ? false : (UserDefaults.standard.object(forKey: "musicLyricsEnabled") as? Bool ?? false)
         onlineLookupEnabled = synthetic ? false : (UserDefaults.standard.object(forKey: "musicLyricsOnlineLookupEnabled") as? Bool ?? false)
+        amllFallbackEnabled = synthetic ? false : (UserDefaults.standard.object(forKey: AMLLLookup.consentKey) as? Bool ?? false)
+        if let amllLookup { self.amllLookup = amllLookup }
+        else if synthetic { self.amllLookup = { _, _ in throw LyricsLookupError.consentRequired } }
+        else {
+            let provider = AMLLLyricsProvider()
+            self.amllLookup = { try await provider.lookup(track: $0, consent: $1) }
+        }
         if let reader { self.reader = reader }
         else if synthetic { self.reader = SilentMusicReader() }
         else { self.reader = MusicAppReader() }
@@ -173,6 +182,23 @@ final class MusicLyricsController: ObservableObject {
         }
         refreshLine()
         if value { beginLookupIfNeeded() }
+    }
+
+    func setAMLLFallbackEnabled(_ value: Bool) {
+        guard !stopped, amllFallbackEnabled != value else { return }
+        amllFallbackEnabled = value
+        defaults?.set(value, forKey: AMLLLookup.consentKey)
+        lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
+        // Retained online results must not survive revocation of their source.
+        if retainedLyrics?.isLocal == false { retainedLyrics = nil }
+        resetLookupState()
+        if !hasLocalLyrics {
+            document = .unavailable
+            _ = timeline.setLyrics(.unavailable, generation: timeline.generation)
+            line = ""; sourceLabel = ""
+        }
+        refreshLine()
+        beginLookupIfNeeded()
     }
 
     /// Sleep, inactive session, display sleep and hide suspend independent work.
@@ -410,18 +436,21 @@ final class MusicLyricsController: ObservableObject {
         let token = epoch
         let identity = value.track
         let revision = trackRevision
-        statusText = "正在向 LRCLIB 匹配歌词…"
-        lookupTask = Task { [weak self, lookup] in
+        statusText = lookupStatusText
+        let amllConsent = amllFallbackEnabled
+        lookupTask = Task { [weak self, lookup, amllLookup] in
             do {
-                let result = try await lookup(track, true)
+                let sourced = try await DualLyricsLookup.lookup(track: track, lrclibConsent: true,
+                    amllConsent: amllConsent, primary: lookup, fallback: amllLookup)
+                let result = sourced.result
                 guard let self, !Task.isCancelled, self.epoch == token, self.enabled,
-                      self.active, self.onlineLookupEnabled, self.current?.track == identity,
+                      self.active, self.onlineLookupEnabled, self.amllFallbackEnabled == amllConsent, self.current?.track == identity,
                       self.timeline.generation == generation, self.trackRevision == revision, !self.hasLocalLyrics else { return }
                 self.lookupTask = nil
                 switch result {
                 case .matched(let value):
                     self.lookupState = .matched
-                    self.document = value; self.sourceLabel = "LRCLIB 社区歌词"
+                    self.document = value; self.sourceLabel = sourced.source
                     _ = self.timeline.setLyrics(value, generation: generation)
                     self.refreshLine()
                 case .noMatch: self.lookupState = .noMatch; self.statusText = self.lookupStatusText
@@ -449,7 +478,7 @@ final class MusicLyricsController: ObservableObject {
         guard onlineLookupEnabled else { return "可为当前歌曲导入 LRC 歌词" }
         switch lookupState {
         case .idle: return "等待歌词匹配"
-        case .loading: return "正在向 LRCLIB 匹配歌词…"
+        case .loading: return amllFallbackEnabled ? "正在匹配歌词（LRCLIB → AMLL）…" : "正在向 LRCLIB 匹配歌词…"
         case .matched, .unavailable: return "匹配记录暂无可用歌词，可导入本地 LRC"
         case .noMatch: return "未找到匹配歌词，可导入本地 LRC"
         case .invalidMetadata: return "歌曲信息不足以可靠匹配在线歌词，可导入本地 LRC"
