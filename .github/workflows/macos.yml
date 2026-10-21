@@ -114,6 +114,7 @@ jobs:
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: |
           python3 Scripts/check-native-lyrics-recovery.py --self-test
+          python3 Scripts/check-native-lyrics-recovery.py
           python3 Scripts/check-native-lyrics-redgreen.py --self-test
           python3 Scripts/check-native-lyrics-redgreen.py
       - name: Native rejected lyric gesture recovery red-green gate
@@ -126,6 +127,11 @@ jobs:
         run: |
           python3 Scripts/check-native-stationary-music.py --self-test
           python3 Scripts/check-native-stationary-music.py --red-green
+      - name: Native wide-music-shell quota hover stability gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: |
+          python3 Scripts/check-native-music-quota-hover.py --self-test
+          python3 Scripts/check-native-music-quota-hover.py --red-green
       - name: Native Music render cache and event-poll recovery gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: |
