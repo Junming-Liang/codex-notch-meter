@@ -342,7 +342,19 @@ public struct IslandGeometry: Equatable, Sendable {
         var value = self; value.widthPresentation = nil
         return value.hoverContains(point, progress: progress)
     }
-    public func hoverContains(_ point: CGPoint, progress: Double) -> Bool {
+    public func hoverContains(_ point: CGPoint, progress: Double,
+                              retainingMusicOrigin: Bool = false) -> Bool {
+        // A wide closed music shell can extend beyond the narrower compact
+        // transition or the full card's inset shoulders. Once hover owns details,
+        // animation alone must not evict its stationary activation point. Retain
+        // only that closed shell, not the whole expanded rectangle; click and
+        // gesture hit testing continue to use their existing exact geometry.
+        if retainingMusicOrigin && showsMusicAccessories && canShowMusicAccessories {
+            var origin = self
+            origin.widthPresentation = nil
+            origin.ordinaryHoverWidth = false
+            if origin.hoverContains(point, progress: 0) { return true }
+        }
         // Never use visibleFrame: the island is attached to the physical top edge.
         let rect = drawingFrame(progress: progress)
         let local = CGPoint(x: point.x, y: screen.maxY - point.y)
