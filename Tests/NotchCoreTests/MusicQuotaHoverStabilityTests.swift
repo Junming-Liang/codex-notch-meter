@@ -11,7 +11,8 @@ final class MusicQuotaHoverStabilityTests: XCTestCase {
         let notch = CGRect(x: screen.midX - width / 2, y: screen.maxY - 32, width: width, height: 32)
         var value = IslandGeometry(notch: NotchGeometry(notch: notch, leftPanel: .zero, rightPanel: .zero),
             screen: screen, shapeCalibration: calibration)
-        value.showsMusicAccessories = true
+        // Match IslandPanel: an ineligible calibrated contour never gains wings.
+        value.showsMusicAccessories = value.canShowMusicAccessories
         value.musicAccessoryProgress = 1
         return value
     }
@@ -74,23 +75,60 @@ final class MusicQuotaHoverStabilityTests: XCTestCase {
 
     func testClosedMusicOriginSurvivesCalibrationAndNarrowNotchControls() {
         for width in [CGFloat(220), 300, 330, 360] {
-            for calibration in [ContourCalibration(), .init(width: -16, depth: -6, corner: -6),
+            // -3 is the shallowest eligible depth: the 3pt contour allowance
+            // still covers the full hardware depth. Shallower controls are below.
+            for calibration in [ContourCalibration(), .init(width: -16, depth: -3, corner: -6),
                                 .init(width: 16, depth: 6, corner: 6)] {
                 let g = geometry(width: width, calibration: calibration)
+                let context = "width=\(width), calibration=\(calibration)"
+                XCTAssertTrue(g.canShowMusicAccessories, context)
+                XCTAssertTrue(g.showsMusicAccessories, context)
                 for x in [g.musicAccessoryFrame.minX + 3, g.musicAccessoryFrame.maxX - 3] {
                     let point = CGPoint(x: x, y: g.screen.maxY - 8)
-                    XCTAssertTrue(g.hoverContains(point, progress: 0))
+                    XCTAssertTrue(g.hoverContains(point, progress: 0), context)
                     for step in 0...100 {
-                        XCTAssertTrue(g.hoverContains(point, progress: Double(step) / 100, retainingMusicOrigin: true))
+                        XCTAssertTrue(g.hoverContains(point, progress: Double(step) / 100, retainingMusicOrigin: true),
+                                      "\(context), x=\(x), step=\(step)")
                     }
                     let fixed = transitions(g, at: point, retainOrigin: true)
-                    XCTAssertEqual(fixed.opens, 1)
-                    XCTAssertEqual(fixed.closes, 0)
+                    XCTAssertEqual(fixed.opens, 1, context)
+                    XCTAssertEqual(fixed.closes, 0, context)
                     if width == 220 {
                         let original = transitions(g, at: point, retainOrigin: false)
-                        XCTAssertEqual(original.opens, 1)
-                        XCTAssertEqual(original.closes, 0)
+                        XCTAssertEqual(original.opens, 1, context)
+                        XCTAssertEqual(original.closes, 0, context)
                     }
+                }
+            }
+        }
+    }
+
+    func testIneligibleDepthCalibrationHasNoPhantomMusicHoverOrigin() {
+        for width in [CGFloat(220), 300, 330, 360] {
+            for depth in [-6.0, -3.5] {
+                let g = geometry(width: width, calibration: .init(width: -16, depth: depth, corner: -6))
+                let context = "width=\(width), depth=\(depth)"
+                XCTAssertFalse(g.canShowMusicAccessories, context)
+                XCTAssertFalse(g.showsMusicAccessories, context)
+                XCTAssertEqual(g.contourRect(progress: 0).width, g.contourFrame.width, context)
+                for x in [g.musicAccessoryFrame.minX + 3, g.musicAccessoryFrame.maxX - 3] {
+                    let point = CGPoint(x: x, y: g.screen.maxY - 8)
+                    XCTAssertFalse(g.hoverContains(point, progress: 0, retainingMusicOrigin: true), context)
+                    for step in 0...100 {
+                        let p = Double(step) / 100
+                        XCTAssertEqual(g.hoverContains(point, progress: p, retainingMusicOrigin: true),
+                                       g.hoverContains(point, progress: p), "\(context), x=\(x), step=\(step)")
+                    }
+                    let phantom = transitions(g, at: point, retainOrigin: true)
+                    XCTAssertEqual(phantom.opens, 0, context)
+                    XCTAssertEqual(phantom.closes, 0, context)
+                }
+                for x in [g.contourFrame.minX + 3, g.contourFrame.maxX - 3] {
+                    let point = CGPoint(x: x, y: g.screen.maxY - 8)
+                    XCTAssertTrue(g.hoverContains(point, progress: 0), context)
+                    let ordinary = transitions(g, at: point, retainOrigin: true)
+                    XCTAssertEqual(ordinary.opens, 1, context)
+                    XCTAssertEqual(ordinary.closes, 0, context)
                 }
             }
         }
