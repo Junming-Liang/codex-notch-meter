@@ -45,6 +45,58 @@ final class MusicLyricsController: ObservableObject {
         return "Music: \(read.phase) · \(seconds)s · \(failure)\nArtwork: \(art.phase) · \(artworkFailure)"
     }
 
+    /// Reads only explicit non-content diagnostics. No title/artist/album,
+    /// source label, lyrics, provider payload or localized error is serialized.
+    func recordDebugState(sampled: Bool = false) {
+        guard let capture = debugCapture, capture.isRecording else { return }
+        if debugSession != capture.sessionID { debugSession = capture.sessionID; debugPresentationBase = presentationRevision }
+        var values: [DebugCapture.Field: Double] = [.enabled: enabled ? 1 : 0,
+            .fresh: isFreshPlaying ? 1 : 0, .playing: isPlayingForPresentation ? 1 : 0,
+            .lyricsMode: lyricsModeEnabled ? 1 : 0, .presentationRevision: Double(presentationRevision &- debugPresentationBase),
+            .playbackRevision: capture.identifier(trackRevision)]
+        if let observed = current?.observedAt { values[.sourceAgeMs] = (clock() - observed) * 1000 }
+        var labels: [DebugCapture.Label: DebugCapture.Value] = [.reason: .musicChanged]
+        if let provider = reader as? MusicAppReader {
+            let read = provider.readDiagnostic
+            values[.readMs] = read.elapsed * 1000
+            switch read.phase {
+            case .idle: labels[.readPhase] = .idle
+            case .target: labels[.readPhase] = .target
+            case .permission: labels[.readPhase] = .permission
+            case .stateBefore: labels[.readPhase] = .stateBefore
+            case .trackBefore: labels[.readPhase] = .trackBefore
+            case .position: labels[.readPhase] = .position
+            case .trackAfter: labels[.readPhase] = .trackAfter
+            case .stateAfter: labels[.readPhase] = .stateAfter
+            case .validation: labels[.readPhase] = .validation
+            }
+            switch read.failure {
+            case nil: labels[.readFailure] = DebugCapture.Value.none
+            case .notRunning: labels[.readFailure] = .notRunning
+            case .authorizationRequired, .permissionDenied: labels[.readFailure] = .denied
+            case .timedOut: labels[.readFailure] = .timeout
+            case .changedDuringRead: labels[.readFailure] = .changedTrack
+            case .invalidResponse, .targetMismatch: labels[.readFailure] = .malformed
+            case .unknownTrack, .cancelled, .busy: labels[.readFailure] = .unavailable
+            case .appleEvent: labels[.readFailure] = .failed
+            }
+        }
+        switch lookupState {
+        case .idle: labels[.lookup] = .idle
+        case .loading: labels[.lookup] = .loading
+        case .matched: labels[.lookup] = .matched
+        case .noMatch: labels[.lookup] = .noMatch
+        case .unavailable: labels[.lookup] = .unavailable
+        case .invalidMetadata: labels[.lookup] = .invalidMetadata
+        case .identityMismatch: labels[.lookup] = .identityMismatch
+        case .rateLimited: labels[.lookup] = .rateLimited
+        case .serviceUnavailable: labels[.lookup] = .serviceUnavailable
+        case .temporaryFailure: labels[.lookup] = .temporaryFailure
+        case .rejected: labels[.lookup] = .rejected
+        }
+        capture.record(.music, sampled: sampled, values: values, labels: labels)
+    }
+
     func previewContentHeight(width: CGFloat) -> CGFloat {
         previewHeightCache.contentHeight(trackRevision: trackRevision, line: line, nextLine: nextLine,
             width: width, countSyntheticMeasurement: synthetic)
@@ -75,6 +127,9 @@ final class MusicLyricsController: ObservableObject {
     }
     @Published private(set) var lookupState = LyricsLookupState.idle
     let synthetic: Bool
+    weak var debugCapture: DebugCapture?
+    private var debugSession: UUID?
+    private var debugPresentationBase: UInt64 = 0
 
     private let defaults: UserDefaults?
     private let reader: any MusicSnapshotProvider
@@ -336,6 +391,7 @@ final class MusicLyricsController: ObservableObject {
     }
 
     private func receive(_ result: MusicReadResult) {
+        defer { recordDebugState() }
         switch result {
         case .unavailable(let reason):
             lookupTask?.cancel(); lookupTask = nil; lookupGeneration = nil
@@ -491,6 +547,7 @@ final class MusicLyricsController: ObservableObject {
     }
 
     private func refreshLine() {
+        defer { recordDebugState(sampled: true) }
         lineTimer?.invalidate(); lineTimer = nil
         let now = clock()
         let previous = (line, nextLine, isSynchronized, isPlayingForPresentation, isFreshPlaying)

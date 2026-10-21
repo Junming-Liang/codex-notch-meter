@@ -242,6 +242,13 @@ struct IslandCloseReceipt {
 @MainActor
 final class IslandPanelController: NSObject {
     private let model: MeterModel
+    private let debugToken = UUID()
+    private var debugLastOwner: IslandExpansionOwner?
+    private var debugSession: UUID?
+    private var debugLastHoverInside: Bool?
+    private var debugLastPollTick: TimeInterval?
+    private var debugFrameRevisionBase: UInt64 = 0
+    private var debugMusicRevisionBase: UInt64 = 0
     var geometry: IslandGeometry { presentation.geometry }
     let panel: TopEdgePanel
     private let presentation: IslandPresentation
@@ -396,6 +403,83 @@ final class IslandPanelController: NSObject {
             }
         }
         updateMusicPresentation(forceRetarget: expansionOwner == .music)
+        recordDebugSnapshot()
+    }
+    /// Records only safe dimensions and notch-relative offsets, never a display
+    /// identity, desktop origin, other-window identity, or content.
+    func recordDebugSnapshot() {
+        let capture = model.debugCapture.recorder
+        guard capture.isRecording else { return }
+        if debugSession != capture.sessionID {
+            debugSession = capture.sessionID; debugLastOwner = nil; debugLastHoverInside = nil
+            debugLastPollTick = nil; debugFrameRevisionBase = presentation.frame.revision
+            debugMusicRevisionBase = model.music.presentationRevision
+        }
+        capture.record(.geometry, island: capture.identifier(debugToken), values: [
+            .screenWidth: Double(geometry.screen.width), .screenHeight: Double(geometry.screen.height),
+            .scale: Double(geometry.backingScale), .notchWidth: Double(geometry.notch.width),
+            .notchHeight: Double(geometry.notch.height), .horizontalAdjustment: geometry.horizontalAdjustment,
+            .widthAdjustment: geometry.shapeCalibration.width, .depthAdjustment: geometry.shapeCalibration.depth,
+            .cornerAdjustment: geometry.shapeCalibration.corner, .reducedMotion: reducedMotion ? 1 : 0],
+            labels: [.reason: .geometryChanged])
+        debugState(.ownership, reason: .snapshot)
+    }
+    private func debugOwner(_ owner: IslandExpansionOwner) -> DebugCapture.Value {
+        switch owner { case .idle: return .idle; case .music: return .music
+        case .quotaNotice: return .quotaNotice; case .details: return .details }
+    }
+    private func debugState(_ event: DebugCapture.Event, reason: DebugCapture.Value,
+                           sampled: Bool = false, source: DebugCapture.Value? = nil,
+                           sourceTime: TimeInterval? = nil, point: CGPoint? = nil,
+                           inside: Bool? = nil, expandedBefore: Bool? = nil,
+                           anchor: CGPoint? = nil, extra: [DebugCapture.Field: Double] = [:]) {
+        let capture = model.debugCapture.recorder
+        guard capture.isRecording else { return }
+        if debugSession != capture.sessionID {
+            debugSession = capture.sessionID; debugLastOwner = nil; debugLastHoverInside = nil
+            debugLastPollTick = nil; debugFrameRevisionBase = presentation.frame.revision
+            debugMusicRevisionBase = model.music.presentationRevision
+        }
+        func diagnosticValues() -> [DebugCapture.Field: Double] {
+            var values: [DebugCapture.Field: Double] = [
+                .progress: motion.progress, .target: motionTargetValue, .velocity: motion.velocity,
+                .accessory: accessoryMotion.progress, .accessoryTarget: accessoryTarget ? 1 : 0,
+                .widthBridge: widthBridge == nil ? 0 : 1, .fresh: model.music.isFreshPlaying ? 1 : 0,
+                .playing: model.music.isPlayingForPresentation ? 1 : 0, .lyricsMode: model.music.lyricsModeEnabled ? 1 : 0,
+                .allowed: passiveMusicAllowed ? 1 : 0, .expandedAfter: hover.isExpanded ? 1 : 0,
+                .corridorExitRequired: musicGestureNeedsCorridorExit ? 1 : 0,
+                .gestureGate: gestureHoverGate.isSuppressing ? 1 : 0,
+                .frameRevision: Double(presentation.frame.revision &- debugFrameRevisionBase),
+                .presentationRevision: Double(model.music.presentationRevision &- debugMusicRevisionBase),
+                .playbackRevision: capture.identifier(model.music.playbackRevision)]
+            if let id = presentation.notice?.id { values[.noticeRevision] = capture.identifier(id) }
+            if let sourceTime {
+                values[.sourceOffsetMs] = capture.offsetMilliseconds(sourceTime)
+                values[.sourceAgeMs] = (ProcessInfo.processInfo.systemUptime - sourceTime) * 1000
+            }
+            if let inside { values[.inside] = inside ? 1 : 0 }
+            if let expandedBefore { values[.expandedBefore] = expandedBefore ? 1 : 0 }
+            // Only points inside our own current interaction neighborhood are logged.
+            // Outside events retain classification/counts but no cursor coordinates.
+            let near = geometry.frame(progress: 1).insetBy(dx: -32, dy: -32)
+            if let point, near.contains(point) {
+                values[.pointerX] = Double(point.x - geometry.calibratedNotch.midX)
+                values[.pointerY] = Double(point.y - geometry.calibratedNotch.maxY)
+                if let fixed = anchor ?? musicHoverReservation.stationaryAnchor, near.contains(fixed) {
+                    values[.anchorX] = Double(fixed.x - geometry.calibratedNotch.midX)
+                    values[.anchorY] = Double(fixed.y - geometry.calibratedNotch.maxY)
+                }
+            }
+            values.merge(extra) { _, new in new }
+            return values
+        }
+        var labels: [DebugCapture.Label: DebugCapture.Value] = [.reason: reason, .owner: debugOwner(expansionOwner)]
+        if let source { labels[.source] = source }
+        if event == .ownership {
+            if let previous = debugLastOwner { labels[.previousOwner] = debugOwner(previous) }
+            debugLastOwner = expansionOwner
+        }
+        capture.record(event, island: capture.identifier(debugToken), sampled: sampled, values: diagnosticValues(), labels: labels)
     }
     func updateGeometry(_ value: IslandGeometry) {
         guard !stopped, geometry.hasSameAnchor(as: value) else { return }
@@ -405,13 +489,16 @@ final class IslandPanelController: NSObject {
         corrected.showsMusicAccessories = geometry.showsMusicAccessories && value.canShowMusicAccessories
         corrected.musicAccessoryProgress = geometry.musicAccessoryProgress
         pendingGeometry = corrected
+        debugState(.lifecycle, reason: .geometryChanged)
         if motion.progress == 0 && !motionTargetExpanded && !closeDrain.isPending { apply(progress: 0) }
     }
     private func apply(progress: Double) {
         guard !stopped else { return }
+        model.debugCapture.recorder.count(.frameApplies)
         var nextGeometry = presentation.geometry
+        var adoptedGeometry = false
         if progress == 0, widthBridge == nil, accessoryMotion.isSettled(at: accessoryTarget ? 1 : 0), let pendingGeometry {
-            nextGeometry = pendingGeometry; self.pendingGeometry = nil
+            nextGeometry = pendingGeometry; self.pendingGeometry = nil; adoptedGeometry = true
         }
         nextGeometry.showsMusicAccessories = (accessoryTarget || accessoryMotion.progress > 0)
             && nextGeometry.canShowMusicAccessories
@@ -433,6 +520,7 @@ final class IslandPanelController: NSObject {
         if changed {
             presentation.frame = IslandRenderState(geometry: nextGeometry, progress: progress, revision: revision)
         }
+        if adoptedGeometry { recordDebugSnapshot() }
         if hadDetails != displaysColoredDetails { activityChanged() }
         if panel.frame != expected { panel.setFrame(expected, display: motionProfile.forcesLayout) }
         paintStore.recordNativeFrame(panel.frame, contentBounds: panel.contentView?.bounds ?? .zero)
@@ -441,6 +529,13 @@ final class IslandPanelController: NSObject {
             smokeRenderCommits.append(IslandRenderCommit(revision: revision, observed: committedAt,
                 geometry: nextGeometry, progress: progress, nativeFrame: panel.frame,
                 owner: expansionOwner, target: motionTargetValue))
+        }
+        if changed, model.debugCapture.recorder.isRecording {
+            debugState(.frame, reason: .accepted, sampled: true, extra: [
+                .width: Double(panel.frame.width), .height: Double(panel.frame.height),
+                .centerOffset: Double(panel.frame.midX - geometry.calibratedNotch.midX),
+                .topError: Double(panel.frame.maxY - geometry.screen.maxY),
+                .applyMs: (CACurrentMediaTime() - committedAt) * 1000])
         }
         if motionProfile.forcesLayout { panel.contentView?.layoutSubtreeIfNeeded() }
         if abs(panel.frame.maxY - geometry.screen.maxY) > 0.5 || abs(panel.frame.width - expected.width) > 0.5 {
@@ -496,6 +591,8 @@ final class IslandPanelController: NSObject {
             kind: kind, owner: expansionOwner, target: motionTargetValue, hoverDecision: hoverDecision))
     }
     private func observePointer(event: NSEvent? = nil, monitor: String = "poll") {
+        let debugSource: DebugCapture.Value = event == nil ? .poll : (monitor == "local" ? .localEvent : .globalEvent)
+        model.debugCapture.recorder.count(event == nil ? .polls : (monitor == "local" ? .localEvents : .globalEvents))
         if let event, model.demo, CommandLine.arguments.contains("--music-test"),
            CommandLine.arguments.contains("--pointer-ingress-test")
             || CommandLine.arguments.contains("--music-cache-test") {
@@ -512,13 +609,35 @@ final class IslandPanelController: NSObject {
         }
         guard !stopped, placementIsValid else { return }
         let delivered = ProcessInfo.processInfo.systemUptime
+        if event == nil, model.debugCapture.recorder.isRecording {
+            let capture = model.debugCapture.recorder
+            if debugSession != capture.sessionID { recordDebugSnapshot() }
+            capture.count(.pollCallbacks)
+            var values: [DebugCapture.Field: Double] = [.deliveredOffsetMs: capture.offsetMilliseconds(delivered)]
+            if let previous = debugLastPollTick { values[.rawPollGapMs] = (delivered - previous) * 1000 }
+            debugLastPollTick = delivered
+            capture.record(.pollTick, island: capture.identifier(debugToken), sampled: true,
+                           values: values, labels: [.source: .poll])
+        }
+        if model.debugCapture.recorder.isRecording {
+            let capture = model.debugCapture.recorder
+            var values: [DebugCapture.Field: Double] = [.deliveredOffsetMs: capture.offsetMilliseconds(delivered)]
+            if let event { values[.sourceOffsetMs] = capture.offsetMilliseconds(event.timestamp) }
+            if lastEventDelivery.isFinite { values[.eventGapMs] = (delivered - lastEventDelivery) * 1000 }
+            if lastPollTime.isFinite { values[.pollGapMs] = (delivered - lastPollTime) * 1000 }
+            capture.record(event == nil ? .pollIngress : .inputIngress, island: capture.identifier(debugToken), sampled: true,
+                           values: values, labels: [.source: debugSource])
+        }
         if let event {
             // Preserve the event stream. Re-reading mouseLocation here turns a
             // queued traversal into many copies of the cursor's final position.
             let isMove = event.type == .mouseMoved
             // Even a duplicate-timestamp button is a trajectory boundary.
             if !isMove { musicHoverReservation.reset(); resetCrossings(); if !hover.isExpanded { hover.reset() }; musicHoverReservation.resetDwell() }
-            guard event.timestamp.isFinite, event.timestamp >= lastEventTime else { return }
+            guard event.timestamp.isFinite, event.timestamp >= lastEventTime else {
+                model.debugCapture.recorder.count(.rejectedEvents)
+                debugState(.input, reason: .staleEvent, sampled: true, source: debugSource, sourceTime: event.timestamp); return
+            }
             if !isMove, event.timestamp >= buttonStateTime {
                 buttonStateTime = event.timestamp
                 switch event.type {
@@ -526,11 +645,15 @@ final class IslandPanelController: NSObject {
                 default: eventButtons.insert(event.buttonNumber)
                 }
             }
-            guard !isMove || event.timestamp > lastEventTime else { return }
+            guard !isMove || event.timestamp > lastEventTime else {
+                model.debugCapture.recorder.count(.rejectedEvents)
+                debugState(.input, reason: .duplicateEvent, sampled: true, source: debugSource, sourceTime: event.timestamp); return
+            }
             lastEventTime = event.timestamp; lastEventDelivery = delivered
             let point = event.window.map { $0.convertPoint(toScreen: event.locationInWindow) }
                 ?? event.locationInWindow
             guard event.timestamp > lastAppliedGestureTime else {
+                debugState(.input, reason: .staleEvent, sampled: true, source: debugSource, sourceTime: event.timestamp)
                 recordPointer(point, timestamp: event.timestamp, kind: "stale")
                 return
             }
@@ -538,16 +661,22 @@ final class IslandPanelController: NSObject {
             guard event.type == .mouseMoved else {
                 resetCrossings(); musicHoverReservation.resetDwell()
                 lastAppliedGestureTime = max(lastAppliedGestureTime, event.timestamp)
+                debugState(.input, reason: .button, sampled: true, source: debugSource, sourceTime: event.timestamp)
                 recordPointer(point, timestamp: event.timestamp, kind: "button")
                 return
             }
+            debugState(.input, reason: .accepted, sampled: true, source: debugSource, sourceTime: event.timestamp, point: point)
             let hoverDecision = updatePointer(point, now: event.timestamp, buttonDownOverride: !eventButtons.isEmpty, source: .event)
             recordPointer(point, timestamp: event.timestamp, kind: "event", hoverDecision: hoverDecision)
         } else {
             // Polling has its own history. It cannot insert the live cursor into
             // an event traversal, release its gate, or overwrite its timestamps.
-            guard delivered > lastPollTime, delivered - lastEventDelivery > 0.25 else { return }
+            guard delivered > lastPollTime, delivered - lastEventDelivery > 0.25 else {
+                model.debugCapture.recorder.count(.quietPolls)
+                debugState(.input, reason: .quietWindow, sampled: true, source: .poll); return
+            }
             lastPollTime = delivered
+            model.debugCapture.recorder.count(.acceptedPolls)
             crossing.reset()
             // Native fixtures may supply a synthetic location without moving
             // the system cursor. The real timer, quiet guard and clock still run.
@@ -557,6 +686,7 @@ final class IslandPanelController: NSObject {
             // reconciles button state only after the event stream is quiet.
             eventButtons = Set((0..<32).filter { buttons & (1 << $0) != 0 })
             buttonStateTime = delivered
+            debugState(.input, reason: .accepted, sampled: true, source: .poll, sourceTime: delivered, point: point)
             let hoverDecision = updatePointer(point, now: delivered, buttonDownOverride: buttons != 0, source: .poll)
             recordPointer(point, timestamp: delivered, kind: "poll", hoverDecision: hoverDecision)
         }
@@ -568,6 +698,7 @@ final class IslandPanelController: NSObject {
         // A passive pointer cannot consume the user's configured readable dwell.
         // Keep hover history empty so expiry cannot inherit an already-armed hover.
         if noticeTargetActive {
+            debugState(.hover, reason: .noticeOwns, sampled: true, sourceTime: now)
             hover.reset(); resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.claim()
             panel.ignoresMouseEvents = true
             return nil
@@ -599,10 +730,12 @@ final class IslandPanelController: NSObject {
             model.music.selectLyricsMode(action == .right)
             if action == .right,
                !model.music.lyricsModeEnabled || !model.music.isPlayingForPresentation {
+                debugState(.hover, reason: .gestureUnavailable, sourceTime: now, point: point)
                 releaseMusicGestureToHover()
                 updateClickRouting(point)
                 return nil
             }
+            debugState(.hover, reason: .gestureAccepted, sourceTime: now, point: point)
             hover.reset()
             gestureHoverGate.claim(requiresLyrics: action == .right)
             updateMusicPresentation(forceRetarget: hadHover)
@@ -611,14 +744,19 @@ final class IslandPanelController: NSObject {
         }
         // A successful crossing owns this corridor until exit. Stationary center
         // entry is still ordinary hover and never toggles the selected mode.
-        if reservesHover { updateClickRouting(point); return nil }
+        if reservesHover { debugState(.hover, reason: .reserved, sampled: true, sourceTime: now, point: point); updateClickRouting(point); return nil }
         if gestureHoverGate.suppresses(insideStableEnvelope: geometry.canonicalHoverContains(point, progress: 1)) {
+            debugState(.hover, reason: .gestureGate, sampled: true, sourceTime: now, point: point)
             updateClickRouting(point); return nil
         }
         // A moving pointer near the music shell is approaching a gesture, not
         // asking to open full details. Allow small hand jitter around a fixed dwell anchor.
         if model.music.isFreshPlaying, !hover.isExpanded {
-            if musicHoverReservation.shouldResetDwell(at: point) { hover.reset() }
+            let priorAnchor = model.debugCapture.recorder.isRecording ? musicHoverReservation.stationaryAnchor : nil
+            if musicHoverReservation.shouldResetDwell(at: point) {
+                debugState(.hover, reason: .dwellReset, sourceTime: now, point: point, anchor: priorAnchor)
+                hover.reset()
+            }
         } else { musicHoverReservation.resetDwell() }
         let before = hover.isExpanded
         // Preserve argument evaluation order: hit testing precedes the one clock
@@ -628,6 +766,15 @@ final class IslandPanelController: NSObject {
         let hoverNow = source == .synthetic ? now : ProcessInfo.processInfo.systemUptime
         hover.update(inside: inside, now: hoverNow,
             resumeExpanded: !model.music.isFreshPlaying && ((motion.progress > 0 || closeDrain.isPending) && !motionTargetExpanded))
+        model.debugCapture.recorder.count(.hoverDecisions)
+        if model.debugCapture.recorder.isRecording {
+            let edge = debugLastHoverInside != inside || hover.isExpanded != before
+            debugLastHoverInside = inside
+            debugState(.hover, reason: hover.isExpanded != before ? (hover.isExpanded ? .enter : .leave) : .hoverDecision,
+                sampled: !edge, source: source == .event ? .unknown : (source == .poll ? .poll : .synthetic),
+                sourceTime: now, point: point, inside: inside, expandedBefore: before,
+                extra: [.decisionOffsetMs: model.debugCapture.recorder.offsetMilliseconds(hoverNow)])
+        }
         let hoverDecision: IslandPointerHoverDecision?
         if model.demo, CommandLine.arguments.contains("--music-test"),
            (CommandLine.arguments.contains("--music-cache-test") || CommandLine.arguments.contains("--pointer-ingress-test")),
@@ -639,7 +786,7 @@ final class IslandPanelController: NSObject {
             if source != .synthetic { lastAppliedGestureTime = max(lastAppliedGestureTime, now) }
             if hover.isExpanded { hovered(); cancelNoticeTimers(); noticeTargetActive = false; presentation.showingDetails = true }
             else { noticeTargetActive = false }
-            startMotion()
+            startMotion(reason: hover.isExpanded ? .enter : .leave)
         }
         updateClickRouting(point)
         return hoverDecision
@@ -673,6 +820,12 @@ final class IslandPanelController: NSObject {
             progress: motion.progress, velocity: motion.velocity, accessoryVelocity: accessoryMotion.velocity)
     }
     private func retargetWidth(owner: IslandExpansionOwner, eventTime: TimeInterval) {
+        let wasOrdinary = ordinaryWidthCycle, hadBridge = widthBridge != nil
+        defer {
+            if wasOrdinary != ordinaryWidthCycle || hadBridge != (widthBridge != nil) {
+                debugState(.width, reason: .bridgeChanged)
+            }
+        }
         let ordinaryContext = !model.music.isFreshPlaying && !noticeTargetActive
             && presentation.notice == nil && !accessoryTarget && accessoryMotion.isSettled(at: 0)
         if !ordinaryWidthCycle && widthBridge == nil && ordinaryContext && owner == .details
@@ -718,9 +871,10 @@ final class IslandPanelController: NSObject {
             // The bridge holds its endpoint until the shared map reaches it.
             // Notice dwell/click routing/close drain cannot acknowledge an earlier frame.
             widthBridge = nil
+            debugState(.width, reason: .bridgeChanged)
         }
     }
-    private func startMotion() {
+    private func startMotion(reason: DebugCapture.Value = .retarget) {
         guard !stopped else { return }
         cancelCloseDrain()
         let now = CACurrentMediaTime()
@@ -752,6 +906,7 @@ final class IslandPanelController: NSObject {
         case .idle: break // Keep the outgoing content through the existing fade.
         }
         motionTargetExpanded = motionTargetValue > 0
+        debugState(.ownership, reason: reason)
         if motionSample != nil {
             lastRetarget = IslandMotionRetarget(scheduledTime: previousTime, eventTime: now,
                 consumedElapsed: elapsed, before: previousMotion, integrated: integrated,
@@ -781,6 +936,7 @@ final class IslandPanelController: NSObject {
         } else { motionFrames = DispatchIslandFrames(callback: callback) }
     }
     private func advanceFrame(to time: TimeInterval) {
+        model.debugCapture.recorder.count(.frameCallbacks)
         guard !stopped, let source = motionFrames, time.isFinite, time > lastMotionTime else { return }
         let now = CACurrentMediaTime(), elapsed = max(0, time - lastMotionTime)
         lastMotionTime = max(lastMotionTime, time)
@@ -802,6 +958,16 @@ final class IslandPanelController: NSObject {
         }
         apply(progress: motion.progress); updateClickRouting(NSEvent.mouseLocation)
         let duration = CACurrentMediaTime() - began
+        if model.debugCapture.recorder.isRecording {
+            let capture = model.debugCapture.recorder
+            let sourceKind: DebugCapture.Value = source.kind == "view-display-link" ? .displayLink
+                : (source.kind.hasPrefix("dispatch-") ? .dispatchTimer : .timer)
+            capture.record(.frameCallback, island: capture.identifier(debugToken), sampled: true,
+                values: [.scheduledOffsetMs: capture.offsetMilliseconds(time), .elapsedMs: elapsed * 1000,
+                    .sourceAgeMs: (now - time) * 1000, .applyMs: duration * 1000, .progress: motion.progress,
+                    .target: motionTargetValue, .frameRevision: Double(presentation.frame.revision &- debugFrameRevisionBase)],
+                labels: [.source: sourceKind])
+        }
         motionSample?(IslandMotionSample(observed: now, scheduled: time, generation: frameGeneration, applyDuration: duration,
             progress: motion.progress, velocity: motion.velocity, expanded: motionTargetExpanded,
             frame: panel.frame, contentBounds: panel.contentView?.bounds ?? .zero,
@@ -886,16 +1052,17 @@ final class IslandPanelController: NSObject {
                 lastMotionTime = now
             }
             accessoryTarget = accessories
+            debugState(.music, reason: .accessoryChanged)
         }
         if forceRetarget || accessoryChanged || expansionOwner != previousOwner || (expansionOwner == .music && motionTargetValue != smokeMusicTargetProgress) {
-            startMotion()
+            startMotion(reason: .musicChanged)
         }
     }
 
     func setMusicPresentationAllowed(_ allowed: Bool) {
         guard !stopped, passiveMusicAllowed != allowed else { return }
         let previousOwner = expansionOwner
-        passiveMusicAllowed = allowed; resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
+        passiveMusicAllowed = allowed; debugState(.gate, reason: .gateChanged); resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
         musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()
         updateMusicPresentation(forceRetarget: expansionOwner != previousOwner)
     }
@@ -914,13 +1081,13 @@ final class IslandPanelController: NSObject {
         let timer = Timer(timeInterval: 0.02, target: self,
             selector: #selector(checkNoticeReadiness(_:)), userInfo: nil, repeats: true)
         noticeReadiness = timer; RunLoop.main.add(timer, forMode: .common)
-        startMotion(); panel.ignoresMouseEvents = true
+        startMotion(reason: .noticeShown); panel.ignoresMouseEvents = true
         return true
     }
     func dismissRefreshNotice() {
         guard presentation.notice != nil else { return }
         cancelNoticeTimers(); noticeTargetActive = false
-        if !hover.isExpanded { startMotion() }
+        if !hover.isExpanded { startMotion(reason: .noticeDismissed) }
     }
     private func cancelNoticeTimers() {
         noticeExpiry?.invalidate(); noticeExpiry = nil
@@ -974,17 +1141,18 @@ final class IslandPanelController: NSObject {
         guard !hover.isExpanded else { return }
         // Retain the text during the closing fade; a separate flag chooses the idle target.
         noticeTargetActive = false
-        startMotion()
+        startMotion(reason: .noticeExpired)
     }
     func collapse() {
         guard !stopped else { return }
         cancelNoticeTimers(); noticeTargetActive = false
         hover.reset(); resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
         musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()
-        panel.ignoresMouseEvents = true; startMotion()
+        panel.ignoresMouseEvents = true; startMotion(reason: .collapse)
     }
     func stop() {
         guard !stopped else { return }
+        debugState(.lifecycle, reason: .stopped)
         stopped = true; ordinaryWidthCycle = false; widthBridge = nil
         resetCrossings(); musicHoverReservation.reset(); gestureHoverGate.reset()
         musicGestureNeedsCorridorExit = false; musicHoverReservation.resetDwell()

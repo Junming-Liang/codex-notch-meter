@@ -58,6 +58,7 @@ final class MeterModel: ObservableObject {
     private var sleeping = false
     let demo: Bool
     let music: MusicLyricsController
+    let debugCapture = DebugCaptureController()
 
     init(demo: Bool, music: MusicLyricsController? = nil) {
         self.demo = demo
@@ -72,6 +73,7 @@ final class MeterModel: ObservableObject {
         overlayEnabled = defaults.object(forKey: "overlayEnabled") as? Bool ?? true
         preferredBucket = defaults.string(forKey: "preferredBucket") ?? "codex"
         executablePath = defaults.string(forKey: "executablePath") ?? ""
+        self.music.debugCapture = debugCapture.recorder
         if !demo, let saved = defaults.dictionary(forKey: "horizontalCalibrations") {
             horizontalCalibrations = saved.reduce(into: [:]) { result, entry in
                 if !entry.key.isEmpty, entry.key.count <= 64, let value = entry.value as? Double {

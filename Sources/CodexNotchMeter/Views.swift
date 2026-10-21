@@ -288,6 +288,7 @@ struct SettingsView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject var login: LoginSettingsModel
     let chooseExecutable: () -> Void
+    let startDebugCapture: () -> Void
     let quit: () -> Void
     private func shapeAdjustmentRow(_ title: String, value: Double, limit: Double, changed: @escaping (Double) -> Void) -> some View {
         HStack {
@@ -315,6 +316,7 @@ struct SettingsView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+            DebugCaptureSettingsView(capture: model.debugCapture, start: startDebugCapture)
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("在刘海边缘显示额度进度线", isOn: $model.overlayEnabled)
@@ -469,6 +471,30 @@ struct SettingsView: View {
             }.controlSize(.small)
         }.padding(24).frame(width: 480, height: min(720, max(520, (NSScreen.main?.visibleFrame.height ?? 800) - 80)))
             .onAppear { login.refresh() }
+    }
+}
+@MainActor
+private struct DebugCaptureSettingsView: View {
+    @ObservedObject var capture: DebugCaptureController
+    let start: () -> Void
+    var body: some View {
+        GroupBox("抖动诊断（默认关闭）") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(capture.status).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(capture.status)
+                Text("1. 开始录制 → 2. 关闭设置和菜单 → 3. 复现抖动 → 4. 右键菜单栏图标，停止并导出。设置打开时会抑制音乐展示，不能在此页复现。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button(capture.hasCapture ? "重新开始录制" : "开始录制", action: start)
+                        .disabled(capture.isRecording)
+                    Button("停止录制") { capture.stop() }.disabled(!capture.isRecording)
+                    Button(capture.isRecording ? "停止并导出…" : "导出日志…") { capture.stopAndExport() }
+                        .disabled(!capture.hasCapture)
+                }.controlSize(.small)
+                Text("仅内存保留最近的有界诊断事件；无账户、歌曲/歌词正文、文件路径、截图或完整鼠标轨迹。不自动上传。重新开始或退出会清除上一份日志。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(4)
+        }
     }
 }
 #endif

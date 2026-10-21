@@ -21,6 +21,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var displayHarness: DisplayCompatibilityHarness?
     private var collapseHarness: CollapseRenderHarness?
     private var updateHarness: UpdateRenderHarness?
+    private var debugCaptureHarness: DebugCaptureChecks?
     private var musicHarness: MusicRenderHarness?
     private var musicCacheHarness: MusicRenderCacheChecks?
     private var stationaryMusicHarness: MusicStationaryHoverChecks?
@@ -64,6 +65,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         SmokeDiagnostics.mark("didFinishLaunching entered")
         NSApp.setActivationPolicy(.accessory)
         configureMainMenu()
+        model.debugCapture.stateChanged = { [weak self] in self?.updateStatus() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "chart.bar.fill", accessibilityDescription: "Codex quota")
@@ -162,7 +164,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         model.start(); rebuildIslands(); updateStatus(); updateSkinActivity()
         if smokeMode {
-            if CommandLine.arguments.contains("--ordinary-motion-test") { runOrdinaryMotionTest() }
+            if CommandLine.arguments.contains("--debug-capture-test") { runDebugCaptureTest() }
+            else if CommandLine.arguments.contains("--ordinary-motion-test") { runOrdinaryMotionTest() }
             else if CommandLine.arguments.contains("--baseline-motion-test") { runBaselineMotionTest() }
             else if CommandLine.arguments.contains("--music-stationary-hover-test") { runStationaryMusicTest() }
             else if CommandLine.arguments.contains("--music-cache-test") { runMusicCacheTest() }
@@ -199,9 +202,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         SmokeDiagnostics.mark("applicationShouldTerminate entered")
         guard !terminating else { return .terminateLater }
         terminating = true
+        model.debugCapture.stop(reason: .applicationExit)
         noticeQueue.invalidate()
         NSObject.cancelPreviousPerformRequests(withTarget: self)
         smokeTimer?.invalidate(); smokeTimer = nil
+        debugCaptureHarness?.stop()
         contourHarness?.stop(); alignmentHarness?.stop(); motionHarness?.stop(); displayHarness?.stop(); collapseHarness?.stop(); updateHarness?.stop(); musicHarness?.stop(); musicCacheHarness?.stop(); stationaryMusicHarness?.stop(); baselineMotionHarness?.stop(); ordinaryMotionHarness?.stop(); animationHarness?.stop()
         stopIslands(); smokeIsland?.stop()
         Task {
@@ -227,6 +232,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         displayCoordinator.refresh()
     }
     private func updateSkinActivity() {
+        recordDebugGates()
         model.music.setActive(!sleeping && !displaySleeping && sessionActive && !terminating && !NSApp.isHidden)
         islands.forEach { $0.setMusicPresentationAllowed(passiveMusicAllowed); $0.refreshMotionAvailability() }
         let coloredPrimary = (model.primaryWindow?.remainingPercent ?? 0) > 25
@@ -259,10 +265,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let island = islands.first, island.showRefreshNotice(notice) { noticeQueue.didDeliver() }
     }
     private func updateStatus() {
-        statusItem?.button?.title = " " + model.compactLabel
+        statusItem?.button?.title = " " + model.compactLabel + (model.debugCapture.isRecording ? " ●REC" : "")
+        statusItem?.button?.toolTip = model.debugCapture.isRecording
+            ? "诊断录制中（最多 5 分钟）· 右键停止并导出"
+            : (model.debugCapture.hasCapture ? "诊断日志已保留 · 右键导出" : "Codex 剩余额度 · 点击查看 / 退出，右键打开菜单")
         let pending = model.bucket?.windows.contains(where: { $0.resetPending(at: model.now) }) ?? false
         statusItem?.button?.setAccessibilityLabel("Codex 剩余额度，点击可查看或退出")
-        statusItem?.button?.setAccessibilityValue(model.compactLabel + "。" + model.status + (pending ? "。等待重置确认" : ""))
+        statusItem?.button?.setAccessibilityValue(model.compactLabel + "。" + model.status + (pending ? "。等待重置确认" : "")
+            + (model.debugCapture.isRecording ? "。诊断录制中，右键可停止并导出" : ""))
     }
     private func makeDetailView() -> DetailView {
         DetailView(model: model, hovered: { _ in }, refresh: { [weak self] in self?.model.refresh() },
@@ -272,7 +282,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         defer { updateSkinActivity() }
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let button = statusItem.button {
             let menu = makeStatusMenu()
-            menuOpen = true; islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }
+            menuOpen = true; recordDebugGates(); islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }
             defer { menuOpen = false; updateSkinActivity(); deliverPendingNotice() }
             NSMenu.popUpContextMenu(menu, with: event, for: button)
             return
@@ -283,10 +293,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         let refresh = menu.addItem(withTitle: "刷新额度", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         let settings = menu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
+        menu.addItem(.separator())
+        let captureTitle = model.debugCapture.isRecording ? "● 诊断录制中 · 停止并导出…" : "导出上次诊断日志…"
+        let capture = menu.addItem(withTitle: captureTitle, action: #selector(exportDebugCapture), keyEquivalent: "")
+        capture.target = self; capture.isEnabled = model.debugCapture.hasCapture
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "退出 Codex Notch Meter", action: #selector(requestQuit), keyEquivalent: "q")
         quit.target = self
@@ -297,7 +312,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.performClose(nil); islands.forEach { $0.setMusicPresentationAllowed(false); $0.collapse() }
         loginSettings.refresh()
         if settingsWindow == nil {
-            let view = SettingsView(model: model, login: loginSettings, chooseExecutable: { [weak self] in self?.chooseExecutable() }, quit: { [weak self] in self?.requestQuit() })
+            let view = SettingsView(model: model, login: loginSettings, chooseExecutable: { [weak self] in self?.chooseExecutable() }, startDebugCapture: { [weak self] in self?.startDebugCapture() }, quit: { [weak self] in self?.requestQuit() })
             let window = NSWindow(contentViewController: NSHostingController(rootView: view))
             window.title = "Codex Notch Meter 设置"
             window.styleMask = [.titled, .closable, .miniaturizable]
@@ -307,6 +322,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         updateSkinActivity()
+    }
+    private func startDebugCapture() {
+        model.debugCapture.start()
+        islands.forEach { $0.recordDebugSnapshot() }
+        model.music.recordDebugState()
+        recordDebugGates()
+    }
+    @objc private func exportDebugCapture() { model.debugCapture.stopAndExport() }
+    private func recordDebugGates() {
+        let capture = model.debugCapture.recorder
+        guard capture.isRecording else { return }
+        capture.record(.gate, values: [.settings: settingsWindow?.isVisible == true ? 1 : 0,
+            .menu: menuOpen ? 1 : 0, .popover: popover.isShown ? 1 : 0,
+            .allowed: passiveMusicAllowed ? 1 : 0,
+            .quotaError: model.error == nil ? 0 : 1, .quotaStale: model.degraded ? 1 : 0],
+            labels: [.reason: .gateChanged])
     }
     private func chooseExecutable() {
         let open = NSOpenPanel()
@@ -358,6 +389,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.smokeReady = valid; self?.requestQuit()
         }
         baselineMotionHarness?.start()
+    }
+    private func runDebugCaptureTest() {
+        debugCaptureHarness = DebugCaptureChecks { [weak self] valid in
+            self?.smokeReady = valid; self?.requestQuit()
+        }
+        debugCaptureHarness?.start()
     }
     private func runStationaryMusicTest() {
         guard CommandLine.arguments.contains("--music-test") else { requestQuit(); return }
