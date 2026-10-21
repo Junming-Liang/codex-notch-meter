@@ -15,6 +15,8 @@ BASELINE = "17e3fef35ac89dda5588620009564558136270b6"
 FLAGS = ["--music-test", "--music-cache-test", "--music-stationary-hover-test", "--music-wide-quota-hover-test"]
 PREFIX = "MUSIC_WIDE_QUOTA_HOVER_JSON: "
 OK = "MUSIC_WIDE_QUOTA_HOVER_OK: nativeLocal=true naturalPoll=true synthetic=true"
+RED_FAILURE = "MUSIC_STATIONARY_HOVER_FAILED: wide-music-quota-settled"
+RED_SHUTDOWN = "SMOKE_FAILED: native island checks failed"
 SHUTDOWN = "SMOKE_OK: native island geometry, expansion and orderly shutdown completed; demo-only"
 
 
@@ -42,6 +44,23 @@ def validate(log):
     return r
 
 
+def validate_red(log, returncode):
+    # AppController reports semantic smoke failures before an orderly NSApp
+    # shutdown, which exits zero. A nonzero exit/crash is NOT expected red.
+    # This receipt proves the exact settle failure, not its physical cause.
+    lines = log.splitlines()
+    need(returncode == 0, "original must terminate normally, not crash")
+    failures = [line for line in lines if "FAILED:" in line]
+    need(len(failures) == 2 and failures.count(RED_FAILURE) == 1
+         and failures.count(RED_SHUTDOWN) == 1,
+         "original must report only the exact settle failure and smoke shutdown")
+    need(not any(marker in line.lower() for line in lines
+                 for marker in ("fatal error", "error:", "deadline exceeded")),
+         "original must not contain runtime error or deadline diagnostics")
+    need(not any("_OK:" in line or line.startswith(PREFIX) for line in lines),
+         "original must not report success or a green receipt")
+
+
 def self_test():
     r = dict(schema=1, notchWidth=330, synthetic=True, globalSystemDelivery=False,
              lyricsSelected=False, stableDetails=True, realExitClosed=True, pauseReleasedOrigin=True,
@@ -60,6 +79,36 @@ def self_test():
             count += 1
         else:
             raise ValueError("accepted invalid " + key)
+    red = RED_FAILURE + "\n" + RED_SHUTDOWN
+    validate_red(red, 0)
+    count += 1
+    invalid_red = [
+        ("nonzero", red, 1),
+        ("crash", red, -11),
+        ("missing failure", RED_SHUTDOWN, 0),
+        ("missing shutdown", RED_FAILURE, 0),
+        ("empty", "", 0),
+        ("wrong failure", red.replace("wide-music-quota-settled", "wide-music-quota-real-exit-closes"), 0),
+        ("trailing malformed", red.replace(RED_FAILURE, RED_FAILURE + " extra"), 0),
+        ("prefixed malformed", "prefix " + red, 0),
+        ("duplicate failure", red + "\n" + RED_FAILURE, 0),
+        ("duplicate shutdown", red + "\n" + RED_SHUTDOWN, 0),
+        ("unrelated failure", red + "\nOTHER_FAILED: unexpected", 0),
+        ("green success", red + "\n" + OK, 0),
+        ("successful shutdown", red + "\n" + SHUTDOWN, 0),
+        ("unrelated success", red + "\nOTHER_OK: unexpected", 0),
+        ("green receipt", red + "\n" + PREFIX + json.dumps(r), 0),
+        ("fatal runtime", red + "\nFatal error: unexpectedly found nil", 0),
+        ("runtime error", red + "\nERROR: unexpected native diagnostic", 0),
+        ("deadline", red + "\nDeadline exceeded during native capture", 0),
+    ]
+    for name, bad_log, code in invalid_red:
+        try:
+            validate_red(bad_log, code)
+        except ValueError:
+            count += 1
+        else:
+            raise ValueError("accepted invalid red " + name)
     print(f"MUSIC_WIDE_QUOTA_PARSER_SELF_TEST_OK: assertions={count} nativeAppRun=false")
 
 
@@ -95,8 +144,7 @@ def red_green(binary):
         red_log = old.stdout + old.stderr
         (dist / "music-wide-quota-red.log").write_text(red_log)
         print(red_log, end="")
-        need(old.returncode != 0 and "MUSIC_STATIONARY_HOVER_FAILED: wide-music-quota-settled" in red_log.splitlines()
-             and OK not in red_log, "original must fail at the intended stationary quota regression")
+        validate_red(red_log, old.returncode)
         (dist / "music-wide-quota-source.json").write_text(json.dumps({
             "baseline": BASELINE, "overlay": str(fixture), "overlaySHA256": hashlib.sha256(harness).hexdigest(),
             "productionOverlay": False}, indent=2))
