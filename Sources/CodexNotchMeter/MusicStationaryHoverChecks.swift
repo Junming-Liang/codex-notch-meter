@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import CoreFoundation
 import QuartzCore
 import NotchCore
 
@@ -56,7 +57,9 @@ final class MusicStationaryHoverChecks {
         }
     }
     private func finish(_ success: Bool) {
-        guard !finished else { return }; stop(); completion(success)
+        guard !finished else { return }
+        if !success { active?.timing.emit(outcome: "incomplete") }
+        stop(); completion(success)
     }
     private func require(_ condition: Bool, _ label: String) throws {
         if !condition { throw Failure(label: label) }
@@ -64,10 +67,16 @@ final class MusicStationaryHoverChecks {
     private func until(_ label: String, timeout: TimeInterval = 4,
                        _ condition: @escaping @MainActor () -> Bool) async throws {
         let end = ProcessInfo.processInfo.systemUptime + timeout
+        let timing = active?.timing
+        let phase = timing?.beginWait(label, deadline: end)
         while !finished && !Task.isCancelled && ProcessInfo.processInfo.systemUptime < end {
-            if condition() { return }
+            if condition() { timing?.endWait(phase, satisfied: true); return }
+            let requested = ProcessInfo.processInfo.systemUptime
+            timing?.sleepRequested(phase, at: requested)
             try await Task.sleep(nanoseconds: 5_000_000)
+            timing?.sleepResumed(phase, requested: requested)
         }
+        timing?.endWait(phase, satisfied: false)
         throw Failure(label: label)
     }
     private func emit(_ prefix: String, _ value: [String: Any]) {
@@ -82,24 +91,30 @@ final class MusicStationaryHoverChecks {
         let panel: IslandPanelController
         let source: TopEdgePanel
         let outside: CGPoint
+        let timing: StationaryTimingTrace
         var serial = 31_000
         init(screen: NSScreen, notch: NotchGeometry, track: MusicTrackIdentity, document: LyricsDocument) {
+            let trace = StationaryTimingTrace()
+            timing = trace
             reader = StationaryHoverReader(track: track)
             controller = MusicLyricsController(synthetic: true, reader: reader, importer: { _ in document })
             let model = MeterModel(demo: true, music: controller)
             let geometry = IslandGeometry(notch: notch, screen: screen.frame,
                 backingScale: screen.backingScaleFactor, contentHeight: 260)
             outside = CGPoint(x: geometry.frame(progress: 1).maxX + 80, y: geometry.musicGestureCorridor.minY + 2)
+            let frameObserver: ((IslandMotionSample) -> Void)? = trace.enabled ? { trace.recordFrame($0) } : nil
             panel = IslandPanelController(model: model, geometry: geometry, startPolling: true,
-                reducedMotionOverride: false, hovered: {}, refresh: {}, settings: {}, quit: {})
+                reducedMotionOverride: false, motionSample: frameObserver,
+                hovered: {}, refresh: {}, settings: {}, quit: {})
             source = TopEdgePanel(contentRect: CGRect(x: -900, y: -700, width: 240, height: 180),
                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             source.isReleasedWhenClosed = false; source.acceptsMouseMovedEvents = true
             source.ignoresMouseEvents = true; source.orderFrontRegardless()
+            trace.start(panel: panel)
             panel.smokeSetPolledPointer(outside)
             controller.start(); controller.setEnabled(true)
         }
-        func stop() { panel.stop(); source.close(); controller.stop() }
+        func stop() { timing.stop(); panel.stop(); source.close(); controller.stop() }
     }
     private func prepare(notchWidth: CGFloat = 220) async throws -> Fixture {
         guard let screen = NSScreen.main else { throw Failure(label: "native-screen") }
@@ -178,6 +193,7 @@ final class MusicStationaryHoverChecks {
             && !e.stopped && e.placementValid
             && f.panel.smokePointerIngress.contains { $0.kind == "event" && $0.timestamp == e.timestamp && $0.point == p },
             "native-coordinate-time-and-production-acceptance")
+        f.timing.recordEvent(number: e.eventNumber, source: e.timestamp, delivered: e.delivered)
         return e
     }
     @discardableResult private func post(_ p: CGPoint, _ f: Fixture) async throws -> IslandPointerEntryReceipt {
@@ -243,6 +259,7 @@ final class MusicStationaryHoverChecks {
 
     private func edge(_ name: String) async throws -> [String: Any] {
         let f = try await prepare(); defer { f.stop(); active = nil }
+        f.timing.name = name
         let corridor = f.panel.geometry.musicGestureCorridor
         let center = CGPoint(x: name == "left" ? corridor.minX + 20 : corridor.maxX - 20, y: corridor.minY + 2)
         let began = ProcessInfo.processInfo.systemUptime
@@ -262,7 +279,9 @@ final class MusicStationaryHoverChecks {
                     if let h = r.hoverDecision { row["hover"] = ["timestamp": h.timestamp, "inside": h.inside,
                         "expandedBefore": h.expandedBefore, "expandedAfter": h.expandedAfter] }
                     return row
-                }, "inputState": f.panel.smokeMusicInputState(at: center) ?? [:]]) }
+                }, "inputState": f.panel.smokeMusicInputState(at: center) ?? [:]])
+                f.timing.emit(outcome: "incomplete")
+            }
         }
         for index in 0..<16 {
             // Schedule from the previous actual delivery. A task wake never
@@ -337,6 +356,7 @@ final class MusicStationaryHoverChecks {
         f.panel.smokeSetPolledPointer(f.outside); _ = try await post(f.outside, f)
         try await until("ordinary-hover-leave-" + name) { f.panel.smokeExpansionOwner == .idle && f.panel.smokeProgress == 0 }
         completed = true
+        f.timing.emit(outcome: "complete")
         return ["name": name, "events": rows, "recoverySeconds": recovery.timestamp - entries[0].delivered,
             "duration": entries.last!.delivered - entries[0].delivered, "playbackReads": calls,
             "naturalPaint": true, "noLyricsSelected": true, "leaveCollapsed": true,
@@ -352,6 +372,7 @@ final class MusicStationaryHoverChecks {
     }
     private func controls() async throws -> [String: Any] {
         let f = try await prepare(); defer { f.stop(); active = nil }
+        f.timing.name = "controls"
         var completed = false
         var phase = "import"
         defer {
@@ -378,6 +399,7 @@ final class MusicStationaryHoverChecks {
                 }
                 emit("MUSIC_STATIONARY_HOVER_DIAGNOSTIC_JSON", diagnostic)
             }
+            f.timing.emit(outcome: completed ? "complete" : "incomplete")
         }
         guard let token = f.controller.importSelectionToken else { throw Failure(label: "controls-import-token") }
         f.controller.importLyrics(from: URL(fileURLWithPath: "/synthetic-stationary-hover.lrc"), for: token)
@@ -495,6 +517,123 @@ final class MusicStationaryHoverChecks {
         completed = true
         return ["name": "controls", "genuineRight": true, "genuineReverse": true,
             "pauseResume": true, "trackChange": true, "ordinaryRecovery": true, "nativeEvents": true]
+    }
+}
+
+/// Diagnostic observations only: no new driving timer, forced rendering, input
+/// delivery, or modified deadlines. Ring buffers retain the most recent window.
+/// The notification seam is optional so this same harness compiles on v1.1.1.
+@MainActor
+private final class StationaryTimingTrace {
+    private struct Buffer {
+        let limit: Int
+        var values: [[Double]] = []
+        var next = 0
+        var seen = 0
+        mutating func append(_ row: [Double]) {
+            seen += 1
+            if values.count < limit { values.append(row) }
+            else { values[next] = row; next = (next + 1) % limit }
+        }
+        var rows: [[Double]] { Array(values[next...]) + Array(values[..<next]) }
+        var dropped: Int { max(0, seen - limit) }
+    }
+    let enabled = CommandLine.arguments.contains("--music-test")
+        && CommandLine.arguments.contains("--music-cache-test")
+        && CommandLine.arguments.contains("--music-stationary-hover-test")
+        && !CommandLine.arguments.contains("--music-wide-quota-hover-test")
+    var name = "preparation"
+    private var polls = Buffer(limit: 128), loops = Buffer(limit: 512)
+    private var frames = Buffer(limit: 128), waits = Buffer(limit: 256)
+    private var events = Buffer(limit: 32), phases = Buffer(limit: 64)
+    private var labels: [String] = []
+    private var pendingSleep: [Double] = []
+    private var pollObserver: NSObjectProtocol?
+    private var loopObserver: CFRunLoopObserver?
+    private var emitted = false
+    func start(panel: IslandPanelController) {
+        guard enabled else { return }
+        pollObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("CodexNotchMeter.StationaryPollTiming"), object: panel, queue: nil) { [weak self] note in
+                MainActor.assumeIsolated {
+                    if let row = note.userInfo?["row"] as? [Double] { self?.polls.append(row) }
+                }
+            }
+        let activities: CFRunLoopActivity = [.beforeTimers, .beforeSources, .beforeWaiting, .afterWaiting]
+        loopObserver = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, activities.rawValue, true, 0) { [weak self] _, activity in
+            MainActor.assumeIsolated {
+                self?.loops.append([ProcessInfo.processInfo.systemUptime, Double(activity.rawValue)])
+            }
+        }
+        if let loopObserver { CFRunLoopAddObserver(CFRunLoopGetMain(), loopObserver, .commonModes) }
+    }
+    func stop() {
+        if let pollObserver { NotificationCenter.default.removeObserver(pollObserver) }
+        pollObserver = nil
+        if let loopObserver { CFRunLoopRemoveObserver(CFRunLoopGetMain(), loopObserver, .commonModes) }
+        loopObserver = nil
+    }
+    func recordFrame(_ sample: IslandMotionSample) {
+        guard enabled else { return }
+        // A callback receipt in uptime plus measured durations, not a fabricated
+        // conversion of CADisplayLink's target timestamp to an ingress timestamp.
+        frames.append([ProcessInfo.processInfo.systemUptime, sample.applyDuration,
+            sample.scheduled - sample.observed, sample.progress, Double(sample.generation)])
+    }
+    func recordEvent(number: Int, source: TimeInterval, delivered: TimeInterval) {
+        guard enabled else { return }
+        events.append([Double(number), source, delivered, ProcessInfo.processInfo.systemUptime])
+    }
+    func beginWait(_ label: String, deadline: TimeInterval) -> Int? {
+        guard enabled else { return nil }
+        let id: Int
+        if let found = labels.firstIndex(of: label) { id = found }
+        else if labels.count < 64 { id = labels.count; labels.append(label) }
+        else { id = -1 }
+        phases.append([ProcessInfo.processInfo.systemUptime, Double(id), deadline, 0])
+        if label.hasPrefix("actual-poll-before-next-event-") {
+            // A small unbuffered checkpoint survives an outer runner timeout
+            // even if the main loop cannot reach the final diagnostic export.
+            write(["schema": 1, "name": name, "kind": "checkpoint", "clock": "systemUptime",
+                "phase": label, "entered": ProcessInfo.processInfo.systemUptime, "deadline": deadline], immediate: true)
+        }
+        return id
+    }
+    func endWait(_ phase: Int?, satisfied: Bool) {
+        guard let phase else { return }
+        phases.append([ProcessInfo.processInfo.systemUptime, Double(phase), 0, satisfied ? 1 : -1])
+    }
+    func sleepRequested(_ phase: Int?, at time: TimeInterval) {
+        guard let phase else { return }
+        pendingSleep = [time, Double(phase)]
+    }
+    func sleepResumed(_ phase: Int?, requested: TimeInterval) {
+        guard let phase else { return }
+        waits.append([requested, ProcessInfo.processInfo.systemUptime, Double(phase)])
+        pendingSleep = []
+    }
+    func emit(outcome: String) {
+        guard enabled, !emitted else { return }; emitted = true
+        write(["schema": 1, "name": name, "kind": "summary", "clock": "systemUptime",
+            "outcome": outcome, "observed": ProcessInfo.processInfo.systemUptime,
+            "labels": labels, "pendingSleep": pendingSleep, "rawPollProbeObserved": polls.seen > 0])
+        for (kind, buffer, columns) in [
+            ("polls", polls, ["entered", "returned", "lastEventDelivery", "lastPollBefore", "lastPollAfter", "validTimer", "stopped", "placementValid"]),
+            ("runLoop", loops, ["observed", "CFRunLoopActivity"]),
+            ("frames", frames, ["callbackObserved", "applyDuration", "scheduledLead", "progress", "generation"]),
+            ("awaits", waits, ["sleepRequested", "sleepResumed", "phase"]),
+            ("events", events, ["number", "source", "delivered", "awaiterResumed"]),
+            ("phases", phases, ["observed", "phase", "deadline", "outcome"]) ] {
+            write(["schema": 1, "name": name, "kind": kind, "clock": "systemUptime",
+                "columns": columns, "rows": buffer.rows, "seen": buffer.seen, "dropped": buffer.dropped])
+        }
+    }
+    private func write(_ value: [String: Any], immediate: Bool = false) {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              data.count <= 131_072, let json = String(data: data, encoding: .utf8) else { return }
+        let line = "MUSIC_STATIONARY_TIMING_JSON: " + json + "\n"
+        if immediate { FileHandle.standardError.write(Data(line.utf8)) }
+        else { print(line, terminator: "") }
     }
 }
 

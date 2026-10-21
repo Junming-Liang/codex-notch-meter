@@ -363,7 +363,14 @@ final class IslandPanelController: NSObject {
         panel.orderFrontRegardless()
         apply(progress: 0)
         if startPolling {
-            let timer = Timer(timeInterval: 1.0 / 30, target: self, selector: #selector(pollPointer(_:)), userInfo: nil, repeats: true)
+            // Only this explicit native fixture adds timing observation. Normal
+            // users keep the original selector and incur no per-tick tracing.
+            let timingDiagnostic = model.demo && CommandLine.arguments.contains("--music-test")
+                && CommandLine.arguments.contains("--music-cache-test")
+                && CommandLine.arguments.contains("--music-stationary-hover-test")
+                && !CommandLine.arguments.contains("--music-wide-quota-hover-test")
+            let selector = timingDiagnostic ? #selector(diagnosticPollPointer(_:)) : #selector(pollPointer(_:))
+            let timer = Timer(timeInterval: 1.0 / 30, target: self, selector: selector, userInfo: nil, repeats: true)
             RunLoop.main.add(timer, forMode: .common); pointerTimer = timer
             // Mouse-only AppKit observation needs no accessibility event tap.
             // Local and global monitors cover our window and other applications;
@@ -444,6 +451,22 @@ final class IslandPanelController: NSObject {
     func setContourTestProgress(_ progress: Double) {
         guard CommandLine.arguments.contains("--contour-test") || CommandLine.arguments.contains("--alignment-test") || (CommandLine.arguments.contains("--collapse-test") || CommandLine.arguments.contains("--update-test")) else { return }
         apply(progress: progress)
+    }
+    @objc private func diagnosticPollPointer(_ timer: Timer) {
+        let entered = ProcessInfo.processInfo.systemUptime
+        let previousPoll = lastPollTime
+        let eventDelivery = lastEventDelivery
+        let validTimer = timer === pointerTimer
+        let wasStopped = stopped, validPlacement = placementIsValid
+        pollPointer(timer)
+        // No coordinates or user content. Synchronous own-process delivery
+        // lets the fixture retain bounded evidence without adding another clock.
+        NotificationCenter.default.post(name: Notification.Name("CodexNotchMeter.StationaryPollTiming"),
+            object: self, userInfo: ["row": [entered, ProcessInfo.processInfo.systemUptime,
+                eventDelivery.isFinite ? eventDelivery : -1,
+                previousPoll.isFinite ? previousPoll : -1,
+                lastPollTime.isFinite ? lastPollTime : -1,
+                validTimer ? 1.0 : 0, wasStopped ? 1.0 : 0, validPlacement ? 1.0 : 0]])
     }
     @objc private func pollPointer(_ timer: Timer) {
         guard !stopped, timer === pointerTimer, placementIsValid else { return }
