@@ -1,0 +1,38 @@
+name: Indicator scheduler diagnostic experiment (not release acceptance)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: indicator-scheduler-experiment-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  fixed-experiment:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Source and experiment negative controls
+        run: |
+          swift --version
+          python3 Scripts/check-source.py
+          python3 Scripts/check-native-music-cache.py --self-test
+          python3 Scripts/check-indicator-scheduler-experiment.py --self-test
+      - name: Build one source-bound native diagnostic app (no archive)
+        timeout-minutes: 8
+        run: bash Scripts/build-app.sh --app-only
+      - name: Fixed hover then ABBA then hover experiment (no retries)
+        timeout-minutes: 5
+        run: python3 Scripts/check-indicator-scheduler-experiment.py
+      - name: Retain every completed or failed synthetic observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: indicator-scheduler-diagnostic-${{ github.run_id }}
+          path: dist/scheduler-experiment/**
+          if-no-files-found: warn
+          retention-days: 7
