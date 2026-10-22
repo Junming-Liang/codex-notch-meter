@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish v1.1.3 DMG and ZIP after all checks pass
+        description: Publish v1.1.4 DMG and ZIP after all checks pass
         type: boolean
         required: true
         default: false
@@ -177,10 +177,10 @@ jobs:
         with:
           name: CodexNotchMeter-developer-preview
           path: |
-            dist/CodexNotchMeter-1.1.3-universal.zip
-            dist/CodexNotchMeter-1.1.3-universal.zip.sha256
-            dist/CodexNotchMeter-1.1.3-universal.dmg
-            dist/CodexNotchMeter-1.1.3-universal.dmg.sha256
+            dist/CodexNotchMeter-1.1.4-universal.zip
+            dist/CodexNotchMeter-1.1.4-universal.zip.sha256
+            dist/CodexNotchMeter-1.1.4-universal.dmg
+            dist/CodexNotchMeter-1.1.4-universal.dmg.sha256
             dist/release-source.json
           if-no-files-found: error
           retention-days: 7
@@ -238,8 +238,8 @@ jobs:
       - name: Verify archive checksum
         working-directory: dist
         run: |
-          sha256sum --check CodexNotchMeter-1.1.3-universal.zip.sha256
-          sha256sum --check CodexNotchMeter-1.1.3-universal.dmg.sha256
+          sha256sum --check CodexNotchMeter-1.1.4-universal.zip.sha256
+          sha256sum --check CodexNotchMeter-1.1.4-universal.dmg.sha256
       - name: Verify exact source and asset manifest
         env:
           RELEASE_COMMIT: ${{ github.sha }}
@@ -247,7 +247,7 @@ jobs:
         run: |
           review_options=()
           if [[ "$STAGE_DRAFT" == "true" ]]; then review_options+=(--require-review-images); fi
-          python3 Scripts/verify-release-source.py --source-commit "$RELEASE_COMMIT" --source-run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY" --checkout . --dist dist --version 1.1.3 --bundle-build 20 --asset-manifest dist/release-assets.json "${review_options[@]}"
+          python3 Scripts/verify-release-source.py --source-commit "$RELEASE_COMMIT" --source-run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY" --checkout . --dist dist --version 1.1.4 --bundle-build 21 --asset-manifest dist/release-assets.json "${review_options[@]}"
       - name: Publish release or stage private draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -259,42 +259,40 @@ jobs:
             echo "Refusing conflicting release modes." >&2
             exit 1
           fi
-          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.1.3" --jq '.[] | select(.ref == "refs/tags/v1.1.3") | .ref')"
-          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.1.3") | .id')"
+          existing_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v1.1.4" --jq '.[] | select(.ref == "refs/tags/v1.1.4") | .ref')"
+          existing_release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.1.4") | .id')"
           if [[ -n "$existing_tag" || -n "$existing_release" ]]; then
-            echo "Refusing to replace an existing v1.1.3 tag or release." >&2
+            echo "Refusing to replace an existing v1.1.4 tag or release." >&2
             exit 1
           fi
           cat > notes.md <<'NOTES'
-          ## Codex Notch Meter v1.1.3
+          ## Codex Notch Meter v1.1.4
 
           ### 中文
 
-          v1.1.3/build 20 包含音乐悬停稳定性修正和可选歌词补充源。仅在最终提交的完整 macOS 自动检查通过后发布，不覆盖旧版 1.1.2。
+          v1.1.4/build 21 包含音乐详情展开宽度修正与默认关闭的本地调试记录。仅在最终版本提交的完整 macOS 自动检查通过后发布；保留已发布的 1.1.3，不覆盖旧包。
 
-          - 修正宽音乐翼缘进入额度展开轮廓时，静止指针可能因轮廓变化反复开合的问题；保留真实移出、暂停和播放新鲜度失效边界。
-          - 在线歌词继续优先使用 LRCLIB；AMLL 是独立开关、默认关闭的可选补充源，需要单独同意。覆盖范围取决于来源收录与匹配结果，不保证每首歌都有歌词。
-          - 明确设置窗口打开时的歌词交互提示，并补充跨曲、撤销同意、本地导入与迟到结果隔离检查。
-          - 保留额度提示原时长。暂停验收等待界面处理完暂停后，检查原提示计时器身份和到期时间不变，而不是误把音乐附件动画重定向当作提示重启。
+          - 音乐详情从稳定收起态或歌词态展开时，宽度与轮廓两侧使用同一进度，避免共享紧凑宽度曲线中的平台段造成先变宽、缩回一点、再继续变宽；关闭使用同一路径。保留原动画时限、悬停阈值和中途反向处理。
+          - 调试记录默认关闭，用户主动开启后最多记录 5 分钟、2 MiB；可停止并导出到本地，不自动上传。记录几何、状态与耗时而非曲名、歌词或账户内容。导出文件仍应在分享前检查；自动测试没有验证真实保存对话框操作。
+          - 保留 LRCLIB 优先与独立同意、默认关闭的 AMLL 补充源；歌词覆盖仍取决于来源与匹配，不保证每首歌均可用。
 
           ### English
 
-          v1.1.3/build 20 includes music-hover stability changes and an optional lyrics fallback. Publication requires the complete automated macOS checks on the final commit; v1.1.2 is preserved.
+          v1.1.4/build 21 adds a music-details width correction and opt-in local debug capture. Publication requires the complete automated macOS checks on the final version commit. The existing v1.1.3 release and its assets are preserved.
 
-          - Retain eligible music-origin hover geometry while quota details expand, preventing a stationary pointer on wide music wings from being dropped by the changing contour. Real exits, pause and playback-freshness boundaries remain enforced.
-          - LRCLIB remains the primary online lyrics source. AMLL is a separately consented, independently controlled fallback that is off by default. Coverage depends on source availability and matching; lyrics are not guaranteed for every track.
-          - Clarify lyrics interaction while Settings is open, with additional cross-track, consent-revocation, local-import and late-result isolation checks.
-          - Preserve quota-notice duration. Pause verification now waits for the panel to consume pause and checks the original notice timer identity and expiry, instead of confusing accessory-animation retargeting with a restarted notice.
+          - Music details opening from a settled compact or lyrics state now uses the same progress for width and visible contour sides, avoiding the intermediate grow-shrink-grow segment in the shared compact-width map. Closing follows the same path. Existing animation deadlines, hover thresholds and interrupted reversals are retained.
+          - Debug capture is off by default. A user-started recording is bounded to 5 minutes and 2 MiB, can be stopped and exported locally, and is never uploaded automatically. It records geometry, state and timing rather than track titles, lyrics or account contents. Review exports before sharing; the real save-dialog interaction was not exercised by automated tests.
+          - LRCLIB remains primary; the separately consented AMLL fallback remains off by default. Coverage depends on source availability and matching, with no guarantee for every track.
 
           ### Validation and limits / 验证与边界
 
-          完整自动验收包括 Swift 测试、原生应用内回归、旧版失败/新版通过检查、Universal 构建及源代码绑定的 ZIP/DMG 核验。自动检查仍使用模拟播放数据、应用内事件和自身视图捕获，不能等同系统全局手势或用户现场验收。
+          修正代码在 CI #84（提交 6db88235b18bc8a62d61a914bd8892781ae46236）通过完整自动检查：491 项测试、1 项跳过、0 项失败。宽度原生对照只向旧版移植测试夹具，旧版实际绘制回执出现两侧反向，新版在 220/330 宽度、有/无歌词、展开/收起共 8 段通过。版本更新后还须重新完整构建和验收，不能把 #84 的包改名当作 1.1.4。
 
-          真实系统 Music、TCC 权限、流媒体和用户 Mac 尚未实测；自动生成截图尚未完成人工检查。先前 #77 的轮询迟到根因仍未证明，后续通过只代表对应运行未复现。用户已知这些缺口并允许自动检查全部通过后发布；本版不宣称用户现场问题已全部解决，也不宣称全部验证边界已满足。
+          这些是模拟播放数据、应用内事件与自身视图绘制回执，不是系统全局鼠标或显示扫描输出证明。真实系统 Music、TCC、流媒体和用户 Mac 仍未实测，截图尚未完成人工检查。动态附件正在变化时不在固定附件宽度单调证明范围内；此前轮询/定时器迟到的系统根因也未证明。通过不等于用户现场问题已全部解决。
 
-          Automated acceptance covers Swift tests, native in-app regressions, old-red/new-green checks, universal builds and source-bound ZIP/DMG verification. Synthetic playback, own-app events and own-view captures are not proof of system-wide physical gestures or field behavior.
+          The correction passed the complete automated checks in CI #84 at commit 6db88235b18bc8a62d61a914bd8892781ae46236: 491 tests, one skipped and zero failures. The native width comparison overlays only the test fixture onto old production code: old paint receipts demonstrate an actual side reversal, while the candidate passes eight segments across 220/330 widths, lyrics off/on and opening/closing. The version update must be rebuilt and fully checked; the #84 package cannot merely be renamed to 1.1.4.
 
-          Real system Music, TCC, streaming and the user's Mac remain untested. Generated screenshots have not received manual visual review. The root cause of the earlier run #77 polling delay remains unproven; later passing runs establish non-reproduction only. The user authorized publication after all automated checks pass with these gaps disclosed. This release does not claim every reported field issue is resolved or every validation boundary has been satisfied.
+          These checks use synthetic playback, own-app events and own-view paint receipts, not physical system-wide mouse input or display scanout. Real system Music, TCC, streaming and the user's Mac remain untested; screenshots have not received manual visual review. Changing accessories are outside the fixed-accessory monotonic-width proof. The system-level cause of earlier polling/timer delays remains unproven. Passing checks do not establish that every field issue is resolved.
 
           需要 macOS 13+；Universal DMG/ZIP 包含 Apple Silicon 与 Intel 二进制。仅 ad-hoc 签名，无 Developer ID 签名或 Apple 公证；macOS 可能阻止启动。请勿关闭系统安全保护。
 
@@ -302,23 +300,23 @@ jobs:
           NOTES
           # Atomic ref creation prevents a concurrent run from reusing this version.
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/v1.1.3" -f sha="$RELEASE_COMMIT" --silent
+            -f ref="refs/tags/v1.1.4" -f sha="$RELEASE_COMMIT" --silent
           release_options=()
           review_assets=()
           if [[ "$STAGE_DRAFT" == "true" ]]; then
             release_options+=(--draft)
             review_assets=(dist/perimeter-*.png)
           fi
-          gh release create v1.1.3 \
+          gh release create v1.1.4 \
             "${release_options[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "v1.1.3 · Stable Music Hover & Optional AMLL Lyrics" \
+            --title "v1.1.4 · Music Details Width & Local Debug Capture" \
             --notes-file notes.md \
-            dist/CodexNotchMeter-1.1.3-universal.zip \
-            dist/CodexNotchMeter-1.1.3-universal.zip.sha256 \
-            dist/CodexNotchMeter-1.1.3-universal.dmg \
-            dist/CodexNotchMeter-1.1.3-universal.dmg.sha256 \
+            dist/CodexNotchMeter-1.1.4-universal.zip \
+            dist/CodexNotchMeter-1.1.4-universal.zip.sha256 \
+            dist/CodexNotchMeter-1.1.4-universal.dmg \
+            dist/CodexNotchMeter-1.1.4-universal.dmg.sha256 \
             dist/release-source.json \
             dist/release-assets.json \
             "${review_assets[@]}"
