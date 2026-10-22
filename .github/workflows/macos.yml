@@ -136,6 +136,11 @@ jobs:
         run: |
           python3 Scripts/check-native-music-quota-hover.py --self-test
           python3 Scripts/check-native-music-quota-hover.py --red-green
+      - name: Native Music details visible-side width regression gate
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        run: |
+          python3 Scripts/check-native-music-details-width.py --self-test
+          python3 Scripts/check-native-music-details-width.py --red-green
       - name: Native Music render cache and event-poll recovery gate
         if: ${{ always() && steps.package.outcome == 'success' }}
         run: |
@@ -162,7 +167,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CodexNotchMeter-native-contour-evidence
-          path: dist/contour-rendering/**/*.png
+          path: |
+            dist/contour-rendering/**/*.png
+            dist/music-details-width/**/*
           if-no-files-found: warn
           retention-days: 7
       - name: Upload verified developer preview
