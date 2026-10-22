@@ -30,6 +30,7 @@ public final class DebugCapture {
         case ready, timedOut, target, permission, stateBefore, trackBefore, position, trackAfter, stateAfter, validation
         case none, notRunning, denied, timeout, malformed, changedTrack, unavailable, failed
         case loading, matched, noMatch, invalidMetadata, identityMismatch, rateLimited, serviceUnavailable, temporaryFailure, rejected
+        case searchResultsTruncated, waitingForProvider
     }
     public enum Counter: String, CaseIterable, Codable {
         case localEvents, globalEvents, pollCallbacks, polls, acceptedPolls, quietPolls, rejectedEvents, hoverDecisions, frameCallbacks, frameApplies

@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "NotchCore"),
         .executableTarget(name: "CodexNotchMeter", dependencies: ["NotchCore"],
                           swiftSettings: [.define("AMLL_FALLBACK")]),
-        .testTarget(name: "NotchCoreTests", dependencies: ["NotchCore"])
+        .testTarget(name: "NotchCoreTests", dependencies: ["NotchCore"]),
+        .testTarget(name: "MusicControllerTests", dependencies: ["CodexNotchMeter", "NotchCore"])
     ]
 )

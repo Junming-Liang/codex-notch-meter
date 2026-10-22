@@ -89,6 +89,8 @@ final class MusicLyricsController: ObservableObject {
         case .unavailable: labels[.lookup] = .unavailable
         case .invalidMetadata: labels[.lookup] = .invalidMetadata
         case .identityMismatch: labels[.lookup] = .identityMismatch
+        case .searchResultsTruncated: labels[.lookup] = .searchResultsTruncated
+        case .waitingForProvider: labels[.lookup] = .waitingForProvider
         case .rateLimited: labels[.lookup] = .rateLimited
         case .serviceUnavailable: labels[.lookup] = .serviceUnavailable
         case .temporaryFailure: labels[.lookup] = .temporaryFailure
@@ -517,11 +519,28 @@ final class MusicLyricsController: ObservableObject {
                       self.current?.track == identity, self.trackRevision == revision else { return }
                 self.lookupTask = nil
                 let reason = (error as? LyricsLookupError) ?? .transportFailure
+                // A cancelled previous track may still own the provider's sole
+                // slot, or its local request-spacing window may still be open.
+                // The blocked provider has not sent this track's request. This
+                // wait is not a network failure, even if the primary already
+                // completed before the fallback deferred.
+                switch reason {
+                case .busy, .deferred: self.lookupAttempts = max(0, self.lookupAttempts - 1)
+                default: break
+                }
                 self.lookupState = .failure(reason)
-                if let deadline = LyricsRetryPolicy.cooldownUntil(after: reason,
-                    completedAttempts: self.lookupAttempts, now: self.clock()) {
-                    self.lookupNotBefore = max(self.lookupNotBefore, deadline)
-                    self.lookupCooldownState = self.lookupState
+                switch reason {
+                case .rateLimited, .serviceUnavailable:
+                    // Each retained provider enforces its own server cooldown.
+                    // Keep this track's retry schedule below, but let another
+                    // track use a healthy provider instead of blocking both.
+                    break
+                default:
+                    if let deadline = LyricsRetryPolicy.cooldownUntil(after: reason,
+                        completedAttempts: self.lookupAttempts, now: self.clock()) {
+                        self.lookupNotBefore = max(self.lookupNotBefore, deadline)
+                        self.lookupCooldownState = self.lookupState
+                    }
                 }
                 self.lookupRetryAt = LyricsRetryPolicy.nextAttemptAt(after: reason,
                     completedAttempts: self.lookupAttempts, now: self.clock())
@@ -539,6 +558,8 @@ final class MusicLyricsController: ObservableObject {
         case .noMatch: return "未找到匹配歌词，可导入本地 LRC"
         case .invalidMetadata: return "歌曲信息不足以可靠匹配在线歌词，可导入本地 LRC"
         case .identityMismatch: return "匹配结果版本不一致，可导入本地 LRC"
+        case .searchResultsTruncated: return "匹配候选过多，无法确认歌曲版本；可导入本地 LRC"
+        case .waitingForProvider: return "正在等待歌词请求就绪…"
         case .rateLimited: return "歌词服务请求受限，可稍后重试或导入本地 LRC"
         case .serviceUnavailable: return "歌词服务暂不可用，可稍后重试或导入本地 LRC"
         case .temporaryFailure: return "在线歌词暂时读取失败，可稍后重试或导入本地 LRC"

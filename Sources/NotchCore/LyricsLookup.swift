@@ -35,9 +35,14 @@ public struct LyricsLookupTrack: Equatable, Sendable {
 /// Fixed, user-safe categories. Never expose an underlying URL/NSError/body.
 public enum LyricsLookupError: Error, Equatable, Sendable {
     case consentRequired, invalidTrack, requestNotAllowed, invalidResponse
+    /// A valid full search page cannot establish a unique match. This is
+    /// incomplete coverage, not a malformed response or provider outage.
+    case searchResultsTruncated
     case identityMismatch, tooLarge, invalidUTF8, invalidLyrics
     case unsupportedFile, fileUnavailable, cancelled, offline, timedOut
     case transportFailure, busy
+    /// Local request spacing, distinct from an HTTP 429/503 provider cooldown.
+    case deferred(retryAfter: TimeInterval)
     case rateLimited(retryAfter: TimeInterval)
     case serviceUnavailable(retryAfter: TimeInterval)
 }
@@ -200,6 +205,20 @@ public enum LRCLIBLookup {
             let records: [Record]
             do { records = try JSONDecoder().decode(SearchRecords.self, from: response.body).records }
             catch { throw LyricsLookupError.invalidResponse }
+            if records.count == maximumSearchResults {
+                // Decode and validate the entire bounded page first. A full
+                // count must not turn corrupt metadata or conflicting IDs into
+                // permission to use the fallback provider.
+                var seen: [Int: Record] = [:]
+                for record in records {
+                    _ = try validatedIdentity(record)
+                    if let duplicate = seen[record.id], duplicate != record {
+                        throw LyricsLookupError.invalidResponse
+                    }
+                    seen[record.id] = record
+                }
+                throw LyricsLookupError.searchResultsTruncated
+            }
             return try select(records, for: track)
         }
         let record: Record
@@ -337,12 +356,12 @@ public enum LRCLIBLookup {
         let records: [Record]
         init(from decoder: Decoder) throws {
             var container = try decoder.unkeyedContainer()
-            if let count = container.count, count >= LRCLIBLookup.maximumSearchResults {
+            if let count = container.count, count > LRCLIBLookup.maximumSearchResults {
                 throw LyricsLookupError.invalidResponse
             }
             var values: [Record] = []
             while !container.isAtEnd {
-                guard values.count < LRCLIBLookup.maximumSearchResults - 1 else { throw LyricsLookupError.invalidResponse }
+                guard values.count < LRCLIBLookup.maximumSearchResults else { throw LyricsLookupError.invalidResponse }
                 values.append(try container.decode(Record.self))
             }
             records = values
@@ -468,6 +487,7 @@ public actor LyricsLookupClient {
     private let monotonicNow: @Sendable () -> TimeInterval
     private let wait: @Sendable (TimeInterval) async throws -> Void
     private var inFlight = false
+    private var nextRequestAt: TimeInterval = 0
     private var notBefore: TimeInterval = 0
 
     public init(transport: any LyricsLookupTransport,
@@ -486,29 +506,33 @@ public actor LyricsLookupClient {
         guard !inFlight else { throw LyricsLookupError.busy }
         let now = monotonicNow()
         guard now >= notBefore else { throw LyricsLookupError.rateLimited(retryAfter: notBefore - now) }
+        guard now >= nextRequestAt else { throw LyricsLookupError.deferred(retryAfter: nextRequestAt - now) }
         inFlight = true
         defer {
             inFlight = false
-            notBefore = max(notBefore, monotonicNow() + LRCLIBLookup.minimumRequestGap)
+            nextRequestAt = max(nextRequestAt, monotonicNow() + LRCLIBLookup.minimumRequestGap)
         }
         do {
             for (index, request) in requests.enumerated() {
                 if index > 0 {
                     // Cancellable even after a successful HTTP no-match. Keep
                     // the single-flight slot while waiting between requests.
-                    while monotonicNow() < notBefore {
-                        try await wait(max(0, notBefore - monotonicNow()))
+                    while monotonicNow() < nextRequestAt {
+                        try await wait(max(0, nextRequestAt - monotonicNow()))
                         guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
                     }
                 }
                 guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
                 let response = try await transport.fetch(request)
-                notBefore = max(notBefore, monotonicNow() + LRCLIBLookup.minimumRequestGap)
-                guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
-                if response.statusCode == 429 || response.statusCode == 503 {
-                    // Preserve the delay across all phases and track changes.
-                    notBefore = max(notBefore, monotonicNow() + LRCLIBLookup.retryDelay(response.retryAfter))
+                nextRequestAt = max(nextRequestAt, monotonicNow() + LRCLIBLookup.minimumRequestGap)
+                if response.url == request.url, LRCLIBLookup.isAllowed(url: response.url),
+                   response.statusCode == 429 || response.statusCode == 503 {
+                    // A known server cooldown survives cancellation and track
+                    // changes, but applies only to this provider. Retiring lyric
+                    // content must not retire the server's request boundary.
+                    notBefore = max(notBefore, monotonicNow() + max(30, LRCLIBLookup.retryDelay(response.retryAfter)))
                 }
+                guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
                 let result = try LRCLIBLookup.decodeForLookup(response, for: track, request: request)
                 guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
                 if result != .noMatch { return result }

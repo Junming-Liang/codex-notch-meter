@@ -417,8 +417,11 @@ final class LyricsLookupTests: XCTestCase {
         guard case .matched = try searchDecode(Array(repeating: [:], count: LRCLIBLookup.maximumSearchResults - 1)) else {
             return XCTFail("Expected complete below-cap duplicate set")
         }
-        for count in [LRCLIBLookup.maximumSearchResults, LRCLIBLookup.maximumSearchResults + 1] {
-            assertError(.invalidResponse) { _ = try searchDecode(Array(repeating: [:], count: count)) }
+        assertError(.searchResultsTruncated) {
+            _ = try searchDecode(Array(repeating: [:], count: LRCLIBLookup.maximumSearchResults))
+        }
+        assertError(.invalidResponse) {
+            _ = try searchDecode(Array(repeating: [:], count: LRCLIBLookup.maximumSearchResults + 1))
         }
         assertError(.tooLarge) {
             _ = try LRCLIBLookup.decode(LyricsLookupResponse(url: request.url, statusCode: 200,
@@ -445,6 +448,34 @@ final class LyricsLookupTests: XCTestCase {
         XCTAssertEqual(try searchDecode([["plainLyrics": NSNull(), "syncedLyrics": NSNull()]]), .unavailable)
         assertError(.invalidResponse) { _ = try searchDecode([["instrumental": true]]) }
         assertError(.invalidLyrics) { _ = try searchDecode([["syncedLyrics": NSNull(), "plainLyrics": "[00:01]Timed"]]) }
+    }
+
+    func testFullSearchPageStillValidatesEveryRecordAndPayloadBound() throws {
+        let fixture = try track()
+        let request = try XCTUnwrap(LRCLIBLookup.requests(track: fixture, consent: true).last)
+        var records = Array(repeating: [String: Any](), count: LRCLIBLookup.maximumSearchResults)
+        let invalidChanges: [[String: Any]] = [["duration": "invalid"], ["id": 0], ["artistName": ""],
+                                             ["instrumental": true], ["duration": 181]]
+        for changes in invalidChanges {
+            // A malformed or conflicting final record must not be hidden by
+            // detecting the full count before decoding and identity validation.
+            records[records.count - 1] = changes
+            assertError(.invalidResponse) { _ = try searchDecode(records) }
+        }
+        records[records.count - 1] = ["plainLyrics": String(repeating: "a", count: LRCParser.maximumInputBytes + 1)]
+        assertError(.tooLarge) { _ = try searchDecode(records) }
+        let full = try searchBody(Array(repeating: [:], count: LRCLIBLookup.maximumSearchResults))
+        for broken in [Data(full.dropLast()) + Data(",{}]".utf8),
+                       Data(full.dropLast()) + Data(",{\"id\":".utf8), full + Data("invalid tail".utf8)] {
+            assertError(.invalidResponse) {
+                _ = try LRCLIBLookup.decode(LyricsLookupResponse(url: request.url, statusCode: 200, body: broken),
+                                           for: fixture, request: request)
+            }
+        }
+        assertError(.tooLarge) {
+            _ = try LRCLIBLookup.decode(LyricsLookupResponse(url: request.url, statusCode: 200,
+                body: full + Data(repeating: 32, count: LRCLIBLookup.maximumResponseBytes)), for: fixture, request: request)
+        }
     }
 
     func testEmbeddedTagsUseSelectedCandidateIdentityAndExplicitPlainOnly() throws {
@@ -497,19 +528,35 @@ final class LyricsLookupTests: XCTestCase {
 
     func testSingleFlightAndLateCancelledResultCannotEscape() async throws {
         let mock = ControlledTransport()
-        let client = LyricsLookupClient(transport: mock)
+        let clock = FixtureClock()
+        let client = LyricsLookupClient(transport: mock, monotonicNow: { clock.now() })
         let fixture = try track()
         let pending = Task { try await client.lookup(track: fixture, consent: true) }
         try await mock.waitForRequest()
         do { _ = try await client.lookup(track: fixture, consent: true); XCTFail("Expected single flight") }
         catch { XCTAssertEqual(error as? LyricsLookupError, .busy) }
         pending.cancel()
+        do { _ = try await client.lookup(track: track(title: "Another Track"), consent: true); XCTFail("Retiring work still owns the slot") }
+        catch {
+            let failure = try XCTUnwrap(error as? LyricsLookupError)
+            XCTAssertEqual(failure, .busy)
+            XCTAssertNil(LyricsRetryPolicy.cooldownUntil(after: failure, completedAttempts: 1, now: clock.now()))
+            let retryAt = LyricsRetryPolicy.nextAttemptAt(after: failure, completedAttempts: 0, now: clock.now())
+            XCTAssertNotNil(retryAt)
+            if let retryAt { XCTAssertEqual(retryAt, clock.now() + LRCLIBLookup.minimumRequestGap, accuracy: 0.000_001) }
+        }
         // This intentionally noncooperative mock returns success AFTER cancel.
         await mock.complete(body: try body())
         do { _ = try await pending.value; XCTFail("A late result must not be accepted") }
         catch { XCTAssertEqual(error as? LyricsLookupError, .cancelled) }
+        clock.advance(1)
+        let nextTrack = try track(title: "Another Track")
+        let next = Task { try await client.lookup(track: nextTrack, consent: true) }
+        try await mock.waitForRequest()
+        await mock.complete(body: try body(["trackName": nextTrack.title]))
+        guard case .matched = try await next.value else { return XCTFail("Retired work must release the next track") }
         let count = await mock.callCount
-        XCTAssertEqual(count, 1)
+        XCTAssertEqual(count, 2)
     }
 
     func testMinimumGapAndRetryAfterPersistAcrossTracksWithoutRetry() async throws {
@@ -540,10 +587,13 @@ final class LyricsLookupTests: XCTestCase {
         _ = try await first.value
         do { _ = try await client.lookup(track: fixture, consent: true); XCTFail("Expected minimum gap") }
         catch {
-            guard let failure = error as? LyricsLookupError, case .rateLimited(let seconds) = failure else {
-                return XCTFail("Expected sanitized cooldown")
+            guard let failure = error as? LyricsLookupError, case .deferred(let seconds) = failure else {
+                return XCTFail("Expected local request spacing")
             }
             XCTAssertEqual(seconds, 0.3, accuracy: 0.000_001)
+            XCTAssertNil(LyricsRetryPolicy.cooldownUntil(after: failure, completedAttempts: 1, now: clock.now()))
+            XCTAssertEqual(try XCTUnwrap(LyricsRetryPolicy.nextAttemptAt(after: failure, completedAttempts: 0, now: clock.now())),
+                           clock.now() + 0.3, accuracy: 0.000_001)
         }
         let count = await mock.callCount
         XCTAssertEqual(count, 1)
@@ -733,6 +783,7 @@ private actor ControlledTransport: LyricsLookupTransport {
     func complete(body: Data, statusCode: Int = 200, retryAfter: String? = nil) {
         guard let request, let pending else { return }
         self.pending = nil
+        self.request = nil
         pending.resume(returning: LyricsLookupResponse(url: request.url, statusCode: statusCode,
                                                        retryAfter: retryAfter, body: body))
     }
