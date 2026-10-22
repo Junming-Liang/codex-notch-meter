@@ -44,9 +44,9 @@ class PackagingTests(unittest.TestCase):
             "CFBundleIdentifier": "org.codexnotchmeter.app",
             "CFBundleExecutable": "CodexNotchMeter",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.1.3",
-            "CFBundleVersion": "20",
-            "CodexNotchMeterReleaseVersion": "1.1.3",
+            "CFBundleShortVersionString": "1.1.4",
+            "CFBundleVersion": "21",
+            "CodexNotchMeterReleaseVersion": "1.1.4",
             "LSMinimumSystemVersion": "13.0",
         }
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
@@ -104,12 +104,12 @@ class PackagingTests(unittest.TestCase):
         self.info["CFBundleShortVersionString"] = "0.1.2"
         (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
         with mock.patch.object(dmg, "run") as calls:
-            with self.assertRaisesRegex(RuntimeError, "1.1.3"):
+            with self.assertRaisesRegex(RuntimeError, "1.1.4"):
                 dmg.verify_app(self.app)
             calls.assert_not_called()
 
     def test_missing_or_wrong_build_rejected_before_native_commands(self):
-        for build in (None, "", "18", "19", "21", 20):
+        for build in (None, "", "18", "19", "20", "22", 21):
             with self.subTest(build=build):
                 if build is None:
                     self.info.pop("CFBundleVersion", None)
@@ -117,7 +117,7 @@ class PackagingTests(unittest.TestCase):
                     self.info["CFBundleVersion"] = build
                 (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(self.info))
                 with mock.patch.object(dmg, "run") as calls:
-                    with self.assertRaisesRegex(RuntimeError, "Expected application build 20"):
+                    with self.assertRaisesRegex(RuntimeError, "Expected application build 21"):
                         dmg.verify_app(self.app)
                     calls.assert_not_called()
 
