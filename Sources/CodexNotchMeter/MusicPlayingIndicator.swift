@@ -209,7 +209,13 @@ enum MusicPlayingIndicatorVerification {
         let armed: TimeInterval
         let fired: TimeInterval
     }
+    private enum WakeScheduler: String {
+        case foundationTimer = "foundation-timer"
+        case strictDispatch = "strict-dispatch"
+    }
     @MainActor private final class WakeTrace {
+        let scheduler: WakeScheduler
+        init(scheduler: WakeScheduler) { self.scheduler = scheduler }
         static let capacity = 256
         private struct Row {
             let stage: String
@@ -255,7 +261,10 @@ enum MusicPlayingIndicatorVerification {
         defer { view.dismantle(); window.orderOut(nil); window.contentView = nil; window.close() }
         var samples: [Sample] = [], lifecycle: [[String: Any]] = []
         var timing: [[String: Any]] = []
-        let wakes = WakeTrace()
+        // Opt-in diagnostic experiment only. The existing cache gate and all
+        // ordinary application launches retain the original Timer scheduler.
+        let wakes = WakeTrace(scheduler: CommandLine.arguments.contains("--indicator-strict-dispatch-test")
+            ? .strictDispatch : .foundationTimer)
         var completed = false
         func state() -> [String: Any] {
             ["time": CACurrentMediaTime() - began, "animationKeys": view.animationKeys,
@@ -294,7 +303,8 @@ enum MusicPlayingIndicatorVerification {
             // Scheduling and export observations are diagnostic only. The
             // existing success receipt and all deadlines remain unchanged.
             if let data = try? JSONSerialization.data(withJSONObject: ["schema": 1, "timing": timing,
-                "wakeSchema": 1, "wakeCapacity": WakeTrace.capacity, "droppedWakes": wakes.dropped,
+                "wakeSchema": 1, "wakeScheduler": wakes.scheduler.rawValue,
+                "wakeCapacity": WakeTrace.capacity, "droppedWakes": wakes.dropped,
                 "wakes": wakes.receipt(relativeTo: began)], options: [.sortedKeys]),
                let json = String(data: data, encoding: .utf8) {
                 print("MUSIC_INDICATOR_TIMING_JSON: \(json)")
@@ -476,17 +486,38 @@ enum MusicPlayingIndicatorVerification {
         while CACurrentMediaTime() < target {
             let remaining = target - CACurrentMediaTime()
             guard remaining > 0 else { break }
-            let wake = await withCheckedContinuation { (continuation: CheckedContinuation<NativeWake, Never>) in
-                let armed = CACurrentMediaTime()
-                let timer = Timer(timeInterval: remaining, repeats: false) { _ in
-                    continuation.resume(returning: NativeWake(armed: armed, fired: CACurrentMediaTime()))
+            let wake: NativeWake
+            if trace.scheduler == .strictDispatch {
+                wake = await strictDispatchWake(after: remaining)
+            } else {
+                wake = await withCheckedContinuation { (continuation: CheckedContinuation<NativeWake, Never>) in
+                    let armed = CACurrentMediaTime()
+                    let timer = Timer(timeInterval: remaining, repeats: false) { _ in
+                        continuation.resume(returning: NativeWake(armed: armed, fired: CACurrentMediaTime()))
+                    }
+                    timer.tolerance = 0
+                    RunLoop.main.add(timer, forMode: .common)
                 }
-                timer.tolerance = 0
-                RunLoop.main.add(timer, forMode: .common)
             }
             let resumed = CACurrentMediaTime()
             trace.record(stage: stage, target: target, interval: remaining, wake: wake, resumed: resumed)
             try Task.checkCancellation()
+        }
+    }
+    /// One owned, nonrepeating source per experimental wait. The deferred
+    /// teardown retains it across suspension without capturing it in its own
+    /// handler. Strict dispatch is best effort, not a real-time guarantee.
+    /// The caller still rechecks the actual target after any early wake.
+    private static func strictDispatchWake(after interval: TimeInterval) async -> NativeWake {
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        defer { source.setEventHandler {}; source.cancel() }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<NativeWake, Never>) in
+            let armed = CACurrentMediaTime()
+            source.setEventHandler {
+                continuation.resume(returning: NativeWake(armed: armed, fired: CACurrentMediaTime()))
+            }
+            source.schedule(deadline: .now() + interval, repeating: .never, leeway: .nanoseconds(0))
+            source.resume()
         }
     }
     private static func running(_ view: MusicPlayingIndicatorView) -> Bool {
