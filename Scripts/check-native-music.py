@@ -38,7 +38,7 @@ def receipts_valid(stdout: str) -> bool:
     close_paint = one(r'^MUSIC_AUTO_CLOSE_PAINT_OK: intermediateFrames=(\d+) opacityDecreased=true opaqueBefore4pt=true idleOpacity=0 naturalPaint=true$')
     notice_pointer = one(r'^MUSIC_NOTICE_POINTER_DWELL_OK: seconds=6 held=([0-9.]+) pointerSamples=(\d+) musicUpdates=(\d+)$')
     natural_pointer = one(r'^MUSIC_NATURAL_POINTER_OK: sparse30Hz=true adjacentExit=true downwardExit=true noDetailsRetarget=true coupledCloseReady=true movingPaints=(\d+) sharedContour=true scanout=false$')
-    cooldown = one(r'^MUSIC_LOOKUP_COOLDOWN_OK: observed=' + number + r' retryAfter=60 polls=3 lookupCalls=1 synthetic=true$')
+    cooldown = one(r'^MUSIC_LOOKUP_COOLDOWN_OK: observed=' + number + r' retryAfter=60 polls=3 sameTrackLookupCalls=1 recoveryLookupCalls=2 providerCooldownCheckedSeparately=true synthetic=true$')
     retirements = re.findall(
         r'^MUSIC_RETIRE_OK: kind=(disable|sleep|stop) readerCancelled=true lookupCancelled=true '
         r'importCancelled=true visibleCleared=true lateRejected=true quiet=' + number + r'$', stdout, re.MULTILINE,
@@ -78,7 +78,7 @@ def receipts_valid(stdout: str) -> bool:
         'MUSIC_ARTWORK_DECODER_OK: originalPNG=true originalJPEG=true exactRGBA=true rejects=6 noFiles=true noNetwork=true',
         'MUSIC_CLOSED_ACCESSORIES_OK: originalRGBA=true decoder-to-display=true artworkPixels=true quadrants=4 playingGlyph=true hardwareDepth=true rawContourUnchanged=true',
         'MUSIC_GESTURE_RAPID_OK: sequence=open-close-open inFlightReversal=true finite=true finalClose=true',
-        'MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true',
+        'MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=2 providerCooldownCheckedSeparately=true',
         'MUSIC_LOOKUP_IDLE_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch nativePanels=4 owner=idle motionFrames=0',
         'MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true',
         'MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true',
@@ -171,7 +171,7 @@ MUSIC_AUTO_PAINT_OK: sequence=music-notice-music lyricBefore=true quota80to79=tr
 MUSIC_AUTO_PAUSE_NOTICE_OK: hold=4.030 expected=4 dwellUnchanged=true lyricEmpty=true owner=idle
 MUSIC_AUTO_CLOSE_PAINT_OK: intermediateFrames=8 opacityDecreased=true opaqueBefore4pt=true idleOpacity=0 naturalPaint=true
 MUSIC_AUTO_REDUCED_OK: hold=2.010 expected=2 sequence=music-notice-music-idle motionFrames=0 passive=true
-MUSIC_LOOKUP_COOLDOWN_OK: observed=7.150 retryAfter=60 polls=3 lookupCalls=1 synthetic=true
+MUSIC_LOOKUP_COOLDOWN_OK: observed=7.150 retryAfter=60 polls=3 sameTrackLookupCalls=1 recoveryLookupCalls=2 providerCooldownCheckedSeparately=true synthetic=true
 MUSIC_CLEANUP_OK: controllers=20 pendingRequests=0 panelStopped=true
 MUSIC_PREVIEW_LAYOUT_OK: pairHeight=116.000 singleHeight=96.000 longHeight=118.000 compactWidth=360.000 hoverWidth=400.000 safeDepth=32.000 missingNextShrinks=true
 MUSIC_PREVIEW_STALE_OK: age=5.510 previouslyPainted=true currentEmpty=true nextEmpty=true owner=idle
@@ -204,7 +204,7 @@ MUSIC_AUTO_RETIRE_OK: disable=idle sleep=idle permission=idle stoppedPlayback=id
 MUSIC_ARTWORK_DECODER_OK: originalPNG=true originalJPEG=true exactRGBA=true rejects=6 noFiles=true noNetwork=true
 MUSIC_CLOSED_ACCESSORIES_OK: originalRGBA=true decoder-to-display=true artworkPixels=true quadrants=4 playingGlyph=true hardwareDepth=true rawContourUnchanged=true
 MUSIC_GESTURE_RAPID_OK: sequence=open-close-open inFlightReversal=true finite=true finalClose=true
-MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true
+MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=2 providerCooldownCheckedSeparately=true
 MUSIC_LOOKUP_IDLE_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch nativePanels=4 owner=idle motionFrames=0
 MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true
 MUSIC_OCR_CONTROLS_OK: cases=14 whitespaceOnly=true wrongIdentityRejected=true wrongCueRejected=true wrongQuotaRejected=true emptyRejected=true
@@ -240,7 +240,8 @@ SMOKE_OK: synthetic orderly shutdown
         ('appearances=aqua,darkAqua', 'appearances=darkAqua'), ('pausedLyricAbsentOCR=true', 'pausedLyricAbsentOCR=false'),
         ('width=722 height=192', 'width=10 height=192'), ('scale=2.000', 'scale=0'),
         ('observed=7.150', 'observed=0.1'), ('observed=7.150', 'observed=60.1'),
-        ('cooldownPreserved=true', 'cooldownPreserved=false'), ('lookupCalls=1', 'lookupCalls=2'),
+        ('providerCooldownCheckedSeparately=true', 'providerCooldownCheckedSeparately=false'),
+        ('recoveryLookupCalls=2', 'recoveryLookupCalls=3'), ('lookupCalls=1', 'lookupCalls=2'),
         ('controllers=20', 'controllers=19'), ('elapsed=115.000', 'elapsed=150.001'),
         ('checks=400', 'checks=10'), ('scanout=false', 'scanout=true'),
         ('age=5.510', 'age=4.999'), ('hold=2.020', 'hold=1.999'),

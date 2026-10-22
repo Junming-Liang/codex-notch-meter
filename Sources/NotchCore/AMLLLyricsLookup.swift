@@ -117,6 +117,7 @@ public actor AMLLLyricsClient {
     private let transport: any LyricsLookupTransport
     private let now: @Sendable () -> TimeInterval
     private var busy = false
+    private var nextRequestAt: TimeInterval = 0
     private var notBefore: TimeInterval = 0
     public init(transport: any LyricsLookupTransport,
                 now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
@@ -126,15 +127,20 @@ public actor AMLLLyricsClient {
         let request = try AMLLLookup.request(track: track, consent: consent)
         guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
         guard !busy else { throw LyricsLookupError.busy }
-        guard now() >= notBefore else { throw LyricsLookupError.rateLimited(retryAfter: notBefore - now()) }
+        let instant = now()
+        guard instant >= notBefore else { throw LyricsLookupError.rateLimited(retryAfter: notBefore - instant) }
+        guard instant >= nextRequestAt else { throw LyricsLookupError.deferred(retryAfter: nextRequestAt - instant) }
         busy = true
-        defer { busy = false; notBefore = max(notBefore, now() + LRCLIBLookup.minimumRequestGap) }
+        defer { busy = false; nextRequestAt = max(nextRequestAt, now() + LRCLIBLookup.minimumRequestGap) }
         do {
             let response = try await transport.fetch(request)
-            guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
-            if response.statusCode == 429 || response.statusCode == 503 {
-                notBefore = max(notBefore, now() + LRCLIBLookup.retryDelay(response.retryAfter))
+            if response.url == request.url, AMLLLookup.isAllowed(url: response.url),
+               response.statusCode == 429 || response.statusCode == 503 {
+                // Keep this source's real cooldown even if its song was
+                // cancelled; never accept timing instructions from another URL.
+                notBefore = max(notBefore, now() + max(30, LRCLIBLookup.retryDelay(response.retryAfter)))
             }
+            guard !Task.isCancelled else { throw LyricsLookupError.cancelled }
             return try AMLLLookup.decode(response, for: track, request: request)
         } catch {
             if Task.isCancelled || error is CancellationError { throw LyricsLookupError.cancelled }
@@ -148,7 +154,8 @@ public struct SourcedLyricsResult: Equatable, Sendable {
     public let source: String
 }
 
-/// A fallback miss must never turn an upstream outage into a confirmed no-match.
+/// A fallback miss must never turn an upstream outage or incomplete search
+/// coverage into a confirmed no-match.
 public enum DualLyricsLookup {
     public typealias Lookup = @Sendable (LyricsLookupTrack, Bool) async throws -> LyricsLookupResult
     public static func lookup(track: LyricsLookupTrack, lrclibConsent: Bool, amllConsent: Bool,
@@ -162,9 +169,11 @@ public enum DualLyricsLookup {
         } catch {
             let failure = (error as? LyricsLookupError) ?? .transportFailure
             if Task.isCancelled || error is CancellationError || failure == .cancelled { throw LyricsLookupError.cancelled }
-            // Safety/identity failures are terminal, not permission to broaden matching.
+            // A valid truncated search may use the separately consented strict
+            // provider. Safety/identity failures remain terminal.
             switch failure {
-            case .offline, .timedOut, .transportFailure, .serviceUnavailable, .rateLimited: primaryError = failure
+            case .offline, .timedOut, .transportFailure, .serviceUnavailable, .rateLimited,
+                 .searchResultsTruncated: primaryError = failure
             default: throw failure
             }
         }

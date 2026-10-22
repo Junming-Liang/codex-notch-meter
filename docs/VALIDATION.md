@@ -2,6 +2,14 @@
 
 Observed results are pinned to the exact tested source below, not automatically to later documentation-only commits on `main`.
 
+## Unreleased lyrics request recovery (2026-10-22)
+
+Based on v1.1.4/build 21 source `0e82e9e`. A user-provided 25-second local capture showed fresh Music playback with no Music read failure, while all recorded lookup states were `serviceUnavailable`. Three complete opening gestures were recognized after Settings had closed and the quota notice had ended, but rejected because usable lyrics were absent. This establishes the cause of those recorded rejections; the capture does not identify which provider returned the error, its Retry-After, or the cause of other reported intermittent failures. The raw user capture is not part of the repository.
+
+The candidate separates per-provider HTTP cooldowns from local single-flight/request-spacing waits, and classifies a valid full LRCLIB search page as incomplete coverage instead of a network outage. It retains strict matching, cancellation, server Retry-After and the existing gesture/display rules. A healthy provider can serve another song while the other remains in its own cooldown. This is a request-recovery change, not a guarantee of community lyric coverage or external service availability. No release or installation is implied by this section.
+
+Local validation on macOS completed 508 Swift tests with one opt-in skip and zero failures. Four controller integration tests use the production poll loop and in-memory boundaries; the source-isolation test uses both real clients and counts HTTP transport calls in both failure directions. Core tests cover full-page validation, local deferrals, independent 30-second/longer server cooldowns, and cancelled late responses without accepting a wrong-origin cooldown. Static source checks, the debug capture parser/privacy self-test and the 274-assertion native Music receipt parser self-test passed. These parser checks do not establish native execution; universal packaging and the retained native Music/recovery checks remain pending for this source.
+
 ## v1.0.3 candidate: event-entry and closed-height correction
 
 Based on main `001a0c8018c681e1e27db6d846279c3ea3022fa3`; package identity is v1.0.3/build 16. The user reports that installed v1.0.2 still jitters and does not trigger the no-button gesture, and requires closed music to retain ordinary closed height with width added only. Those reports supersede any implication that earlier hosted synthetic checks proved the reported device behavior fixed. See [bilingual candidate changes](RELEASE-1.0.3.md).

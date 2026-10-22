@@ -22,7 +22,8 @@ VALUES = set('''idle music quotaNotice details localEvent globalEvent poll synth
 staleEvent duplicateEvent quietWindow invalid button noticeOwns gestureAccepted gestureUnavailable reserved gestureGate dwellReset hoverDecision
 enter leave retarget accessoryChanged bridgeChanged geometryChanged musicChanged gateChanged noticeShown noticeDismissed noticeExpired collapse stopped
 ready timedOut target permission stateBefore trackBefore position trackAfter stateAfter validation none notRunning denied timeout malformed changedTrack
-unavailable failed loading matched noMatch invalidMetadata identityMismatch rateLimited serviceUnavailable temporaryFailure rejected'''.split())
+unavailable failed loading matched noMatch invalidMetadata identityMismatch rateLimited serviceUnavailable temporaryFailure rejected
+searchResultsTruncated waitingForProvider'''.split())
 COUNTERS = set('''localEvents globalEvents pollCallbacks polls acceptedPolls quietPolls rejectedEvents hoverDecisions frameCallbacks frameApplies
 sampledOut rateLimited evicted oversized invalidFields identifierOverflow encodingFailures'''.split())
 ROW_KEYS = {'sequence', 'elapsedMs', 'event', 'values', 'labels'}

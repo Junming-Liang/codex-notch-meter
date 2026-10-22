@@ -3743,19 +3743,26 @@ final class MusicRenderHarness: NSObject {
             !transient.controller.isPlayingForPresentation && transient.controller.trackTitle.isEmpty
         }
         let recovered = try await read(transient); try await release(transient, recovered, position: 1)
-        try await until("same track recovery restores temporary service status without a lookup") {
+        // A fresh playback generation may consult the retained provider again.
+        // This fixture gates controller invocations, not HTTP requests; the real
+        // clients' transport-level Retry-After is checked in MusicControllerTests.
+        let cooldownCheck = try await lookup(transient)
+        try require(await transient.lookup.release(cooldownCheck.id, .unavailable),
+                    "retained provider reports its existing service cooldown to the recovered generation")
+        try await until("same track recovery restores the provider's service status") {
             !transient.controller.isPlayingForPresentation && transient.controller.lookupState == .serviceUnavailable
                 && transient.controller.statusText == statuses[0]
         }
-        try require(await transient.lookup.calls().count == 1, "Music source interruption cannot bypass service cooldown")
-        print("MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=1 cooldownPreserved=true")
+        try require(await transient.lookup.calls().count == 2,
+                    "Music source recovery performs one bounded provider check")
+        print("MUSIC_LOOKUP_RECOVERY_OK: source=timedOut freshSameTrack=true state=serviceUnavailable lookupCalls=2 providerCooldownCheckedSeparately=true")
         let observed = CACurrentMediaTime() - began
         try require(observed >= 3 && observed < 60, "service cooldown observation spans three real polls without waiting or skipping sixty seconds")
         for value in values { value.controller.stop() }
         for panel in statusPanels { panel.stop() }
         print("MUSIC_LOOKUP_IDLE_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch nativePanels=4 owner=idle motionFrames=0")
         print("MUSIC_LOOKUP_STATUS_OK: states=serviceUnavailable,noMatch,unavailable,identityMismatch polls=3 lookupCalls=1 fixedStatus=true noFalseNoMatch=true")
-        print("MUSIC_LOOKUP_COOLDOWN_OK: observed=\(decimal(observed)) retryAfter=60 polls=3 lookupCalls=1 synthetic=true")
+        print("MUSIC_LOOKUP_COOLDOWN_OK: observed=\(decimal(observed)) retryAfter=60 polls=3 sameTrackLookupCalls=1 recoveryLookupCalls=2 providerCooldownCheckedSeparately=true synthetic=true")
     }
 
     private func verifyCleanup() async throws {

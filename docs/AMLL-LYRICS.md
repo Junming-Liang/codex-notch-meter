@@ -14,6 +14,8 @@ LRCLIB retains at most three requests per attempt; AMLL adds at most one. The ex
 
 Track identity, generation, playback revision, cancellation and local-import guards remain in the controller. Consent changes cancel pending work and clear retained online content. Imports win even if a network completion arrives later.
 
+A valid but full LRCLIB search page is incomplete coverage, so independently authorized AMLL may still try its existing strict match. If AMLL also has no usable match, the incomplete-coverage status remains visible; it is not reported as an outage and does not delay other songs. Actual corrupt/unsafe responses and identity failures remain terminal. Both providers distinguish their local 300ms request spacing from HTTP 429/503 cooldowns; switching songs during local scheduling no longer creates a 30-second service wait. Each provider retains its own server cooldown, including the 30-second minimum and any longer Retry-After. A failure of one provider does not block a new track from using the other; ordinary same-track automatic retries remain bounded.
+
 ## Licenses and coverage
 
 This app remains MIT. The AMLL API server offers MIT/Apache-2.0 software licensing (https://github.com/amll-dev/amll-ttml-api); this integration uses the public HTTP protocol, not copied server implementation. Neither that software license nor LRCLIB's software license grants blanket rights to community lyric text. No corpus is bundled, logged or persisted; tests use invented snippets only. Individual lyric rights and provider coverage remain uncertain.
