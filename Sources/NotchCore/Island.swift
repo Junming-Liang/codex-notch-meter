@@ -112,6 +112,10 @@ public struct IslandGeometry: Equatable, Sendable {
     public var musicAccessoryProgress: Double = 1
     /// Latched only for a non-music idle -> hover interaction. Shared music geometry is the default.
     public var ordinaryHoverWidth = false
+    /// A music-owned details excursion uses a direct path from its passive rest.
+    /// The shared compact map still owns lyrics/notices. The panel latches this
+    /// only at a settled endpoint and retains it through direction reversals.
+    public var detailsWidthRestProgress: Double?
     public var widthPresentation: IslandWidthPresentation?
     public var expandedContentCenterX: CGFloat {
         var canonical = self; canonical.widthPresentation = nil
@@ -275,6 +279,24 @@ public struct IslandGeometry: Equatable, Sendable {
     public func widthSample(progress: Double, velocity: Double = 0, accessoryVelocity: Double = 0) -> IslandWidthSample {
         if let current = widthPresentation, current.progress == progress { return current.sample }
         let p = min(1, max(0, progress))
+        if let rest = detailsWidthRestProgress, rest.isFinite, rest >= 0, rest < 1, p >= rest {
+            var canonical = self
+            canonical.detailsWidthRestProgress = nil; canonical.widthPresentation = nil
+            canonical.ordinaryHoverWidth = false
+            let origin = canonical.widthSample(progress: rest, accessoryVelocity: accessoryVelocity)
+            let full = canonical.widthSample(progress: 1)
+            let t = min(1, max(0, (p - rest) / (1 - rest)))
+            // Both raw width and center are affine in the SAME height progress.
+            // The visible sides subtract 12*p each, so their span is affine too,
+            // including wide music shells that must narrow toward the full card.
+            // Keep the original accessory derivative instead of freezing a wing
+            // that is still appearing when hover begins at p=0.
+            let rate = velocity / (1 - rest)
+            return IslandWidthSample(width: origin.width + (full.width - origin.width) * t,
+                center: origin.center + (full.center - origin.center) * t,
+                widthVelocity: origin.widthVelocity * (1 - t) + (full.width - origin.width) * rate,
+                centerVelocity: origin.centerVelocity * (1 - t) + (full.center - origin.center) * rate)
+        }
         func ease(_ q: Double) -> (Double, Double) {
             if q <= 0 { return (0, 0) }; if q >= 1 { return (1, 0) }
             return (q * q * (3 - 2 * q), 6 * q * (1 - q))
@@ -300,7 +322,7 @@ public struct IslandGeometry: Equatable, Sendable {
             centerVelocity: dc * q.1 / lower * velocity)
     }
     private func drawingFrame(progress: Double) -> CGRect {
-        if ordinaryHoverWidth || widthPresentation?.progress == progress {
+        if ordinaryHoverWidth || detailsWidthRestProgress != nil || widthPresentation?.progress == progress {
             let p = min(1, max(0, progress.isFinite ? progress : 0))
             let value = widthSample(progress: p)
             let height = contourFrame.height + (expandedContourFrame.height - contourFrame.height) * CGFloat(p)
@@ -339,7 +361,7 @@ public struct IslandGeometry: Equatable, Sendable {
     }
     /// Gesture reservation uses the stable full endpoint, not an interrupted presentation.
     public func canonicalHoverContains(_ point: CGPoint, progress: Double) -> Bool {
-        var value = self; value.widthPresentation = nil
+        var value = self; value.widthPresentation = nil; value.detailsWidthRestProgress = nil
         return value.hoverContains(point, progress: progress)
     }
     public func hoverContains(_ point: CGPoint, progress: Double,
@@ -353,6 +375,7 @@ public struct IslandGeometry: Equatable, Sendable {
             var origin = self
             origin.widthPresentation = nil
             origin.ordinaryHoverWidth = false
+            origin.detailsWidthRestProgress = nil
             if origin.hoverContains(point, progress: 0) { return true }
         }
         // Never use visibleFrame: the island is attached to the physical top edge.
