@@ -34,6 +34,14 @@ final class MusicStationaryHoverChecks {
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                if CommandLine.arguments.contains("--music-details-width-test") {
+                    let rows = try await self.musicDetailsWidth()
+                    self.emit("MUSIC_DETAILS_WIDTH_JSON", ["schema": 1, "cases": rows.count,
+                        "naturalPaint": true, "nativeLocalEvents": true, "scanout": false])
+                    print("MUSIC_DETAILS_WIDTH_OK: nativeLocal=true naturalPaint=true synthetic=true")
+                    self.finish(true)
+                    return
+                }
                 if CommandLine.arguments.contains("--music-wide-quota-hover-test") {
                     self.emit("MUSIC_WIDE_QUOTA_HOVER_JSON", try await self.wideMusicQuotaHover())
                     print("MUSIC_WIDE_QUOTA_HOVER_OK: nativeLocal=true naturalPoll=true synthetic=true")
@@ -255,6 +263,104 @@ final class MusicStationaryHoverChecks {
             "notchWidth": 330, "pointer": point(p), "settledHoldSeconds": 2.4,
             "polls": polls.count, "playbackReads": readCount, "lyricsSelected": false,
             "stableDetails": true, "realExitClosed": true, "pauseReleasedOrigin": true]
+    }
+
+    /// Natural opening/closing paint, with fresh playback and no changes to the
+    /// production frame source. The immutable contour, not the rounded transparent
+    /// window envelope, supplies both visible side coordinates.
+    private func musicDetailsWidth() async throws -> [[String: Any]] {
+        var cases: [[String: Any]] = []
+        for width in [CGFloat(220), CGFloat(330)] {
+            for lyrics in [false, true] {
+                let f = try await prepare(notchWidth: width)
+                defer { f.stop(); active = nil }
+                f.timing.name = "details-width-\(Int(width))-\(lyrics)"
+                if lyrics {
+                    guard let token = f.controller.importSelectionToken else { throw Failure(label: "width-import-token") }
+                    f.controller.importLyrics(from: URL(fileURLWithPath: "/synthetic-width.lrc"), for: token)
+                    try await until("width-lyrics-ready") { f.controller.hasLocalLyrics }
+                    f.controller.selectLyricsMode(true)
+                    try await until("width-lyrics-rest") {
+                        f.panel.smokeExpansionOwner == .music && !f.panel.motionProbe.running
+                            && f.panel.smokeProgress == f.panel.smokeMusicTargetProgress
+                    }
+                }
+                let rest = f.panel.smokeProgress
+                let center = CGPoint(x: f.panel.geometry.calibratedNotch.midX, y: f.panel.geometry.screen.maxY - 16)
+                for opening in [true, false] {
+                    guard let initial = f.panel.smokeRenderCommits.last else { throw Failure(label: "width-initial-commit") }
+                    let count = f.panel.smokeRenderCommits.count
+                    let target = opening ? 1.0 : rest
+                    let pointer = opening ? center : f.outside
+                    f.panel.smokeSetPolledPointer(pointer)
+                    _ = try await post(pointer, f)
+                    try await until("width-natural-endpoint") {
+                        guard let paint = f.panel.paintReceipt else { return false }
+                        return f.panel.smokeProgress == target && !f.panel.motionProbe.running
+                            && paint.frame.progress == target
+                            && paint.frame.frameRevision == f.panel.smokeRenderCommits.last?.revision
+                    }
+                    let commits = [initial] + Array(f.panel.smokeRenderCommits.dropFirst(count))
+                    let revisions = Set(commits.map { $0.revision })
+                    let paints = f.panel.smokePaintHistory.filter { revisions.contains($0.frame.frameRevision) }
+                    let byRevision = Dictionary(uniqueKeysWithValues: commits.map { ($0.revision, $0) })
+                    let middle = Set(commits.filter { $0.progress > rest && $0.progress < 1 }.map { $0.revision })
+                    let paintedMiddle = Set(paints.filter { middle.contains($0.frame.frameRevision) }.map { $0.frame.frameRevision })
+                    try require(middle.count >= 3 && paintedMiddle.count >= 2
+                        && !f.panel.smokeHistoryOverflow && !f.panel.smokePaintHistoryOverflow,
+                        "width-natural-intermediate-evidence")
+                    func side(_ c: IslandRenderCommit) -> (Double, Double) {
+                        let contour = IslandContour(rect: c.geometry.contourRect(progress: c.progress), progress: c.progress,
+                            cornerAdjustment: c.geometry.shapeCalibration.corner, referenceDepth: c.geometry.notch.height)
+                        return (Double(c.nativeFrame.minX + contour.rect.minX + contour.shoulder),
+                                Double(c.nativeFrame.minX + contour.rect.maxX - contour.shoulder))
+                    }
+                    let from = side(commits[0]), to = side(commits[commits.count - 1])
+                    func directed(_ a: Double, _ b: Double, _ start: Double, _ end: Double) -> Bool {
+                        abs(end - start) < 1e-8 ? abs(b - a) < 1e-8 : (b - a) * (end - start) >= -1e-8
+                    }
+                    let ordered = zip(commits, commits.dropFirst()).allSatisfy { a, b in
+                        b.revision > a.revision && b.observed >= a.observed
+                            && (opening ? b.progress >= a.progress : b.progress <= a.progress)
+                    }
+                    let sidesMonotonic = zip(commits, commits.dropFirst()).allSatisfy { a, b in
+                        let x = side(a), y = side(b)
+                        return directed(x.0, y.0, from.0, to.0) && directed(x.1, y.1, from.1, to.1)
+                    }
+                    let matched = paints.allSatisfy { paint in
+                        guard let c = byRevision[paint.frame.frameRevision] else { return false }
+                        let contour = IslandContour(rect: c.geometry.contourRect(progress: c.progress), progress: c.progress,
+                            cornerAdjustment: c.geometry.shapeCalibration.corner, referenceDepth: c.geometry.notch.height)
+                        return paint.observed >= c.observed && paint.frame.progress == c.progress
+                            && paint.frame.contour == contour && c.nativeFrame == c.geometry.frame(progress: c.progress)
+                            && paint.nativeFrameSampledAtPaint && paint.nativeFrame == c.nativeFrame
+                            && paint.actualViewport == c.nativeFrame.size && paint.frame.viewport == c.nativeFrame.size
+                            && paint.nativeContentBounds == CGRect(origin: .zero, size: c.nativeFrame.size)
+                            && paint.bodyBounds == contourPath(contour, inset: 0, closed: true).boundingRect
+                            && paint.railBounds == contourPath(contour, inset: 2, closed: false).boundingRect
+                    }
+                    let row: [String: Any] = ["notchWidth": Double(width), "lyricsSelected": lyrics,
+                        "opening": opening, "restProgress": rest, "target": target,
+                        "ordered": ordered, "sidesMonotonic": sidesMonotonic, "allPaintsMatched": matched,
+                        "intermediateCommits": middle.count, "intermediatePaints": paintedMiddle.count,
+                        "commits": commits.map { c -> [String: Any] in
+                            let s = side(c)
+                            return ["revision": c.revision, "observed": c.observed, "progress": c.progress,
+                                "left": s.0, "right": s.1, "rawWidth": Double(c.geometry.contourRect(progress: c.progress).width)]
+                        }]
+                    // Evidence precedes the assertion, so old-code red must carry an
+                    // actual ordered native contraction, not a timeout or guessed cause.
+                    emit("MUSIC_DETAILS_WIDTH_CASE_JSON", row)
+                    try require(ordered && matched, "width-native-paint-coherence")
+                    try require(f.controller.isFreshPlaying && f.controller.lyricsModeEnabled == lyrics
+                        && f.panel.smokeTargetProgress == target && f.panel.smokeAccessoryProgress == 1,
+                        "width-stable-playback-and-target")
+                    try require(sidesMonotonic, "music-details-visible-side-reversal")
+                    cases.append(row)
+                }
+            }
+        }
+        return cases
     }
 
     private func edge(_ name: String) async throws -> [String: Any] {
