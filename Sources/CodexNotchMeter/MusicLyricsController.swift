@@ -521,7 +521,9 @@ final class MusicLyricsController: ObservableObject {
                 let reason = (error as? LyricsLookupError) ?? .transportFailure
                 // A cancelled previous track may still own the provider's sole
                 // slot, or its local request-spacing window may still be open.
-                // Neither sent this track's request nor consumed a network retry.
+                // The blocked provider has not sent this track's request. This
+                // wait is not a network failure, even if the primary already
+                // completed before the fallback deferred.
                 switch reason {
                 case .busy, .deferred: self.lookupAttempts = max(0, self.lookupAttempts - 1)
                 default: break
